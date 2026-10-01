@@ -17,4 +17,8 @@ Lumina UI 采用 **MIT OR Apache-2.0** 双许可(见 LICENSE-MIT / LICENSE-APACH
 
 1. 上表"移植内容"列只登记思想级与代码级两类;纯 API 调用不算移植,无需登记。
 2. 任何直接复制的源文件必须保留原许可头,并在上表追加一行"文件级"登记。
-3. 依赖 VellumBench 时注意:其 ACL-1.0 为自定义协议,**不复制其源码**,只对齐设计语义。
+3. **上游许可红线(阻断级,docs/upstream/00 §风险1)**:
+   - VellumBench 是 **ACL-1.0**(自定义协议,实质部分再分发须整体同协议开源)——对 vb_ui/vb_app **只许语义/设计思想对齐,禁止复制源码、禁止逐行翻译**;实现者只读其规格类文档(design/、CONTEXT.md),不对照 .rs 写代码。
+   - CutForge 原创部分是 **ARL-1.0**(CORE-FILES 36 个核心文件修改须回传开源)——对 crates/cutforge-* **零源码复制**;本库只经其 MCP 工具/CLI/文件格式对接,不 import 其源码。
+   - 两条红线的机器可查验证:CI 的 `cargo tree` 依赖图里不得出现 vb_* / cutforge-* 任何节点。
+4. 依赖 VellumBench 时注意:其 ACL-1.0 为自定义协议,**不复制其源码**,只对齐设计语义。
