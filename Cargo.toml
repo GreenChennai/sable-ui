@@ -42,9 +42,9 @@ lumina-dock    = { path = "crates/lumina-dock" }
 lumina-video   = { path = "crates/lumina-video" }
 
 # —— L0 基础(零 UI 框架依赖;分册六 §2.1)——
-kurbo   = "0.13.1"
+kurbo   = { version = "0.13.1", features = ["serde"] }
 peniko  = "0.6.1"
-slotmap = "1.1.1"
+slotmap = { version = "1.1.1", features = ["serde"] }
 serde   = { version = "1", features = ["derive"] }
 thiserror = "2"
 
