@@ -2,7 +2,7 @@
 
 > 不是又一个通用 UI 框架,而是**创作工具专用 UI 库**(Creative Tool UI Kit)。
 > 目标形态:Adobe Illustrator(矢量设计)+ 剪映(视频剪辑)级 Windows 桌面创作软件的前端层。
-> 手册:[docs/00 总纲](docs/00-总纲.md) → [docs/06 技术债](docs/06-鲁棒性解耦审美动画Vulkan与技术债.md)
+> 手册:[docs/00 总纲](docs/00-总纲.md) → [docs/06 技术债](docs/06-鲁棒性与技术债.md)
 
 ## 一句话架构
 
