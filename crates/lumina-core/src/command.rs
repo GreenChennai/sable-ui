@@ -126,6 +126,7 @@ impl Command for BatchCommand {
 }
 
 /// 历史栈:撤销/重做的唯一入口(docs/03 §2)。
+#[derive(Default)]
 pub struct History {
     undo: Vec<Box<dyn Command>>,
     redo: Vec<Box<dyn Command>>,
@@ -140,16 +141,6 @@ impl fmt::Debug for History {
             .field("redo_len", &self.redo.len())
             .field("in_transaction", &self.transaction.is_some())
             .finish()
-    }
-}
-
-impl Default for History {
-    fn default() -> Self {
-        History {
-            undo: Vec::new(),
-            redo: Vec::new(),
-            transaction: None,
-        }
     }
 }
 

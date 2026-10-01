@@ -18,7 +18,7 @@ default = ["full"]
 full = ["canvas", "widgets", "dock", "video"]
 # —— 单点场景 ——
 core = ["dep:lumina-core"]
-canvas = ["core", "dep:lumina-canvas"]
+canvas = ["core", "dep:lumina-canvas", "lumina-canvas/gpui", "lumina-canvas/png"]
 widgets = ["canvas", "dep:lumina-widgets"]
 dock = ["widgets", "dep:lumina-dock"]
 video = ["canvas", "dep:lumina-video"]

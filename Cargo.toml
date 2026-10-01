@@ -58,8 +58,10 @@ wgpu  = "30.0.1"
 image = "0.25"
 
 # —— 平台层(feature 门控,进 core/canvas/paint/video 者格杀勿论)——
-gpui           = "0.2.2"
-gpui-component = "0.7.0"
+gpui = "0.2.2"
+# 0.5.1 是最后一个绑定 zed gpui ^0.2.2 的版本;0.6.0 起迁往 GPUI Kit 的 gpui-pre 0.3 线
+# (独立类型世界,与 0.2.2 不可混用)。升级到 0.6+/0.7 = 全栈迁移决策,走"升级窗口"(TD-01/TD-02)
+gpui-component = "0.5.1"
 
 # —— 工程 ——
 tracing = "0.1"

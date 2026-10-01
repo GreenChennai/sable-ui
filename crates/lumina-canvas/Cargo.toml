@@ -14,6 +14,9 @@ gpu = ["lumina-paint/gpu"]
 cpu = ["lumina-paint/cpu"]
 # gpui Element 胶水(画布嵌入 Dock 面板;分册二 §4.2)
 gpui = ["dep:gpui"]
+# GPUI 上屏的裸帧构造(gpui 0.2.2 RenderImage::new 只吃 image crate 的
+# animation::Frame;任务豁免项:image 以 optional 引入,无 PNG 编码步骤)
+png = ["dep:image"]
 
 [dependencies]
 lumina-core.workspace = true
@@ -26,6 +29,7 @@ thiserror.workspace = true
 parley.workspace = true
 tracing.workspace = true
 gpui = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 
 [dev-dependencies]
 image.workspace = true
