@@ -1,0 +1,20 @@
+[package]
+name = "lumina-core"
+description = "L0 基础层:视口变换、颜色/几何类型、命令系统(撤销重做)、原子写持久化——零 UI 框架依赖"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 分册六 §2.1:core 只许依赖 kurbo/peniko/serde/slotmap + 工程 crate,出现 gpui/egui/wgpu 依赖视为架构事故
+[dependencies]
+kurbo.workspace = true
+peniko.workspace = true
+slotmap.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

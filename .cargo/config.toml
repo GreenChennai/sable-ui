@@ -1,0 +1,8 @@
+# 本机构建约束:16GB 内存 + 页面文件紧张,rustc 并发 >2 会 OOM(见 AGENTS.md §0)。
+# CI 上该值同样安全(慢一点但稳)。需要全速编译时用 `cargo build -j 8` 显式覆盖。
+[build]
+jobs = 2
+
+# target 目录默认在 workspace 下(D 盘),不要重定向到 C 盘。
+[target.'cfg(all())']
+rustflags = ["--deny", "unsafe_code"]

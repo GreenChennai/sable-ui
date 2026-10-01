@@ -1,0 +1,18 @@
+[package]
+name = "lumina-dock"
+description = "L4 面板系统:Dock 工作台布局(基于 gpui-component DockArea)、工作区预设、布局序列化"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lumina-core.workspace = true
+lumina-widgets.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true

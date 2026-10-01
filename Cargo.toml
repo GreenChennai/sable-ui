@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lumina-core",
+    "crates/lumina-paint",
+    "crates/lumina-canvas",
+    "crates/lumina-widgets",
+    "crates/lumina-dock",
+    "crates/lumina-video",
+    "crates/lumina",
+    "examples/vector_editor",
+    "examples/video_editor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/GreenChennai/lumina-ui"
+authors = ["GreenChennai"]
+
+# 版本策略(2026-10 锁定):kurbo 0.13 / peniko 0.6 / parley 0.11 / vello 0.10 / gpui 0.2.2 / gpui-component 0.7.0
+# 手册对应:docs/02(渲染/画布)、docs/03(框架层)、docs/04(组件)、docs/06(feature 矩阵)
+# 升级走"升级窗口"单独分支(分册六 TD-01),不在日常迭代中顺手升级。
+
+[profile.dev]
+# 磁盘减脂(借鉴 VellumBench):dev 全量调试信息是 target 膨胀主力
+debug = 1
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
+
+[workspace.dependencies]
+# —— 内部 crate(依赖金字塔,严格单向:video/widgets → canvas → paint → core)——
+lumina-core    = { path = "crates/lumina-core" }
+lumina-paint   = { path = "crates/lumina-paint" }
+lumina-canvas  = { path = "crates/lumina-canvas" }
+lumina-widgets = { path = "crates/lumina-widgets" }
+lumina-dock    = { path = "crates/lumina-dock" }
+lumina-video   = { path = "crates/lumina-video" }
+
+# —— L0 基础(零 UI 框架依赖;分册六 §2.1)——
+kurbo   = "0.13.1"
+peniko  = "0.6.1"
+slotmap = "1.1.1"
+serde   = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+# —— L2 渲染(Linebender 栈)——
+vello   = "0.10.0"
+parley  = "0.11.1"
+# CPU 兜底渲染(分册六 §6.4 降级链第 4 级;feature "cpu" 门控)
+vello_cpu = "0.2.0"
+# GPU 抽象(仅 lumina-paint 的 "gpu" feature 引入,版本必须与 vello 对齐)
+wgpu  = "30.0.1"
+image = "0.25"
+
+# —— 平台层(feature 门控,进 core/canvas/paint/video 者格杀勿论)——
+gpui           = "0.2.2"
+gpui-component = "0.7.0"
+
+# —— 工程 ——
+tracing = "0.1"
+
+# —— dev ——
+proptest = "1"

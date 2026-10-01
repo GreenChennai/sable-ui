@@ -1,0 +1,11 @@
+/target
+**/target
+Cargo.lock.orig
+*.lumi.tmp
+.DS_Store
+Thumbs.db
+# 示例工程运行产物
+examples/**/*.lumi
+# 探针/本地草稿
+/probe
+*.log

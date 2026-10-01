@@ -1,0 +1,34 @@
+[package]
+name = "lumina-widgets"
+description = "L5 专用组件层:设计 token、主题、动画引擎、NumberField/色轮/图层面板/属性检查器/时间轴视图"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 组件级 feature(分册六 §2.2/§2.3):小软件按需点菜,不想要的组件不进编译产物
+[features]
+default = ["full"]
+full = ["theme", "anim", "binding", "color", "number-field", "inspector", "layer-panel", "timeline", "curve-editor"]
+theme = []
+anim = []
+binding = []
+color = []
+number-field = []
+inspector = ["number-field", "binding"]
+layer-panel = []
+timeline = []
+curve-editor = []
+node-graph = []
+
+[dependencies]
+lumina-core.workspace = true
+lumina-canvas.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+thiserror.workspace = true
+# widgets 是 GPUI 形态的组件层(分册三/四),gpui 是它的身份而非可选依赖;
+# 真正的"零 gpui"场景请用 lumina-core / lumina-canvas(cpu-render)
+gpui.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "vector_editor"
+description = "迷你 Illustrator 示例:Dock 三段式 + Vello 无限画布 + 选择/钢笔/属性检查器 + 撤销重做"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lumina = { path = "../../crates/lumina" }

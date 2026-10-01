@@ -1,0 +1,32 @@
+[package]
+name = "lumina-canvas"
+description = "L3 画布内核:场景图(slotmap)、无限画布、命中测试、网格、脏矩形、LOD、文本管线"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["cpu"]
+gpu = ["lumina-paint/gpu"]
+cpu = ["lumina-paint/cpu"]
+# gpui Element 胶水(画布嵌入 Dock 面板;分册二 §4.2)
+gpui = ["dep:gpui"]
+
+[dependencies]
+lumina-core.workspace = true
+lumina-paint.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+slotmap.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+parley.workspace = true
+tracing.workspace = true
+gpui = { workspace = true, optional = true }
+
+[dev-dependencies]
+image.workspace = true
+proptest.workspace = true

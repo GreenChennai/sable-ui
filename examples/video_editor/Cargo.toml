@@ -1,0 +1,12 @@
+[package]
+name = "video_editor"
+description = "迷你剪映示例:轨道时间轴 + 播放监视器 + 关键帧曲线(上游:CutForge apps/desktop 的原型)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lumina = { path = "../../crates/lumina" }
