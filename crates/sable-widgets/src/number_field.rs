@@ -20,13 +20,26 @@
 //! 每次 scrub 都走 [`Binding::set`];widgets 层不做 16ms 节流,**连续 set 由
 //! 调用方 set 闭包里的命令 `merge` 语义兜底**(分册三 §2 拖动范式,契约允许
 //! 二选一);值未变化时跳过 set(PartialEq 短路)。
+//!
+//! # A7 微交互(hover/press 三态,分册六 §4.3 #1)
+//!
+//! 底色 = `surface_2` 基色上插值:hover 时经 [`hover_tint`](crate::interact::hover_tint)
+//! 加亮 4%(120ms ease-out,由 [`HoverState`](crate::interact::HoverState) 驱动),
+//! 按下(scrub 拖拽中)直接取 `pressed_tint` 加亮 8%。动画插值需要 hover
+//! 进出事件(`on_hover` 只存在于 Stateful 元素),故**同屏多个实例时必须
+//! 经 [`.element_id`](Self::element_id) 给唯一 id**;未给 id 时退化为 gpui
+//! hover 样式即时切换(无动画,不破缺省构造)。减弱动态(A8)下插值被
+//! [`reduced_motion`](crate::anim::reduced_motion) 短路,进度直通 0/1。
 
 use gpui::{
-    Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Render, ScrollWheelEvent, SharedString, Styled, Window, px,
+    Context, ElementId, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Styled, Window, px,
 };
 
+use crate::anim::lerp_hsla;
 use crate::binding::Binding;
+use crate::interact::{self, HoverState};
 use crate::theme::theme;
 use crate::tokens::{
     FONT_SIZE_BODY, HEIGHT_COMPACT, RadiusTokens, SpacingTokens, control_height, h_flex,
@@ -49,6 +62,11 @@ pub struct NumberField {
     drag: Option<ScrubDrag>,
     /// 文本编辑态(v0.1 简化,见模块 doc)
     editing: bool,
+    /// A7 悬停进度(120ms ease-out;拖拽 = pressed 态,复用 ScrubDrag 判定)
+    hover: HoverState,
+    /// 悬停事件跟踪用的元素 id(`on_hover` 需要 Stateful 元素;同屏多实例
+    /// 必须各给唯一 id,未给则退化为即时 hover 样式)
+    element_id: Option<ElementId>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,7 +85,16 @@ impl NumberField {
             unit: "",
             drag: None,
             editing: false,
+            hover: HoverState::new(),
+            element_id: None,
         }
+    }
+
+    /// 元素 id(悬停动画需要 Stateful 元素;同屏多个数值框各给唯一 id,
+    /// 如 `ElementId::named_usize("inspector-num", ix)`)。
+    pub fn element_id(mut self, id: impl Into<ElementId>) -> Self {
+        self.element_id = Some(id.into());
+        self
     }
 
     /// 取值范围(拖拽/步进钳制)。
@@ -193,16 +220,38 @@ impl NumberField {
             _ => {}
         }
     }
+
+    /// A7 悬停进出:驱动 [`HoverState`] 过渡并请求重绘(动画帧由 render 里
+    /// 的 `request_animation_frame` 续)。
+    fn on_hover_changed(&mut self, hovered: &bool, _window: &mut Window, cx: &mut Context<Self>) {
+        let now = interact::now_ms();
+        if *hovered {
+            self.hover.on_enter(now);
+        } else {
+            self.hover.on_leave(now);
+        }
+        cx.notify();
+    }
 }
 
 impl Render for NumberField {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &theme(cx).colors;
         let value = self.binding.get(cx);
         let dragging = self.drag.is_some();
         let display: SharedString = format!("{}{}", format_value(value), self.unit).into();
 
-        h_flex()
+        // A7 三态底色:静止/悬停 = surface_2 → hover_tint 插值;按下 = pressed_tint
+        let base_bg = colors.surface_2;
+        let now = interact::now_ms();
+        let hover_progress = self.hover.progress_at(now);
+        let bg = if dragging {
+            interact::pressed_tint(base_bg)
+        } else {
+            lerp_hsla(base_bg, interact::hover_tint(base_bg), hover_progress)
+        };
+
+        let root = h_flex()
             .justify_center()
             .h(px(Self::control_height()))
             .min_w_0()
@@ -214,11 +263,7 @@ impl Render for NumberField {
             } else {
                 colors.border_subtle
             })
-            .bg(if dragging {
-                colors.surface_4
-            } else {
-                colors.surface_2
-            })
+            .bg(bg)
             .text_size(px(FONT_SIZE_BODY))
             .text_color(if dragging || self.editing {
                 colors.text_primary
@@ -231,7 +276,23 @@ impl Render for NumberField {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
-            .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_down(cx.listener(Self::on_key_down));
+
+        // 悬停动画在跑就续帧(静止零帧提交,分册六 §4.4)
+        if self.hover.is_running(now) {
+            window.request_animation_frame();
+        }
+        match self.element_id.clone() {
+            // 有 id:on_hover 驱动 120ms 插值(见模块 doc)
+            Some(id) => root
+                .id(id)
+                .on_hover(cx.listener(Self::on_hover_changed))
+                .into_any_element(),
+            // 无 id:退化为 gpui hover 样式即时切换(无动画)
+            None => root
+                .hover(move |style| style.bg(interact::hover_tint(base_bg)))
+                .into_any_element(),
+        }
     }
 }
 

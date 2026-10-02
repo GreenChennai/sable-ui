@@ -28,6 +28,8 @@ backend-dx12 = ["sable-paint/backend-dx12"]
 backend-auto = ["sable-paint/backend-auto"]
 # —— CPU 兜底(无 GPU 环境/服务器渲染)——
 cpu-render = ["sable-paint/cpu"]
+# —— 窗口系统材质(E3 Mica/Acrylic,Windows 22621+;旧系统 Err 静默降级)——
+window-backdrop = ["sable-dock/window-backdrop"]
 
 [dependencies]
 sable-paint.workspace = true

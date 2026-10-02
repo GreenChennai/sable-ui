@@ -17,6 +17,7 @@
 //! |---|---|
 //! | [`workspace`] | `WorkspacePresets` 三段式预设、`SablePanel` 面板包装、save/load |
 //! | [`error`] | `DockError` / `DockResult` 统一错误 |
+//! | [`window_effects`] | E3 窗口系统材质(Mica/Acrylic,需 `window-backdrop` feature)|
 //!
 //! # gpui / gpui-component 再导出
 //!
@@ -37,9 +38,16 @@
 //! - `DockArea` 自实现 `Render`,实体可直接作为元素上屏;外观由
 //!   `ActiveTheme` 内置渲染(0.5.1 无 renderer seam)。
 
-#![forbid(unsafe_code)]
+// deny 而非 forbid:E3 window_effects 调 windows-0.62 的 DwmSetWindowAttribute
+// ——它是 `pub unsafe fn`(registry 源码核实,任务书"safe 绑定"假设不成立),
+// unsafe 收口被精确 allow 在该文件唯一的 FFI 调用点内;workspace 纪律
+// (AGENTS.md §3:#![deny(unsafe_code)])口径不变,其余位置出现 unsafe 仍会
+// 被拒。
+#![deny(unsafe_code)]
 
 pub mod error;
+#[cfg(feature = "window-backdrop")]
+pub mod window_effects;
 pub mod workspace;
 
 pub use error::{DockError, DockResult};

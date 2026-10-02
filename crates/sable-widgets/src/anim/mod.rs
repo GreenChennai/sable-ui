@@ -10,7 +10,8 @@
 //!
 //! 各子模块:A1 编排 [`timeline`]、A2 弹簧初速度 [`spring`]、A3 手势 [`gesture`]、
 //! A5 滚动物理 [`scroll`]、A6 颜色插值 [`color`]、A8 减弱动态(本模块)、
-//! A9 调度 [`scheduler`]、A10 可插值类型 [`lerp`]、A12 黄金值快照(各模块测试)。
+//! A9 调度 [`scheduler`]、A10 可插值类型 [`lerp`]、A11 关键帧桥 [`bridge`]
+//! (需 `timeline` feature)、A12 黄金值快照(各模块测试)。
 //!
 //! # 纯逻辑,不引 cx(分册六 §4.4 性能军规)
 //!
@@ -39,6 +40,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "timeline")]
+pub mod bridge;
 pub mod color;
 pub mod easing;
 pub mod gesture;

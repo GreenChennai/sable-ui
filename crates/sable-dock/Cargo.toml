@@ -8,6 +8,21 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# E3 窗口系统材质(Mica/Acrylic/Tabbed):开则编译 window_effects(DWM 背板);
+# 关则模块整体缺席,窗口保持纯色。非 Windows 平台模块为 Err stub。
+window-backdrop = []
+
+[target.'cfg(windows)'.dependencies]
+# E3:feature 名已对 registry 里 windows-0.62.2 的实际 feature 列表核实
+# (Win32_Graphics_Dwm / Win32_UI_WindowsAndMessaging 均存在);后者当前仅
+# 为 WM_THEMECHANGED 重应用(应用层职责,v0.2 不监听)预留常量域
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dependencies]
 sable-foundation.workspace = true
 sable-widgets.workspace = true

@@ -11,6 +11,8 @@
 //! |---|---|
 //! | [`tokens`] / [`theme`] | `theme` |
 //! | [`anim`] | `anim` |
+//! | [`anim::bridge`] | `anim` + `timeline`(A11 关键帧桥) |
+//! | [`flip`] / [`interact`] | `anim`(A4 FLIP / A7 微交互接线) |
 //! | [`binding`] | `binding` |
 //! | [`property_row`] | `inspector` + `theme` |
 //! | [`number_field`] | `number-field` + `theme` |
@@ -44,10 +46,14 @@ pub mod binding;
 pub mod color;
 #[cfg(all(feature = "curve-editor", feature = "theme"))]
 pub mod curve_editor;
+#[cfg(feature = "anim")]
+pub mod flip;
 #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
 pub mod gradient_editor;
 #[cfg(all(feature = "inspector", feature = "color", feature = "theme"))]
 pub mod inspector;
+#[cfg(feature = "anim")]
+pub mod interact;
 #[cfg(all(feature = "layer-panel", feature = "theme"))]
 pub mod layer_panel;
 #[cfg(all(feature = "number-field", feature = "theme"))]
@@ -74,10 +80,17 @@ pub mod prelude {
     pub use crate::color::{ColorWell, ColorWheel};
     #[cfg(all(feature = "curve-editor", feature = "theme"))]
     pub use crate::curve_editor::CurvePreview;
+    #[cfg(feature = "anim")]
+    pub use crate::flip::FlipTracker;
     #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
     pub use crate::gradient_editor::GradientEditor;
     #[cfg(all(feature = "inspector", feature = "color", feature = "theme"))]
     pub use crate::inspector::{InspectorPanel, RowSpec, SectionSpec};
+    #[cfg(feature = "anim")]
+    pub use crate::interact::{
+        DUR_INTERACT_MS, DUR_OVERLAY_MS, DUR_PANEL_MS, DUR_PULSE_MS, DUR_VIEW_JUMP_MS, HoverState,
+        PulseState, hover_tint, pressed_tint,
+    };
     #[cfg(all(feature = "layer-panel", feature = "theme"))]
     pub use crate::layer_panel::LayerPanel;
     #[cfg(all(feature = "number-field", feature = "theme"))]

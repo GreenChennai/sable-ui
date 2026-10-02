@@ -5558,6 +5558,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -5610,6 +5611,7 @@ dependencies = [
  "sable-canvas",
  "sable-foundation",
  "sable-video",
+ "slotmap",
  "thiserror 2.0.21",
 ]
 

@@ -115,6 +115,8 @@ impl RenderOnce for InspectorPanel {
             .p(px(SpacingTokens::MD))
             .gap(px(SpacingTokens::MD))
             .bg(colors.surface_1);
+        // A7:NumberField 的悬停动画需要 Stateful 元素 id,同屏多实例各给唯一值
+        let mut field_ix = 0usize;
 
         for spec in self.sections {
             let mut rows = v_flex().gap(px(SpacingTokens::XS));
@@ -132,7 +134,12 @@ impl RenderOnce for InspectorPanel {
                                 .range(range.0, range.1)
                                 .step(step)
                                 .unit(unit)
+                                .element_id(gpui::ElementId::named_usize(
+                                    "inspector-number",
+                                    field_ix,
+                                ))
                         });
+                        field_ix += 1;
                         rows = rows.child(PropertyRow::new(label).control(field));
                     }
                     RowSpec::Color { label, binding } => {

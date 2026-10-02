@@ -16,9 +16,11 @@ theme = []
 anim = []
 binding = []
 color = []
-number-field = []
+# number-field/layer-panel 接入 A7/A4 微交互(HoverState/FlipTracker 在 anim 引擎上),
+# 故组件 feature 依赖 anim(与 inspector 依赖 number-field 同款特性依赖链)
+number-field = ["anim"]
 inspector = ["number-field", "binding"]
-layer-panel = []
+layer-panel = ["anim", "dep:slotmap"]
 # timeline/curve-editor 消费 sable-video 的数据模型(2026-10 决策:允许的金字塔扩展边
 # widgets→video,无环;docs/06 §2.1 图待同步)。基础编辑不需要它们。
 timeline = ["dep:sable-video"]
@@ -29,6 +31,9 @@ node-graph = []
 sable-foundation.workspace = true
 sable-canvas.workspace = true
 sable-video = { workspace = true, optional = true }
+# layer-panel 专用:NodeId(slotmap key)→ u64 作为 FlipTracker 的元素键(可选,
+# 随 layer-panel feature 进出,不加重基础编辑场景的依赖面)
+slotmap = { workspace = true, optional = true }
 kurbo.workspace = true
 peniko.workspace = true
 thiserror.workspace = true
