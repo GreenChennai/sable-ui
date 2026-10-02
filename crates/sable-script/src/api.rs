@@ -14,6 +14,11 @@
 //! - 不注册任何文件/网络/进程算子;rhai 默认标准包本身零 IO。
 //! - 算子闭包不 panic:一切可失败路径都返回 `Result`(rhai 转成脚本
 //!   运行时错误);互斥锁毒化直接接管(`PoisonError::into_inner`)。
+//! - 资源限制:构造即设操作数上限 [`DEFAULT_MAX_OPERATIONS`](10^6)——
+//!   `while true {}` 这类失控脚本在该步数内被确定性拦下,不挂死宿主线程;
+//!   表达式深度/调用层级沿用 rhai 出厂值(本就有界,递归不会打穿真实栈)。
+//! - 坐标 coerce 后校验有限性:NaN/±inf 在场景写入口拒收,不毒化下游
+//!   bbox/命中测试/SVG 导出。
 //! - 参数一律收 `Dynamic` 再手工 coerce:rhai 对原生函数参数**不做**
 //!   INT→FLOAT 自动转换(1.26.1 源码 `src/func/call.rs` 的通配符分发只
 //!   匹配 `Dynamic` 参数),整数字面量坐标脚本占多数,收 `Dynamic` 才能同时
@@ -50,10 +55,20 @@ fn coerce_f64(v: Dynamic, what: &str) -> ScriptResult<f64> {
 }
 
 /// 四个坐标(接受整数/浮点任意混合)。
+///
+/// coerce 后校验有限性:NaN/±inf 一旦写进 `BezPath` 会静默毒化下游
+/// bbox/命中测试/SVG 导出,必须在场景写入口拒收(V4.0 T4.2)。
 fn coerce_f64x4(v: [Dynamic; 4], what: &str) -> ScriptResult<[f64; 4]> {
     let mut out = [0.0f64; 4];
     for (i, d) in v.into_iter().enumerate() {
         out[i] = coerce_f64(d, what)?;
+        if !out[i].is_finite() {
+            return Err(ScriptError::Eval(format!(
+                "{what} 必须是有限数值,第 {} 个坐标实际是 {}",
+                i + 1,
+                out[i]
+            )));
+        }
     }
     Ok(out)
 }
@@ -75,16 +90,16 @@ fn coerce_rgba8(v: [Dynamic; 4]) -> ScriptResult<Rgba8> {
 }
 
 /// 节点 id:脚本侧是 `i64`(由算子返回值给出),宿主侧经 slotmap ffi 表示
-/// 还原为 [`NodeId`]。负数直接拒绝(合法 id 的 ffi 表示最高位不会为负)。
-fn coerce_id(v: Dynamic, op: &str) -> ScriptResult<NodeId> {
+/// 还原为 [`NodeId`]。
+///
+/// 往返**位级无损**(V4.0 T4.2):脚本侧形态就是 ffi 位型的两补码重释
+/// (见 [`script_id`]),任何 `i64` 位型都还原回同一 key——高位为 1 的 key
+/// 在脚本侧呈负数,是合法形态而非垃圾值,不得拒绝;不存在的 key 由后续
+/// `scene.node` 查询兜底(返回"节点不存在")。
+pub(crate) fn coerce_id(v: Dynamic, op: &str) -> ScriptResult<NodeId> {
     let raw = v.as_int().map_err(|_| {
         ScriptError::Cast(format!("{op}: 节点 id 需要整数,实际是 {}", v.type_name()))
     })?;
-    if raw < 0 {
-        return Err(ScriptError::Eval(format!(
-            "{op}: 节点 id 不能为负数({raw})"
-        )));
-    }
     Ok(NodeId::from(KeyData::from_ffi(raw as u64)))
 }
 
@@ -94,9 +109,12 @@ fn coerce_name(v: Dynamic, op: &str) -> ScriptResult<String> {
         .map_err(|_| ScriptError::Cast(format!("{op}: 名称需要字符串,实际是 {tn}")))
 }
 
-/// 节点 id 的稳定显示形态(slotmap key 的 ffi 表示)。
-fn id_str(id: NodeId) -> u64 {
-    id.data().as_ffi()
+/// 节点 id 的脚本侧形态:slotmap key 的 ffi 位型经两补码重释为 `i64`
+/// (`u64 as i64`,位级无损——等价 `i64::from_bits` 语义;整数类型没有非法
+/// 位型,`as` 重释即无损编码)。错误消息也用它,保证脚本作者看到的 id 与
+/// 自己持有的数值一致。
+pub(crate) fn script_id(id: NodeId) -> i64 {
+    id.data().as_ffi() as i64
 }
 
 /// 把宿主侧错误转成 rhai 脚本运行时错误(无源码定位,定位由 rhai 调用栈补充)。
@@ -105,6 +123,24 @@ fn script_err(msg: impl Into<String>) -> Box<EvalAltResult> {
         Dynamic::from(msg.into()),
         Position::NONE,
     ))
+}
+
+/// 把 rhai 求值错误包成中文 [`ScriptError`]。
+///
+/// 资源超限单独识别:`ErrorTooManyOperations`(`set_max_operations` 触发,
+/// 死循环的确定性出口)映射到 [`ScriptError::Limit`],调用方可程序化区分
+/// "失控脚本被拦下";上限数值取自引擎当前实际配置(`engine.max_operations()`)。
+/// 其余错误(语法错/未定义变量/运行时错)保留 rhai 原文(含行列定位)进
+/// [`ScriptError::Eval`],由变体文案统一带"脚本执行失败"前缀——rhai 自身
+/// 错误消息是英文,中文包装在这里收口。
+fn wrap_eval_error(err: Box<EvalAltResult>, max_operations: u64) -> ScriptError {
+    if matches!(*err, EvalAltResult::ErrorTooManyOperations(_)) {
+        ScriptError::Limit(format!(
+            "已达操作数上限 {max_operations} 步(常见于死循环),脚本被中止;rhai 原始错误: {err}"
+        ))
+    } else {
+        ScriptError::Eval(err.to_string())
+    }
 }
 
 /// 在出借槽上执行一个算子。eval 之外被调用(槽为空)返回运行时错误。
@@ -116,7 +152,8 @@ fn with_state<T>(
     let Some(state) = guard.as_mut() else {
         return Err(script_err("宿主状态缺失:算子只应在脚本执行期间被调用"));
     };
-    f(state).map_err(|e| script_err(e.to_string()))
+    // 只取消息正文:前缀由 run 层的 ScriptError::Eval 文案统一加,避免重复
+    f(state).map_err(|e| script_err(e.message()))
 }
 
 /// 加锁并接管毒化:算子闭包不 panic,锁内状态天然一致;真被外部 panic 毒死
@@ -141,7 +178,7 @@ impl HostState {
         {
             return Err(ScriptError::Eval(format!(
                 "{op}: 父节点 {} 不存在",
-                id_str(p)
+                script_id(p)
             )));
         }
         self.exec(AddNode::new(parent, None, node))?;
@@ -149,7 +186,7 @@ impl HostState {
             Some(p) => self.scene.node(p).and_then(|n| n.children.last()).copied(),
             None => self.scene.roots.last().copied(),
         };
-        id.map(|id| id_str(id) as i64).ok_or_else(|| {
+        id.map(script_id).ok_or_else(|| {
             ScriptError::Eval(format!("{op}: 添加成功但未能取回新节点 id(场景结构异常)"))
         })
     }
@@ -201,10 +238,10 @@ impl HostState {
         match self.scene.node(id) {
             None => Err(ScriptError::Eval(format!(
                 "set_fill: 节点 {} 不存在",
-                id_str(id)
+                script_id(id)
             ))),
             Some(node) if !matches!(node.content, NodeContent::Path(_)) => Err(ScriptError::Eval(
-                format!("set_fill: 节点 {} 不是路径节点,没有填充", id_str(id)),
+                format!("set_fill: 节点 {} 不是路径节点,没有填充", script_id(id)),
             )),
             Some(_) => {
                 // 校验先行,失败不产生空撤销步
@@ -225,7 +262,7 @@ impl HostState {
         let Some(node) = self.scene.node(id) else {
             return Err(ScriptError::Eval(format!(
                 "set_name: 节点 {} 不存在",
-                id_str(id)
+                script_id(id)
             )));
         };
         let old = node.name.clone();
@@ -239,7 +276,7 @@ impl HostState {
         if self.scene.node(id).is_none() {
             return Err(ScriptError::Eval(format!(
                 "remove: 节点 {} 不存在",
-                id_str(id)
+                script_id(id)
             )));
         }
         self.exec(RemoveNode::new(id))
@@ -272,9 +309,14 @@ impl HostState {
         self.scene
             .node(id)
             .map(|n| n.name.clone())
-            .ok_or_else(|| ScriptError::Eval(format!("node_name: 节点 {} 不存在", id_str(id))))
+            .ok_or_else(|| ScriptError::Eval(format!("node_name: 节点 {} 不存在", script_id(id))))
     }
 }
+
+/// 构造即生效的默认操作数上限(10^6):空转死循环在该步数内被确定性拦下
+/// (实测毫秒级),正常脚本(千级算子 + 循环)远用不完。0 = 不限,仅建议
+/// 经 [`ScriptHost::engine_mut`] 显式放开时使用。
+pub const DEFAULT_MAX_OPERATIONS: u64 = 1_000_000;
 
 /// 脚本宿主:Rhai 沙盒 + 场景/撤销栈的所有者。
 ///
@@ -295,8 +337,14 @@ impl Default for ScriptHost {
 
 impl ScriptHost {
     /// 构造宿主并一次性注册全部场景算子(注册的闭包只捕获出借槽)。
+    ///
+    /// 沙盒资源限制在此一并落定:操作数上限 [`DEFAULT_MAX_OPERATIONS`]——
+    /// `while true {}` 不再挂死宿主线程,超限报中文
+    /// [`ScriptError::Limit`](V4.0 T4.1)。表达式深度/调用层级沿用 rhai
+    /// 出厂值(递归有界,打不穿真实栈)。
     pub fn new() -> Self {
         let mut engine = Engine::new();
+        engine.set_max_operations(DEFAULT_MAX_OPERATIONS);
         let slot: SharedState = Arc::new(Mutex::new(None));
         register_operators(&mut engine, &slot);
         ScriptHost {
@@ -340,7 +388,7 @@ impl ScriptHost {
                 self.scene = Scene::new();
             }
         }
-        result.map_err(|e| ScriptError::Eval(e.to_string()))
+        result.map_err(|e| wrap_eval_error(e, self.engine.max_operations()))
     }
 
     /// 只读访问场景。
@@ -360,9 +408,10 @@ impl ScriptHost {
 
     /// 调整沙盒资源限制(执行步数/递归深度/表达式深度等)。
     ///
-    /// 默认沿用 rhai 出厂限制(表达式深度与调用层级有界;操作数不限)。
-    /// 需要更严的沙盒可在此收紧,例如:
-    /// `host.engine_mut().set_max_operations(10_000)`(0 = 不限)。
+    /// 默认限制在构造时落定:操作数 [`DEFAULT_MAX_OPERATIONS`](10^6),
+    /// 表达式深度与调用层级沿用 rhai 出厂值(有界)。重脚本可在此调宽或
+    /// 收紧,例如 `host.engine_mut().set_max_operations(10_000)`
+    /// (0 = 不限;放开上限意味着死循环会挂死宿主线程,自担风险)。
     ///
     /// 注意:不要经此注册文件/网络类包,那会击穿沙盒承诺。
     pub fn engine_mut(&mut self) -> &mut Engine {

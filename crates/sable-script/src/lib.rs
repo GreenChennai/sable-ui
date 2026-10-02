@@ -18,10 +18,12 @@
 //!   网络能力的包(如官方插件 crate 的 fs/http 包),否则沙盒承诺失效;
 //! - `print`/`debug` 仅写 stdout(可用 [`ScriptHost::engine_mut`] 经
 //!   `on_print`/`on_debug` 重定向到宿主日志);
-//! - 资源限制默认沿用 rhai 出厂值(表达式深度/调用层级有界,操作数不限),
-//!   需要更严的沙盒经 [`ScriptHost::engine_mut`] 的
-//!   `set_max_operations`/`set_max_call_levels`/`set_max_expr_depths`
-//!   收紧(0 = 不限);
+//! - 资源限制:构造即设操作数上限 10^6(`while true {}` 等失控脚本确定性
+//!   报 [`ScriptError::Limit`],不挂死宿主线程;V4.0 T4.1);表达式深度/
+//!   调用层级沿用 rhai 出厂值,本就有界。需要更严/更宽经
+//!   [`ScriptHost::engine_mut`] 的 `set_max_operations`/
+//!   `set_max_call_levels`/`set_max_expr_depths` 调整(0 = 不限);
+//! - 坐标类参数 coerce 后校验有限性,NaN/±inf 拒收不写入 Scene;
 //! - 算子闭包不注册任何 panic 路径:可失败一律返回 `Result`,rhai 转成
 //!   脚本运行时错误。
 //!
@@ -40,7 +42,8 @@
 //! ```
 //!
 //! 数值参数接受整数/浮点任意混合(内部统一转 f64);颜色通道钳到 0..=255;
-//! 节点 id 以 `i64` 形态进出脚本(slotmap key 的 ffi 表示)。撤销删除后
+//! 节点 id 以 `i64` 形态进出脚本——slotmap key 的 ffi 位型做两补码重释,
+//! **位级无损往返**(高位为 1 的 key 在脚本侧呈负数,合法)。撤销删除后
 //! 恢复的节点换发新 id,脚本持有的旧 id 失效——与 UI 撤销同一既定语义
 //! (sable-foundation command.rs)。
 //!

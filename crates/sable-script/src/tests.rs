@@ -1,11 +1,14 @@
-//! T4 验收测试(迭代计划 09:脚本 ≥ 6 个):
+//! T4 验收测试(迭代计划 09:脚本 ≥ 6 个;V4.0 T4 增补 ⑧-⑪):
 //! 建 3 矩形改色并全撤销、组挂载(重载)、非法脚本零影响、10 矩形循环端到端、
-//! undo/redo 算子往返、remove/node_count 一致性 + into_parts。
+//! undo/redo 算子往返、remove/node_count 一致性 + into_parts、
+//! 出借槽协议;V4.0:死循环操作数上限、非有限坐标拒收、id 位级无损往返、
+//! 中文错误消息关键字。
 
+use rhai::Dynamic;
 use sable_foundation::prelude::{NodeId, Paint, Scene};
 use slotmap::KeyData;
 
-use crate::api::ScriptHost;
+use crate::api::{ScriptHost, coerce_id, script_id};
 use crate::error::ScriptError;
 
 /// 脚本侧 i64 id → 宿主侧 NodeId(与 api.rs 同一 ffi 表示往返)。
@@ -319,4 +322,140 @@ fn operators_reusable_across_runs_and_slot_protocol_holds() {
         );
     }
     assert_eq!(host.history().undo_len(), 3);
+}
+
+/// ⑧ `while true {}`:在默认操作数上限内确定性报 [`ScriptError::Limit`],
+/// 不挂死宿主线程(V4.0 T4.1 验收:测试快速返回,场景/撤销栈零影响)。
+#[test]
+fn infinite_loop_fails_deterministically_at_operation_limit() {
+    let mut host = ScriptHost::new();
+    let start = std::time::Instant::now();
+    let result = host.run("while true {}");
+    let elapsed = start.elapsed();
+
+    match result {
+        Err(err @ ScriptError::Limit(_)) => {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("操作数上限"),
+                "超限消息应含上限语义关键字:{msg}"
+            );
+        }
+        other => panic!("死循环应报 ScriptError::Limit,实际 {other:?}"),
+    }
+    assert!(
+        elapsed.as_secs() < 5,
+        "死循环应在默认上限内被确定性拦下而非挂死(实际耗时 {elapsed:?})"
+    );
+    assert_eq!(host.scene().len(), 0, "超限脚本对场景零影响");
+    assert_eq!(host.history().undo_len(), 0, "超限脚本不产生撤销步");
+}
+
+/// ⑨ 非有限坐标(NaN/±inf,任一坐标位)拒收:中文错误、场景与撤销栈零
+/// 影响(V4.0 T4.2);有限的大坐标仍被接受——只拒非有限,不收紧合法范围。
+#[test]
+fn add_rect_rejects_non_finite_coordinates() {
+    let mut host = ScriptHost::new();
+    let cases: [(&str, &str); 5] = [
+        ("x0 是 NaN", "0.0 / 0.0, 0, 10, 10"),
+        ("x0 是 +inf", "1.0 / 0.0, 0, 10, 10"),
+        ("y0 是 -inf", "0, -1.0 / 0.0, 10, 10"),
+        ("x1 是 NaN", "0, 0, 0.0 / 0.0, 10"),
+        ("y1 是 +inf", "0, 0, 10, 1.0 / 0.0"),
+    ];
+    for (label, coords) in cases {
+        let script = format!("add_rect({coords}, 0, 0, 0, 255)");
+        match host.run(&script) {
+            Err(ScriptError::Eval(msg)) => assert!(
+                msg.contains("有限数值"),
+                "{label}:应报中文有限数值错误,实际:{msg}"
+            ),
+            other => panic!("{label}:非有限坐标应被拒收,实际 {other:?}"),
+        }
+    }
+    assert_eq!(host.scene().len(), 0, "非有限坐标一律不得写入场景");
+    assert_eq!(host.history().undo_len(), 0, "拒收不产生撤销步");
+
+    let _ = host
+        .run("add_rect(-1.0e300, 0, 1.0e300, 10, 0, 0, 0, 255)")
+        .expect("有限大坐标应被接受");
+    assert_eq!(host.scene().len(), 1, "有限值不误伤");
+}
+
+/// ⑩ id 位级无损往返(V4.0 T4.2):极端位型(高位为 1,脚本侧呈负数)经
+/// `script_id`/`coerce_id` 编解码不变;真实场景 mint 的 key 端到端可用;
+/// 解码后不存在的垃圾 id 仍被"节点不存在"查询兜底,且消息显示脚本侧数值。
+#[test]
+fn id_round_trip_is_lossless_for_extreme_bit_patterns() {
+    // 编解码函数级:任意 u64 位型 → 脚本侧 i64 → 解码回同一 key
+    for bits in [0u64, 1, i64::MAX as u64, 0x8000_0000_0000_0000, u64::MAX] {
+        let id = NodeId::from(KeyData::from_ffi(bits));
+        let raw = script_id(id);
+        let decoded = coerce_id(Dynamic::from(raw), "test").expect("任何 i64 位型都是合法编码");
+        assert_eq!(decoded, id, "位型 {bits:#016x} 经脚本侧 {raw} 往返应无损");
+    }
+
+    // 端到端:真实场景 key 经脚本往返(算子接受、消息里同一数值)
+    let mut host = ScriptHost::new();
+    let _ = host
+        .run(r#"add_group("组"); add_rect(0, 0, 1, 1, 0, 0, 0, 255)"#)
+        .expect("建场景");
+    let keys: Vec<NodeId> = host.scene().nodes.iter().map(|(id, _)| id).collect();
+    assert_eq!(keys.len(), 2);
+    for id in keys {
+        let raw = script_id(id);
+        assert!(
+            host.run(&format!(r#"set_name({raw}, "x")"#)).is_ok(),
+            "真实 key 的脚本侧形态 {raw} 应被算子接受"
+        );
+        assert_eq!(
+            coerce_id(Dynamic::from(raw), "test").expect("解码"),
+            id,
+            "真实 key 往返无损"
+        );
+    }
+
+    // 垃圾 id(解码出的 key 不存在)由查询兜底拒绝,不 panic
+    match host.run(r#"set_name(-1, "幽灵")"#) {
+        Err(ScriptError::Eval(msg)) => {
+            assert!(msg.contains("不存在"), "垃圾 id 应报节点不存在:{msg}");
+            assert!(msg.contains("-1"), "消息应显示脚本侧数值形态:{msg}");
+        }
+        other => panic!("垃圾 id 应被拒收,实际 {other:?}"),
+    }
+}
+
+/// ⑪ 中文错误消息断言(V4.0 T4.3):语法错/未定义变量带"脚本执行失败"
+/// 中文前缀(rhai 英文原文被包装而非穿透);操作数超限含上限语义关键字,
+/// 且 rhai 原始错误文本保留在附注里。
+#[test]
+fn error_messages_carry_required_chinese_keywords() {
+    let mut host = ScriptHost::new();
+
+    let syntax = host.run("let x = ;").expect_err("语法错应失败");
+    assert!(
+        syntax.to_string().contains("脚本执行失败"),
+        "语法错应带中文前缀:{syntax}"
+    );
+
+    let undef = host
+        .run("let y = no_such_var + 1;")
+        .expect_err("未定义变量应失败");
+    assert!(
+        undef.to_string().contains("脚本执行失败"),
+        "未定义变量应带中文前缀:{undef}"
+    );
+
+    let limit = host.run("while true {}").expect_err("死循环应失败");
+    assert!(
+        limit.to_string().contains("操作数上限"),
+        "超限消息应含上限语义关键字:{limit}"
+    );
+    match limit {
+        ScriptError::Limit(note) => assert!(
+            note.contains("Too many operations"),
+            "rhai 原始错误文本应保留在附注里:{note}"
+        ),
+        other => panic!("死循环应报 Limit 变体,实际 {other:?}"),
+    }
 }
