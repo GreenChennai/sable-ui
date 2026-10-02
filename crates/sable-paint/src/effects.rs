@@ -1,4 +1,5 @@
-//! 效果原语:阴影合成器 + 静态阴影缓存(E4)、效果降级矩阵(E12)。
+//! 效果原语:阴影合成器 + 静态阴影缓存(E4)、节点效果链求值(E6/E7,S4)、
+//! 效果降级矩阵(E12)。
 //!
 //! # E4 阴影(迭代计划 08)
 //!
@@ -10,6 +11,26 @@
 //! 命中零成本;驱逐为**插入序 FIFO**(容量上限,适合"同屏阴影种类有限"
 //! 的 UI 场景)。真机集成(S3)再把光栅化窗口裁到形状 bbox ×(blur+偏移)
 //! 邻域,本原语先提供全画布语义正确的实现。
+//!
+//! # 节点效果链(迭代计划 08 S4 #4.2,分册七/Illustrator 外观面板)
+//!
+//! 数据模型(`EffectEntry`/`EffectSpec`)在 sable-foundation `effects`;本模块
+//! 负责**像素求值**:
+//!
+//! - [`EffectSurface`] 把节点单独光栅化到透明离屏(cpu feature);
+//! - [`apply_effects_rgba`] 对离屏结果逐条应用启用的效果(顺序 = 栈序),
+//!   必要时外扩缓冲容纳模糊/投影的支撑域,返回相对原点的外扩偏移;
+//! - 合成回画布走 [`crate::sink::PaintSink::draw_rgba`](CPU 真实现 = vello_cpu
+//!   image paint;GPU = S3 真机管线)。
+//!
+//! E6 颜色矩阵的对齐方式:`apply_color_matrix` 在**直通 alpha 域**逐像素
+//! 求 RGB(先 un-premultiply → 矩阵 → clamp → 重新预乘),与 SVG
+//! `feColorMatrix` 的非预乘语义一致;直接在预乘域做矩阵会让半透明像素
+//! 发灰(预乘值非线性),故显式往返。alpha 行(第 4 行)参与求值,默认
+//! 预设保持恒等。
+//!
+//! E11 联动:参数拖动 → `SetEffectSpec` merge = 一步撤销(接线说明见
+//! sable-foundation `effects` 模块 doc)。
 //!
 //! # E12 降级矩阵
 //!
@@ -23,6 +44,11 @@
 //! | blend(混合模式) | 全 16 种 | 全 16 种(vello_cpu 原生混合层,无损失) | 关:一律 Normal 合成 |
 //! | grain(蓝噪点) | 开 | 关(防色带交给渐变插值) | 关 |
 //!
+//! 效果链侧的约定:`caps.blur == false`(Off 档)→ [`apply_effects_rgba`]
+//! 原样返回,渲染调度层也不进离屏分支(效果整体跳过,绝不丢内容)。
+//! blur 半径约定:box 半径 = 参数半径的一半(与 [`render_shadow_rgba`] 同款),
+//! Reduced 档的"质量减半"由此天然成立,不再单独减半。
+//!
 //! env 解析抽成纯函数 [`detect_with`] 供测试;[`detect`] 是薄包装
 //! (读 env,不做别的,不测)。零 unsafe:env 读取用 `std::env::var`。
 
@@ -32,6 +58,10 @@ use std::hash::Hasher;
 use std::sync::Arc;
 
 use kurbo::{Affine, BezPath, PathEl, Point};
+use sable_foundation::effects::{EffectEntry, EffectSpec};
+use sable_foundation::scene::Rgba8;
+
+use crate::sink::PaintSink;
 
 /// 效果等级 env 变量名(分册六 §6.5 命名纪律:`SABLE_` 前缀)。
 pub const EFFECTS_LEVEL_ENV: &str = "SABLE_EFFECTS_LEVEL";
@@ -293,9 +323,9 @@ pub fn render_shadow_rgba(
 }
 
 /// 单轴 box blur(边缘钳位:越界采样取边界值,避免画布边缘发暗)。
-/// `horizontal=true` 沿 x,否则沿 y。朴素 O(n·r):阴影缓冲小 + 结果进
-/// [`ShadowCache`] 静止零成本,清晰性优先(窗口滑动优化留 S3 真机集成)。
-#[cfg(feature = "cpu")]
+/// `horizontal=true` 沿 x,否则沿 y。朴素 O(n·r):阴影/效果离屏缓冲小 +
+/// 结果可进 [`ShadowCache`] 静止零成本,清晰性优先(窗口滑动优化留 S3
+/// 真机集成)。纯 f32 平面运算,不依赖 vello_cpu,阴影与节点效果链共用。
 fn box_blur_axis(
     src: &[f32],
     dst: &mut [f32],
@@ -329,6 +359,381 @@ fn box_blur_axis(
                 dst[y * width + x] = sum / (hi - lo + 1) as f32;
             }
         }
+    }
+}
+
+// —— E6/E7:节点效果链像素求值(迭代计划 08 S4 #4.2)——
+
+/// box blur 半径约定:参数半径的一半,至少 1(`None` = 零模糊,可跳过)。
+/// 与 [`render_shadow_rgba`] 的 `blur_px` 同一语义。
+fn box_radius(param: f64) -> Option<usize> {
+    if param <= 0.0 {
+        None
+    } else {
+        Some(((param * 0.5).round() as usize).max(1))
+    }
+}
+
+/// 颜色矩阵(E6)逐像素求值:**直通 alpha 域**——先 un-premultiply,矩阵
+/// 作用于 (R,G,B,A) 四通道加第 5 列偏移,clamp 后重新预乘。与 SVG
+/// `feColorMatrix`(非预乘语义)对齐;预乘域直接做矩阵会让半透明像素
+/// 发灰,故显式往返。alpha = 0 的像素保持全零。
+///
+/// 4×5 矩阵布局:`matrix[输出行][输入列]` + `offsets[输出行]`;
+/// `out = Σ matrix[row][col]·in[col] + offsets[row]`,通道值域 0~255
+/// (矩阵系数以 255 为满量程,同 SVG 规范)。
+pub fn apply_color_matrix(rgba: &mut [u8], matrix: [[f32; 4]; 4], offsets: [f32; 4]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let alpha = f32::from(px[3]);
+        let src = if alpha > 0.0 {
+            // un-premultiply:f32 域做除法,单次舍入在 ±1 LSB 内
+            [
+                f32::from(px[0]) * 255.0 / alpha,
+                f32::from(px[1]) * 255.0 / alpha,
+                f32::from(px[2]) * 255.0 / alpha,
+                alpha,
+            ]
+        } else {
+            [0.0; 4]
+        };
+        let mut out = [0.0f32; 4];
+        for (row, o) in out.iter_mut().enumerate() {
+            let m = &matrix[row];
+            *o = m[0] * src[0] + m[1] * src[1] + m[2] * src[2] + m[3] * src[3] + offsets[row];
+        }
+        let out_a = out[3].round().clamp(0.0, 255.0);
+        px[3] = out_a as u8;
+        if out_a <= 0.0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+        } else {
+            // 重新预乘:premul = straight · alpha / 255(与 un-premultiply 对称)
+            #[allow(clippy::needless_range_loop)]
+            for ch in 0..3 {
+                let straight = out[ch].round().clamp(0.0, 255.0);
+                px[ch] = (straight * out_a / 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+/// 效果链的像素域外扩需求(返回 `[左, 上, 右, 下]`),`scale` = 世界→像素
+/// 换算(zoom)。顺序累加——效果逐个作用、支撑域单调扩张,求和是保守
+/// 上界;模糊支撑域 = 3×box 半径(box 半径 = 参数半径/2,见 [`box_radius`])。
+/// 离屏 [`EffectSurface`] 用它定尺寸,`apply_effects_rgba` 内部再按需扩。
+pub fn effect_margins_px(effects: &[EffectEntry], scale: f64) -> [f64; 4] {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let mut m = [0.0f64; 4]; // [左, 上, 右, 下]
+    for entry in effects {
+        if !entry.is_active() {
+            continue;
+        }
+        match entry.spec {
+            EffectSpec::GaussianBlur { radius } => {
+                let s = blur_spread(radius, scale);
+                m = [m[0] + s, m[1] + s, m[2] + s, m[3] + s];
+            }
+            EffectSpec::Glow { radius, .. } => {
+                let s = blur_spread(radius, scale);
+                m = [m[0] + s, m[1] + s, m[2] + s, m[3] + s];
+            }
+            EffectSpec::DropShadow { blur, offset, .. } => {
+                let s = blur_spread(blur, scale);
+                let (ox, oy) = (offset[0] * scale, offset[1] * scale);
+                m[0] += s + (-ox).max(0.0);
+                m[1] += s + (-oy).max(0.0);
+                m[2] += s + ox.max(0.0);
+                m[3] += s + oy.max(0.0);
+            }
+            EffectSpec::ColorMatrix { .. } => {}
+        }
+    }
+    m
+}
+
+/// 模糊支撑域(像素):3 次 box blur、box 半径 = radius·scale/2(≥1)。
+fn blur_spread(radius: f64, scale: f64) -> f64 {
+    if radius <= 0.0 {
+        0.0
+    } else {
+        3.0 * (radius * scale * 0.5).round().max(1.0)
+    }
+}
+
+/// 透明外扩:把缓冲内容平移到 (left, top),右/下补透明;总尺寸钳到
+/// u16::MAX(极值参数下宁可裁边,不溢出)。
+fn expand_rgba(
+    buf: &mut Vec<u8>,
+    w: &mut u16,
+    h: &mut u16,
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+) {
+    if left == 0 && top == 0 && right == 0 && bottom == 0 {
+        return;
+    }
+    let (ow, oh) = (usize::from(*w), usize::from(*h));
+    let nw = ((ow as u64) + (left as u64) + (right as u64)).min(u64::from(u16::MAX)) as usize;
+    let nh = ((oh as u64) + (top as u64) + (bottom as u64)).min(u64::from(u16::MAX)) as usize;
+    let mut out = vec![0u8; nw * nh * 4];
+    let copy_w = ow.min(nw.saturating_sub(left));
+    let copy_h = oh.min(nh.saturating_sub(top));
+    for row in 0..copy_h {
+        let src = (row * ow) * 4;
+        let dst = ((row + top) * nw + left) * 4;
+        out[dst..dst + copy_w * 4].copy_from_slice(&buf[src..src + copy_w * 4]);
+    }
+    *buf = out;
+    *w = nw as u16;
+    *h = nh as u16;
+}
+
+/// 预乘 RGBA8 的 3×box blur(四通道同 blur:预乘域模糊无 halo)。
+fn blur_rgba_premultiplied(buf: &mut [u8], w: u16, h: u16, radius: usize) {
+    let (wu, hu) = (usize::from(w), usize::from(h));
+    let mut planes: [Vec<f32>; 4] =
+        std::array::from_fn(|ch| buf.chunks_exact(4).map(|px| f32::from(px[ch])).collect());
+    let mut tmp = vec![0.0f32; wu * hu];
+    for plane in &mut planes {
+        for _ in 0..3 {
+            box_blur_axis(plane, &mut tmp, wu, hu, radius, true);
+            box_blur_axis(&tmp, plane, wu, hu, radius, false);
+        }
+    }
+    for (i, px) in buf.chunks_exact_mut(4).enumerate() {
+        for (ch, v) in px.iter_mut().enumerate() {
+            *v = planes[ch][i].round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+/// 提取 alpha 平面(f32,0~255)。
+fn alpha_plane(buf: &[u8]) -> Vec<f32> {
+    buf.chunks_exact(4).map(|px| f32::from(px[3])).collect()
+}
+
+/// 彩色投影置于当前内容之下:阴影 = 当前 alpha 平面经(可选)3×box blur +
+/// 偏移采样 × 颜色,按预乘 over(base over shadow)合成。
+/// `radius = 0` 为硬影;偏移采样越界视为无影。
+fn composite_shadow_under(
+    buf: &mut [u8],
+    w: u16,
+    h: u16,
+    radius: usize,
+    offset: (i64, i64),
+    color: Rgba8,
+) {
+    let (wu, hu) = (usize::from(w), usize::from(h));
+    let mut blurred = alpha_plane(buf);
+    if radius > 0 {
+        let mut tmp = vec![0.0f32; blurred.len()];
+        for _ in 0..3 {
+            box_blur_axis(&blurred, &mut tmp, wu, hu, radius, true);
+            box_blur_axis(&tmp, &mut blurred, wu, hu, radius, false);
+        }
+    }
+    let color_a = f32::from(color[3]) / 255.0;
+    for y in 0..hu {
+        for x in 0..wu {
+            let sx = x as i64 - offset.0;
+            let sy = y as i64 - offset.1;
+            let k = if sx >= 0 && sy >= 0 {
+                let (sx, sy) = (sx as usize, sy as usize);
+                if sx < wu && sy < hu {
+                    blurred[sy * wu + sx] / 255.0 * color_a
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            if k <= 0.0 {
+                continue;
+            }
+            let i = (y * wu + x) * 4;
+            let keep = 1.0 - f32::from(buf[i + 3]) / 255.0;
+            if keep <= 0.0 {
+                continue; // base 已不透明,下垫层不可见
+            }
+            for (ch, c) in color.iter().take(3).enumerate() {
+                let v = f32::from(buf[i + ch]) + f32::from(*c) * k * keep;
+                buf[i + ch] = v.round().clamp(0.0, 255.0) as u8;
+            }
+            let a = f32::from(buf[i + 3]) + 255.0 * k * keep;
+            buf[i + 3] = a.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+/// 内发光(E7)叠于当前内容之上:蒙版 m = 1 − blur(alpha)(形状内缘亮、
+/// 深处衰减到 0、外侧恒 0),发光覆盖 = alpha·m·color_a,按预乘 over
+/// (glow over base)合成。
+fn composite_inner_glow_over(buf: &mut [u8], w: u16, h: u16, radius: usize, color: Rgba8) {
+    let (wu, hu) = (usize::from(w), usize::from(h));
+    let alpha = alpha_plane(buf);
+    let mut blurred = alpha.clone();
+    if radius > 0 {
+        let mut tmp = vec![0.0f32; blurred.len()];
+        for _ in 0..3 {
+            box_blur_axis(&blurred, &mut tmp, wu, hu, radius, true);
+            box_blur_axis(&tmp, &mut blurred, wu, hu, radius, false);
+        }
+    }
+    let color_a = f32::from(color[3]) / 255.0;
+    for (i, px) in buf.chunks_exact_mut(4).enumerate() {
+        let m = 1.0 - blurred[i] / 255.0;
+        if m <= 0.0 {
+            continue;
+        }
+        let glow_a = alpha[i] / 255.0 * m * color_a;
+        if glow_a <= 0.0 {
+            continue;
+        }
+        let keep = 1.0 - glow_a;
+        for (ch, c) in color.iter().take(3).enumerate() {
+            let v = f32::from(*c) * glow_a + f32::from(px[ch]) * keep;
+            px[ch] = v.round().clamp(0.0, 255.0) as u8;
+        }
+        let a = 255.0 * glow_a + f32::from(px[3]) * keep;
+        px[3] = a.round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// 对效果链求值:`base`(预乘 RGBA8 + 尺寸)→ 逐条应用 `effects` 中启用的
+/// 非恒等效果(栈序)→ `(rgba, dx, dy, w, h)`,其中 `(dx, dy)` 是结果
+/// 相对 base 原点的偏移(负值 = 结果比 base 大,base 内容位于
+/// `(−dx, −dy)` 处),`(w, h)` 为结果尺寸。
+///
+/// 约定:
+/// - `caps.blur == false`(E12 Off 档)→ 原样返回(效果整体关闭);
+/// - `enabled = false` 或 `is_noop()` 的条目跳过;
+/// - 外扩在内部按需发生(模糊支撑域 3×box 半径;投影另加偏移)。
+pub fn apply_effects_rgba(
+    base: (Vec<u8>, u16, u16),
+    effects: &[EffectEntry],
+    caps: EffectCaps,
+) -> (Vec<u8>, i32, i32, u16, u16) {
+    let (mut buf, mut w, mut h) = base;
+    if !caps.blur {
+        return (buf, 0, 0, w, h);
+    }
+    let mut pad_l = 0i32;
+    let mut pad_t = 0i32;
+    for entry in effects {
+        if !entry.is_active() {
+            continue;
+        }
+        match entry.spec {
+            EffectSpec::GaussianBlur { radius } => {
+                let Some(r) = box_radius(radius) else {
+                    continue;
+                };
+                let m = 3 * r;
+                expand_rgba(&mut buf, &mut w, &mut h, m, m, m, m);
+                pad_l += m as i32;
+                pad_t += m as i32;
+                blur_rgba_premultiplied(&mut buf, w, h, r);
+            }
+            EffectSpec::DropShadow {
+                blur,
+                offset,
+                color,
+            } => {
+                let r = box_radius(blur).unwrap_or(0);
+                let spread = 3 * r;
+                let (ox, oy) = (offset[0].round() as i64, offset[1].round() as i64);
+                let left = spread + (-ox).max(0) as usize;
+                let top = spread + (-oy).max(0) as usize;
+                let right = spread + ox.max(0) as usize;
+                let bottom = spread + oy.max(0) as usize;
+                expand_rgba(&mut buf, &mut w, &mut h, left, top, right, bottom);
+                pad_l += left as i32;
+                pad_t += top as i32;
+                composite_shadow_under(&mut buf, w, h, r, (ox, oy), color);
+            }
+            EffectSpec::Glow {
+                radius,
+                color,
+                inner,
+            } => {
+                let Some(r) = box_radius(radius) else {
+                    continue;
+                };
+                let m = 3 * r;
+                expand_rgba(&mut buf, &mut w, &mut h, m, m, m, m);
+                pad_l += m as i32;
+                pad_t += m as i32;
+                if inner {
+                    composite_inner_glow_over(&mut buf, w, h, r, color);
+                } else {
+                    // 外发光 = 零偏移彩色投影(绘制在形状之下)
+                    composite_shadow_under(&mut buf, w, h, r, (0, 0), color);
+                }
+            }
+            EffectSpec::ColorMatrix { matrix, offsets } => {
+                apply_color_matrix(&mut buf, matrix, offsets);
+            }
+        }
+    }
+    (buf, -pad_l, -pad_t, w, h)
+}
+
+/// 节点效果离屏光栅化表面(S4 #4.2;`cpu` feature)。
+///
+/// 把"该节点单独渲染的结果"画到一张**透明底**离屏缓冲:宽高由调用方按
+/// 节点 bbox + [`effect_margins_px`] 预算,绘制时用平移后的变换把内容摆进
+/// margin 内侧(见 sable-canvas `render` 的效果分支)。产出交给
+/// [`apply_effects_rgba`] 求值,再经 [`crate::sink::PaintSink::draw_rgba`]
+/// 贴回主画布。
+#[cfg(feature = "cpu")]
+pub struct EffectSurface {
+    sink: crate::cpu::VelloCpuSink,
+    width: u16,
+    height: u16,
+}
+
+#[cfg(feature = "cpu")]
+impl EffectSurface {
+    /// 新建 `width × height` 的透明离屏表面。
+    pub fn new(width: u16, height: u16) -> Self {
+        EffectSurface {
+            sink: crate::cpu::VelloCpuSink::new(width, height),
+            width,
+            height,
+        }
+    }
+
+    /// 表面宽度(像素)。
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    /// 表面高度(像素)。
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    /// 执行一段绘制:闭包拿到后端无关的 [`PaintSink`](与主画布同一套指令
+    /// 抽象,节点绘制代码零改动)。
+    pub fn draw(&mut self, f: impl FnOnce(&mut dyn PaintSink)) {
+        let sink: &mut dyn crate::sink::PaintSink = &mut self.sink;
+        f(sink);
+    }
+
+    /// 结束绘制:光栅化并取回预乘 RGBA8(透明底)与尺寸。
+    pub fn into_rgba(mut self) -> (Vec<u8>, u16, u16) {
+        let mut pixmap = vello_cpu::Pixmap::new(self.width, self.height);
+        let mut resources = vello_cpu::Resources::new();
+        self.sink.context().flush();
+        self.sink.context().render(&mut pixmap, &mut resources);
+        (pixmap.data_as_u8_slice().to_vec(), self.width, self.height)
     }
 }
 
@@ -561,6 +966,431 @@ mod tests {
                 H,
             );
             assert!(!Arc::ptr_eq(&first, &other));
+        }
+    }
+
+    // —— E6/E7:效果链求值(纯函数,不依赖后端)——
+
+    mod chain {
+        use super::*;
+        use sable_foundation::effects::EffectEntry;
+
+        const CAPS: EffectCaps = EffectCaps {
+            blur: true,
+            blend: true,
+            grain: true,
+        };
+        const OFF: EffectCaps = EffectCaps {
+            blur: false,
+            blend: false,
+            grain: false,
+        };
+
+        fn entry(spec: EffectSpec) -> EffectEntry {
+            EffectEntry {
+                spec,
+                enabled: true,
+            }
+        }
+
+        /// 逐像素构图(w×h 的 RGBA8 预乘缓冲)。
+        fn buffer(w: u16, h: u16, pixels: &[&[u8; 4]]) -> (Vec<u8>, u16, u16) {
+            assert_eq!(pixels.len(), usize::from(w) * usize::from(h));
+            (pixels.iter().flat_map(|p| p.to_vec()).collect(), w, h)
+        }
+
+        fn at(buf: &[u8], w: u16, x: u16, y: u16) -> [u8; 4] {
+            let i = 4 * (usize::from(y) * usize::from(w) + usize::from(x));
+            [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+        }
+
+        #[allow(dead_code)]
+        fn set(buf: &mut [u8], w: u16, x: u16, y: u16, px: [u8; 4]) {
+            let i = 4 * (usize::from(y) * usize::from(w) + usize::from(x));
+            buf[i..i + 4].copy_from_slice(&px);
+        }
+
+        // —— apply_color_matrix / 预设 ——
+
+        #[test]
+        fn brightness_preset_doubles_opaque_pixel() {
+            let mut rgba = vec![100, 50, 120, 255, 0, 0, 0, 0];
+            let EffectSpec::ColorMatrix { matrix, offsets } = EffectSpec::brightness(2.0) else {
+                panic!("brightness 应为 ColorMatrix");
+            };
+            apply_color_matrix(&mut rgba, matrix, offsets);
+            assert_eq!(rgba[0..4], [200, 100, 240, 255], "RGB 翻倍,alpha 不动");
+            assert_eq!(rgba[4..8], [0, 0, 0, 0], "全透明像素保持全零");
+        }
+
+        #[test]
+        fn brightness_clamps_at_255() {
+            let mut rgba = vec![200, 200, 200, 255];
+            let EffectSpec::ColorMatrix { matrix, offsets } = EffectSpec::brightness(2.0) else {
+                panic!();
+            };
+            apply_color_matrix(&mut rgba, matrix, offsets);
+            assert_eq!(rgba[0..4], [255, 255, 255, 255], "400 clamp 到 255");
+        }
+
+        #[test]
+        fn saturate_zero_desaturates_to_rec709_luminance() {
+            // (200, 100, 50) → 0.2126·200 + 0.7152·100 + 0.0722·50 ≈ 117.65
+            let mut rgba = vec![200, 100, 50, 255];
+            let EffectSpec::ColorMatrix { matrix, offsets } = EffectSpec::saturate(0.0) else {
+                panic!();
+            };
+            apply_color_matrix(&mut rgba, matrix, offsets);
+            #[allow(clippy::needless_range_loop)]
+            for ch in 0..3 {
+                assert!(
+                    (i32::from(rgba[ch]) - 118).abs() <= 2,
+                    "通道 {ch} 应为灰度 118±2,实际 {}",
+                    rgba[ch]
+                );
+            }
+            assert_eq!(rgba[3], 255);
+        }
+
+        #[test]
+        fn hue_rotate_180_keeps_gray_and_sends_red_to_cyan_complement() {
+            let EffectSpec::ColorMatrix { matrix, offsets } = EffectSpec::hue_rotate(180.0) else {
+                panic!();
+            };
+            // 灰不变(行和 = 1)
+            let mut gray = vec![128, 128, 128, 255];
+            apply_color_matrix(&mut gray, matrix, offsets);
+            #[allow(clippy::needless_range_loop)]
+            for ch in 0..3 {
+                assert!((i32::from(gray[ch]) - 128).abs() <= 2, "灰应不变");
+            }
+            // 红 → 补色青(r→0,g≈b;SVG hueRotate 对主色降饱和是规范本身
+            // 的性质:矩阵是绕灰轴的线性近似,不保饱和度)
+            let mut red = vec![255, 0, 0, 255];
+            apply_color_matrix(&mut red, matrix, offsets);
+            assert!(red[0] <= 2, "r 应钳到 0,实际 {}", red[0]);
+            assert!(
+                (i32::from(red[1]) - i32::from(red[2])).abs() <= 2,
+                "g≈b(青色方向),实际 {red:?}"
+            );
+            assert!(
+                (i32::from(red[1]) - 109).abs() <= 4,
+                "规范矩阵下 g≈b≈108.6,实际 {red:?}"
+            );
+        }
+
+        #[test]
+        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
+        fn contrast_preset_offsets_midpoint() {
+            // 200 → 0.5·200 + 0.5·0.5·255 = 163.75;50 → 25 + 63.75 = 88.75
+            let mut rgba = vec![200, 50, 128, 255];
+            let EffectSpec::ColorMatrix { matrix, offsets } = EffectSpec::contrast(0.5) else {
+                panic!();
+            };
+            apply_color_matrix(&mut rgba, matrix, offsets);
+            assert!((i32::from(rgba[0]) - 164).abs() <= 1);
+            assert!((i32::from(rgba[1]) - 89).abs() <= 1);
+            // 128 = 中点:0.5·128 + 63.75 = 127.75
+            assert!((i32::from(rgba[2]) - 128).abs() <= 1);
+        }
+
+        #[test]
+        fn color_matrix_unpremultiplies_and_repremultiplies() {
+            // 半透明红 预乘 (128, 0, 0, 128) = 直通 (255, 0, 0, 128);
+            // brightness(0.5) → 直通 (128, 0, 0, 128) → 预乘 (64, 0, 0, 128)
+            let mut rgba = vec![128, 0, 0, 128];
+            let EffectSpec::ColorMatrix { matrix, offsets } = EffectSpec::brightness(0.5) else {
+                panic!();
+            };
+            apply_color_matrix(&mut rgba, matrix, offsets);
+            assert!(
+                (i32::from(rgba[0]) - 64).abs() <= 2,
+                "预乘 r 应减半,实际 {rgba:?}"
+            );
+            assert_eq!(rgba[1], 0);
+            assert_eq!(rgba[3], 128, "alpha 行恒等");
+        }
+
+        #[test]
+        fn identity_matrix_is_bitwise_noop_on_semitransparent() {
+            let matrix = [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ];
+            // 合法预乘像素(各通道 ≤ alpha):直通 (64, 96, 128, 128)
+            let mut rgba = vec![32u8, 48, 64, 128];
+            apply_color_matrix(&mut rgba, matrix, [0.0; 4]);
+            assert_eq!(rgba, vec![32, 48, 64, 128], "恒等矩阵应逐位不变");
+        }
+
+        // —— apply_effects_rgba:跳过路径(性能军规)——
+
+        #[test]
+        fn empty_disabled_noop_and_off_caps_all_return_base_untouched() {
+            let base_px = [10u8, 20, 30, 200];
+            let base = || buffer(2, 1, &[&base_px, &[40, 50, 60, 100]]);
+
+            // 空 / 全禁用 / 全 no-op / Off 档:四条跳过路径都原样返回
+            let (rgba, dx, dy, w, h) = apply_effects_rgba(base(), &[], CAPS);
+            assert_eq!((dx, dy, w, h), (0, 0, 2, 1));
+            assert_eq!(rgba, base().0);
+
+            let disabled = entry(EffectSpec::GaussianBlur { radius: 4.0 });
+            let (rgba, dx, dy, w, h) = apply_effects_rgba(
+                base(),
+                &[EffectEntry {
+                    enabled: false,
+                    ..disabled
+                }],
+                CAPS,
+            );
+            assert_eq!((dx, dy, w, h), (0, 0, 2, 1));
+            assert_eq!(rgba, base().0);
+
+            let (rgba, ..) = apply_effects_rgba(
+                base(),
+                &[
+                    entry(EffectSpec::GaussianBlur { radius: 0.0 }),
+                    entry(EffectSpec::brightness(1.0)),
+                ],
+                CAPS,
+            );
+            assert_eq!(rgba, base().0);
+
+            let (rgba, dx, dy, w, h) = apply_effects_rgba(
+                base(),
+                &[entry(EffectSpec::GaussianBlur { radius: 8.0 })],
+                OFF,
+            );
+            assert_eq!((dx, dy, w, h), (0, 0, 2, 1), "Off 档跳过全部效果");
+            assert_eq!(rgba, base().0);
+        }
+
+        // —— apply_effects_rgba:高斯模糊 ——
+
+        #[test]
+        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
+        fn gaussian_blur_spreads_coverage_and_expands_surface() {
+            // 8×6,实心 4×3 红块 x=3..6、y=1..4;radius=2 → box r=1,
+            // 支撑域 3px → 四周外扩 3,尺寸 14×12,dx=dy=-3
+            let mut px = [[0u8, 0, 0, 0]; 8 * 6].to_vec();
+            for y in 1..4u16 {
+                for x in 3..7u16 {
+                    px[usize::from(y) * 8 + usize::from(x)] = [255, 0, 0, 255];
+                }
+            }
+            let pixels: Vec<&[u8; 4]> = px.iter().collect();
+            let base = buffer(8, 6, &pixels);
+            let (rgba, dx, dy, w, h) = apply_effects_rgba(
+                base,
+                &[entry(EffectSpec::GaussianBlur { radius: 2.0 })],
+                CAPS,
+            );
+            assert_eq!((w, h), (14, 12), "四周各外扩 3px");
+            assert_eq!((dx, dy), (-3, -3));
+            let px_at = |x: u16, y: u16| at(&rgba, w, x, y);
+            let a = |x: u16, y: u16| px_at(x, y)[3];
+            // 原块中心 (4,2) 落位 (7,5):水平/垂直都在块的模糊核内部 → 覆盖保持
+            assert!(a(7, 5) > 200, "块中心应保持高覆盖,实际 {}", a(7, 5));
+            // 支撑域内(贴边 1px):有可见覆盖
+            assert!(a(5, 5) > 0, "块左缘外 1px 应有扩散");
+            assert!(a(10, 5) > 0, "块右缘外 1px 应有扩散");
+            // 支撑域(3px)之外干净
+            assert_eq!(a(2, 5), 0, "左缘外 4px 应无覆盖");
+            assert_eq!(a(13, 5), 0, "右缘外 4px 应无覆盖");
+            assert_eq!(a(7, 0), 0, "块上方 4px 应无覆盖");
+            // 预乘域模糊:红色像素的 r == alpha
+            assert_eq!(px_at(7, 5)[0], a(7, 5));
+        }
+
+        // —— apply_effects_rgba:投影 ——
+
+        #[test]
+        fn drop_shadow_offsets_colored_copy_under_base() {
+            // 8×8 白色 2×2 块 (1..3, 1..3);硬影(offset 2,0,纯红)
+            let mut px = vec![[0u8, 0, 0, 0]; 8 * 8];
+            for y in 1..3u16 {
+                for x in 1..3u16 {
+                    px[usize::from(y) * 8 + usize::from(x)] = [255, 255, 255, 255];
+                }
+            }
+            let pixels: Vec<&[u8; 4]> = px.iter().collect();
+            let base = buffer(8, 8, &pixels);
+            let shadow = EffectSpec::DropShadow {
+                blur: 0.0,
+                offset: [2.0, 0.0],
+                color: [255, 0, 0, 255],
+            };
+            let (rgba, dx, dy, w, h) = apply_effects_rgba(base, &[entry(shadow)], CAPS);
+            // margin:右 +2 → 10×8,dx=dy=0(左侧未扩)
+            assert_eq!((w, h), (10, 8));
+            assert_eq!((dx, dy), (0, 0));
+            // 底图不变(块内仍白,base over shadow)
+            assert_eq!(at(&rgba, w, 2, 2), [255, 255, 255, 255]);
+            // 偏移落点(3+2=5..3?块 x=1..2 → 影 x=3..4,块未覆盖 (4,1)):
+            // (4,1) 是纯影:红
+            assert_eq!(at(&rgba, w, 4, 1), [255, 0, 0, 255]);
+            // (3,1):块内 x=1,2 → 影 x=3,4;(3,1) 有影但 (3,1) 本身不在块内?
+            // 块 x∈{1,2},影 x∈{3,4} → (3,1) 应为影
+            assert_eq!(at(&rgba, w, 3, 1), [255, 0, 0, 255]);
+            // 影未及处仍透明
+            assert_eq!(at(&rgba, w, 0, 0), [0, 0, 0, 0]);
+            assert_eq!(at(&rgba, w, 6, 1), [0, 0, 0, 0]);
+        }
+
+        // —— apply_effects_rgba:发光 ——
+
+        #[test]
+        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
+        fn outer_glow_tints_around_shape_inner_glow_confined_inside() {
+            let mut px = vec![[0u8, 0, 0, 0]; 8 * 8];
+            for y in 1..6u16 {
+                for x in 1..6u16 {
+                    px[usize::from(y) * 8 + usize::from(x)] = [255, 255, 255, 255];
+                }
+            }
+            let pixels: Vec<&[u8; 4]> = px.iter().collect();
+            let glow = EffectSpec::Glow {
+                radius: 2.0,
+                color: [255, 255, 0, 255],
+                inner: false,
+            };
+            // 外发光:块外侧邻像素有黄光(r、g 同涨),块内保持白
+            let (rgba, dx, dy, w, h) =
+                apply_effects_rgba(buffer(8, 8, &pixels), &[entry(glow)], CAPS);
+            assert_eq!((w, h), (14, 14), "四周各外扩 3px");
+            assert_eq!((dx, dy), (-3, -3));
+            let outside = at(&rgba, w, 3, 6); // 原坐标 (0, 3):块外贴左缘
+            assert!(
+                outside[0] > 20 && outside[1] > 20,
+                "外侧应有黄光,实际 {outside:?}"
+            );
+            assert_eq!(outside[2], 0, "蓝通道不动(黄 = r+g)");
+            assert_eq!(at(&rgba, w, 6, 6), [255, 255, 255, 255], "块内保持白");
+
+            // 内发光:块内贴边像素被染色(g 通道下降),深处与外侧不变
+            let inner = EffectSpec::Glow {
+                radius: 2.0,
+                color: [255, 255, 0, 255],
+                inner: true,
+            };
+            let (rgba, _, _, w, _) =
+                apply_effects_rgba(buffer(8, 8, &pixels), &[entry(inner)], CAPS);
+            let edge = at(&rgba, w, 4, 6); // 原坐标 (1, 3):块内贴左缘
+            assert!(edge[0] >= 250, "红通道接近满,实际 {edge:?}");
+            assert!(
+                edge[1] < 250,
+                "内发光应压低贴边像素的 g(黄光中的 b 缺失),实际 {edge:?}"
+            );
+            assert_eq!(at(&rgba, w, 6, 6)[1], 255, "块中心深处不染色");
+            assert_eq!(at(&rgba, w, 3, 6), [0, 0, 0, 0], "块外侧不得出现内发光");
+        }
+
+        #[test]
+        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
+        fn effect_order_matters_for_inner_glow_vs_shadow() {
+            // blur/offset 类效果两两线性可交换,真正体现栈序的是
+            // "投影先扩 alpha → 内发光跟着照亮投影边缘" vs
+            // "内发光先按形状蒙版定格 → 投影后垫底"。
+            let mut px = vec![[0u8, 0, 0, 0]; 8 * 8];
+            for y in 1..4u16 {
+                for x in 1..4u16 {
+                    px[usize::from(y) * 8 + usize::from(x)] = [255, 255, 255, 255];
+                }
+            }
+            let pixels: Vec<&[u8; 4]> = px.iter().collect();
+            let shadow = EffectSpec::DropShadow {
+                blur: 0.0,
+                offset: [4.0, 0.0],
+                color: [0, 0, 0, 255],
+            };
+            let glow = EffectSpec::Glow {
+                radius: 2.0,
+                color: [255, 0, 0, 255],
+                inner: true,
+            };
+            let glow_first = apply_effects_rgba(
+                buffer(8, 8, &pixels),
+                &[entry(glow.clone()), entry(shadow.clone())],
+                CAPS,
+            );
+            let shadow_first =
+                apply_effects_rgba(buffer(8, 8, &pixels), &[entry(shadow), entry(glow)], CAPS);
+            assert_eq!(glow_first.1, shadow_first.1, "两种顺序的 margin 一致");
+            // 探针点:投影区右缘像素(基础形状外、投影内、模糊支撑域内)
+            let (rgba_a, _, _, wa, _) = glow_first;
+            let (rgba_b, _, _, wb, _) = shadow_first;
+            let probe = |rgba: &[u8], w: u16| at(rgba, w, 10, 5); // 原坐标 (7, 2)
+            let a = probe(&rgba_a, wa);
+            let b = probe(&rgba_b, wb);
+            assert!(
+                a[0] > 60,
+                "投影先上:内发光照亮投影边缘 → 红分量显著,实际 {a:?}"
+            );
+            assert!(
+                b[0] <= 5,
+                "内发光先上:蒙版定格在形状内 → 投影处纯黑,实际 {b:?}"
+            );
+        }
+
+        // —— effect_margins_px ——
+
+        #[test]
+        fn margins_accumulate_blur_and_offset_per_side() {
+            let effects = vec![
+                entry(EffectSpec::GaussianBlur { radius: 2.0 }), // spread 3
+                entry(EffectSpec::DropShadow {
+                    blur: 4.0, // spread 6
+                    offset: [2.0, -3.0],
+                    color: [0, 0, 0, 128],
+                }),
+            ];
+            let m = effect_margins_px(&effects, 1.0);
+            assert_eq!(m, [9.0, 12.0, 11.0, 9.0], "[左,上,右,下] 按侧累加");
+            // scale 换算:radius=2 → 像素 radius=1 → box 1 → spread 3
+            let m = effect_margins_px(&effects[..1], 1.0);
+            assert_eq!(m, [3.0, 3.0, 3.0, 3.0]);
+            // 无效果 → 全零
+            assert_eq!(effect_margins_px(&[], 2.0), [0.0; 4]);
+            // 禁用/无效条目不计
+            let disabled = EffectEntry {
+                enabled: false,
+                ..entry(EffectSpec::GaussianBlur { radius: 8.0 })
+            };
+            assert_eq!(effect_margins_px(&[disabled], 1.0), [0.0; 4]);
+        }
+    }
+
+    // —— EffectSurface(cpu)——
+
+    #[cfg(feature = "cpu")]
+    mod surface {
+        use super::*;
+        use kurbo::Shape;
+
+        #[test]
+        fn surface_rasterizes_draw_commands_to_transparent_offscreen() {
+            let mut surface = EffectSurface::new(8, 8);
+            assert_eq!(surface.width(), 8);
+            assert_eq!(surface.height(), 8);
+            surface.draw(|sink| {
+                let rect = kurbo::Rect::new(2.0, 2.0, 6.0, 6.0).to_path(0.1);
+                sink.fill(
+                    &sable_foundation::scene::Paint::Solid([255, 0, 0, 255]),
+                    Affine::IDENTITY,
+                    &rect,
+                );
+            });
+            let (rgba, w, h) = surface.into_rgba();
+            assert_eq!((w, h), (8, 8));
+            let at = |x: u16, y: u16| {
+                let i = 4 * (usize::from(y) * 8 + usize::from(x));
+                [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+            };
+            assert_eq!(at(4, 4), [255, 0, 0, 255], "矩形内部为红");
+            assert_eq!(at(0, 0), [0, 0, 0, 0], "底为透明");
         }
     }
 }

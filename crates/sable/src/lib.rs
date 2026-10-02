@@ -34,6 +34,9 @@
 #![forbid(unsafe_code)]
 
 // —— 子 crate 按(feature)逐一 re-export(短名,与文档/示例一致)——
+/// L2 渲染层(基础绘制原语,随 paint 依赖恒可用)。
+pub use sable_paint as paint;
+
 /// L3 画布内核(feature `canvas`,连带开启 `core`)。
 #[cfg(feature = "canvas")]
 pub use sable_canvas as canvas;
@@ -84,7 +87,7 @@ pub mod prelude {
     /// `sable::video::prelude::BatchCommand`(或 `sable::video::command::`)限定使用。
     #[cfg(feature = "video")]
     pub use sable_video::prelude::{
-        AssetRef, Clip, ClipId, Easing, Frame, FrameSource, Keyframe, MoveClip, PlaceClip, Player,
+        AssetRef, Clip, ClipId, Frame, FrameSource, Keyframe, MoveClip, PlaceClip, Player,
         RemoveClip, RemoveClipRipple, SetMuted, SetSpeed, SplitClip, SyntheticSource, Timeline,
         TimelineCommand, TimelineHistory, Track, TrackKind, TrimClip, VideoError, VideoResult,
         evaluate, snap_time,

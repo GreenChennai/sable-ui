@@ -22,3 +22,15 @@ thiserror.workspace = true
 proptest.workspace = true
 # 分册六 §1.2 铁律验收:Scene 序列化→反序列化 == 原值
 serde_json = "1"
+# 分册六 §5.1 基准体系(criterion 微基准;CI 默认不执行 bench harness)
+criterion = "0.5"
+
+# 基准目标:命令执行(merge 开/undo/redo)、History 事务、Scene::add_node
+[[bench]]
+name = "cmd_bench"
+harness = false
+
+# 基准目标:.sable 工程存取(1 千节点 + 500 命令的 save/load)
+[[bench]]
+name = "project_bench"
+harness = false

@@ -60,7 +60,7 @@ pub mod prelude {
     pub use crate::render::{OverlayTheme, RenderOpts, render_scene};
     pub use crate::text::TextPipeline;
     pub use crate::tool::{
-        CursorStyle, HandTool, Mods, PenTool, SelectTool, ToolBehavior, ToolCtx,
+        AnchorEditTool, CursorStyle, HandTool, Mods, PenTool, SelectTool, ToolBehavior, ToolCtx,
     };
 }
 

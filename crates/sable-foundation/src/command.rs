@@ -25,6 +25,7 @@ use std::fmt;
 use kurbo::Affine;
 use serde::{Deserialize, Serialize};
 
+use crate::effects::{EffectEntry, EffectSpec};
 use crate::error::CoreResult;
 use crate::scene::{IdRemap, Node, NodeId, Paint, RemovedSubtree, Scene, StrokeStyle};
 
@@ -646,6 +647,278 @@ impl Command for Reparent {
     }
 }
 
+// —— 节点效果栈命令(迭代计划 08 S4 #4.1,分册七/E11)——
+//
+// 下标约定:`index` 指向节点的 `effects` 列表;目标越界或条目与捕获值不符时
+// 命令为空操作(与"目标不存在时静默跳过"的 LIFO 约定一致,绝不越界 panic)。
+// 效果命令不携带除节点 id 外的其他 id,`remap_ids` 按 [`SetTransform`] 样式
+// 只重映射节点 id(子树恢复换发 id 后历史栈照常可用)。
+
+/// 在节点效果栈的 `index` 处插入一条效果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddEffect {
+    pub id: NodeId,
+    /// 插入下标(`> len` 时空操作;UI 侧总是传合法值)。
+    pub index: usize,
+    /// 插入的效果条目。
+    pub entry: EffectEntry,
+}
+
+impl Command for AddEffect {
+    fn apply(&mut self, scene: &mut Scene) {
+        if let Some(node) = scene.node_mut(self.id)
+            && self.index <= node.effects.len()
+        {
+            node.effects.insert(self.index, self.entry.clone());
+        }
+    }
+
+    fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        // 条目比对:栈漂移(不应发生)时宁可不撤,也不误删相邻效果
+        if let Some(node) = scene.node_mut(self.id)
+            && self.index < node.effects.len()
+            && node.effects[self.index] == self.entry
+        {
+            node.effects.remove(self.index);
+        }
+        None
+    }
+
+    fn remap_ids(&mut self, map: &IdRemap) {
+        self.id = map.get(&self.id).copied().unwrap_or(self.id);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("添加效果")
+    }
+}
+fn default_applied_true() -> bool {
+    true
+}
+
+/// 移除节点效果栈 `index` 处的效果(条目在构造时捕获,撤销原样放回)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoveEffect {
+    pub id: NodeId,
+    pub index: usize,
+    /// 摘除的效果条目([`RemoveEffect::capture`] 时从场景捕获)。
+    pub entry: EffectEntry,
+    /// apply 是否真的执行了删除(空转守卫;serde 旧文件默认 true = 真实删除)
+    #[serde(default = "default_applied_true")]
+    pub applied: bool,
+}
+
+impl RemoveEffect {
+    /// 从场景当前状态捕获 `index` 处的效果条目(节点不存在/越界 → `None`)。
+    pub fn capture(scene: &Scene, id: NodeId, index: usize) -> Option<Self> {
+        let entry = scene.node(id)?.effects.get(index)?.clone();
+        Some(RemoveEffect {
+            id,
+            index,
+            entry,
+            applied: false,
+        })
+    }
+}
+
+impl Command for RemoveEffect {
+    fn apply(&mut self, scene: &mut Scene) {
+        self.applied = false;
+        if let Some(node) = scene.node_mut(self.id)
+            && self.index < node.effects.len()
+            && node.effects[self.index] == self.entry
+        {
+            node.effects.remove(self.index);
+            self.applied = true;
+        }
+    }
+
+    fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        // 空转守卫:apply 没删过(applied=false)时 revert 不得凭空插回
+        // (非法目标命令的撤销曾实测踩坑)
+        if self.applied
+            && let Some(node) = scene.node_mut(self.id)
+        {
+            node.effects
+                .insert(self.index.min(node.effects.len()), self.entry.clone());
+            self.applied = false;
+        }
+        None
+    }
+
+    fn remap_ids(&mut self, map: &IdRemap) {
+        self.id = map.get(&self.id).copied().unwrap_or(self.id);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("移除效果")
+    }
+}
+
+/// 移动效果在栈中的位置(外观面板拖动排序;`to` 按"摘除 `from` 之后的
+/// 列表"解释,`from == to` / 越界为空操作)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveEffect {
+    pub id: NodeId,
+    pub from: usize,
+    pub to: usize,
+}
+
+impl Command for MoveEffect {
+    fn apply(&mut self, scene: &mut Scene) {
+        if let Some(node) = scene.node_mut(self.id) {
+            let effects = &mut node.effects;
+            let len = effects.len();
+            if self.from >= len || self.from == self.to {
+                return;
+            }
+            let entry = effects.remove(self.from);
+            let to = self.to.min(effects.len());
+            effects.insert(to, entry);
+        }
+    }
+
+    fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        // 镜像 apply 的分支条件与 clamp(to 按"摘除后列表"解释,取回时用
+        // min(to, len-1);from 越界/from==to 时 apply 未动,revert 同步空转)
+        if let Some(node) = scene.node_mut(self.id) {
+            let effects = &mut node.effects;
+            let len = effects.len();
+            if self.from >= len || self.from == self.to {
+                return None;
+            }
+            let entry = effects.remove(self.to.min(len - 1));
+            let from = self.from.min(effects.len());
+            effects.insert(from, entry);
+        }
+        None
+    }
+
+    fn remap_ids(&mut self, map: &IdRemap) {
+        self.id = map.get(&self.id).copied().unwrap_or(self.id);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("移动效果")
+    }
+}
+
+/// 修改效果启用开关。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetEffectEnabled {
+    pub id: NodeId,
+    pub index: usize,
+    pub old: bool,
+    pub new: bool,
+}
+
+impl Command for SetEffectEnabled {
+    fn apply(&mut self, scene: &mut Scene) {
+        if let Some(entry) = scene
+            .node_mut(self.id)
+            .and_then(|n| n.effects.get_mut(self.index))
+            && entry.enabled == self.old
+        {
+            entry.enabled = self.new;
+        }
+    }
+
+    fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        if let Some(entry) = scene
+            .node_mut(self.id)
+            .and_then(|n| n.effects.get_mut(self.index))
+            && entry.enabled == self.new
+        {
+            entry.enabled = self.old;
+        }
+        None
+    }
+
+    fn remap_ids(&mut self, map: &IdRemap) {
+        self.id = map.get(&self.id).copied().unwrap_or(self.id);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("修改效果开关")
+    }
+}
+
+/// 修改效果参数。merge:同节点同下标合并,保留最早的 old、最新的 new
+/// (docs/03 §2 范式)——效果面板 NumberField 拖动/动画插值由此天然合并为
+/// 一步撤销(E11 联动点,见 sable-foundation `effects` 模块 doc)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetEffectSpec {
+    pub id: NodeId,
+    pub index: usize,
+    pub old: EffectSpec,
+    pub new: EffectSpec,
+}
+
+impl Command for SetEffectSpec {
+    fn apply(&mut self, scene: &mut Scene) {
+        if let Some(entry) = scene
+            .node_mut(self.id)
+            .and_then(|n| n.effects.get_mut(self.index))
+            && entry.spec == self.old
+        {
+            // 守卫:下标漂移(栈上其他命令改过顺序)时宁可不改,也不覆写邻居
+            entry.spec = self.new.clone();
+        }
+    }
+
+    fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        if let Some(entry) = scene
+            .node_mut(self.id)
+            .and_then(|n| n.effects.get_mut(self.index))
+            && entry.spec == self.new
+        {
+            entry.spec = self.old.clone();
+        }
+        None
+    }
+
+    fn merge(&self, next: &dyn Command) -> Option<Box<dyn Command>> {
+        let next = next.as_any().downcast_ref::<SetEffectSpec>()?;
+        if next.id != self.id || next.index != self.index {
+            return None;
+        }
+        Some(Box::new(SetEffectSpec {
+            id: self.id,
+            index: self.index,
+            old: self.old.clone(),
+            new: next.new.clone(),
+        }))
+    }
+
+    fn remap_ids(&mut self, map: &IdRemap) {
+        self.id = map.get(&self.id).copied().unwrap_or(self.id);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("修改效果参数")
+    }
+}
+
 // —— 序列化桥:.sable 工程存取(迭代计划 08 S3 #3.4;分册五 §5.1)——
 //
 // 本节只做"内存命令 ⇄ 可序列化镜像"的纯转换,不改任何撤销/重做逻辑。
@@ -729,7 +1002,7 @@ impl<'de> Deserialize<'de> for RemoveNode {
     }
 }
 
-/// 命令的**可序列化镜像**:9 个内置命令逐一对位 + 批量事务。
+/// 命令的**可序列化镜像**:14 个内置命令逐一对位 + 批量事务。
 ///
 /// 第三方 `Command`(未内置)不阻塞保存:[`History::to_serialized`] 跳过
 /// 并计数,重开后撤销栈**部分恢复**(缺失的那几步不可撤销,其余照常)。
@@ -744,6 +1017,11 @@ pub enum SerializedCommand {
     SetOpacity(SetOpacity),
     SetName(SetName),
     Reparent(Reparent),
+    AddEffect(AddEffect),
+    RemoveEffect(RemoveEffect),
+    MoveEffect(MoveEffect),
+    SetEffectEnabled(SetEffectEnabled),
+    SetEffectSpec(SetEffectSpec),
     /// 批量事务:一次 `begin_transaction`..`end_transaction` 之间的全部
     /// 命令算一步撤销;内嵌命令递归镜像(第三方内嵌命令同样跳过)。
     Batch(Vec<SerializedCommand>),
@@ -777,6 +1055,16 @@ fn serialize_command(cmd: &dyn Command, skipped: &mut usize) -> Option<Serialize
         SerializedCommand::SetName(c.clone())
     } else if let Some(c) = any.downcast_ref::<Reparent>() {
         SerializedCommand::Reparent(c.clone())
+    } else if let Some(c) = any.downcast_ref::<AddEffect>() {
+        SerializedCommand::AddEffect(c.clone())
+    } else if let Some(c) = any.downcast_ref::<RemoveEffect>() {
+        SerializedCommand::RemoveEffect(c.clone())
+    } else if let Some(c) = any.downcast_ref::<MoveEffect>() {
+        SerializedCommand::MoveEffect(c.clone())
+    } else if let Some(c) = any.downcast_ref::<SetEffectEnabled>() {
+        SerializedCommand::SetEffectEnabled(c.clone())
+    } else if let Some(c) = any.downcast_ref::<SetEffectSpec>() {
+        SerializedCommand::SetEffectSpec(c.clone())
     } else if let Some(batch) = any.downcast_ref::<BatchCommand>() {
         let mut inner = Vec::with_capacity(batch.0.len());
         for step in &batch.0 {
@@ -804,6 +1092,11 @@ fn deserialize_command(serialized: SerializedCommand) -> Box<dyn Command> {
         SerializedCommand::SetOpacity(c) => Box::new(c),
         SerializedCommand::SetName(c) => Box::new(c),
         SerializedCommand::Reparent(c) => Box::new(c),
+        SerializedCommand::AddEffect(c) => Box::new(c),
+        SerializedCommand::RemoveEffect(c) => Box::new(c),
+        SerializedCommand::MoveEffect(c) => Box::new(c),
+        SerializedCommand::SetEffectEnabled(c) => Box::new(c),
+        SerializedCommand::SetEffectSpec(c) => Box::new(c),
         SerializedCommand::Batch(inner) => Box::new(BatchCommand(
             inner.into_iter().map(deserialize_command).collect(),
         )),
@@ -1280,6 +1573,385 @@ mod tests {
         history.clear();
         assert!(!history.can_undo() && !history.can_redo());
         assert_eq!(history.undo_len(), 0);
+    }
+
+    // —— 效果栈命令(迭代计划 08 S4 #4.1)——
+
+    use crate::effects::{EffectEntry, EffectSpec};
+
+    fn shadow_entry(blur: f64) -> EffectEntry {
+        EffectEntry {
+            spec: EffectSpec::DropShadow {
+                blur,
+                offset: [0.0, 2.0],
+                color: [0, 0, 0, 128],
+            },
+            enabled: true,
+        }
+    }
+
+    fn blur_entry(radius: f64) -> EffectEntry {
+        EffectEntry {
+            spec: EffectSpec::GaussianBlur { radius },
+            enabled: true,
+        }
+    }
+
+    fn effects_of(scene: &Scene, id: NodeId) -> Vec<EffectEntry> {
+        scene.node(id).expect("节点在").effects.clone()
+    }
+
+    #[test]
+    fn effect_add_move_remove_roundtrip() {
+        let (mut scene, _root, a, _sub, _b, _c) = demo_scene();
+        let snapshot = scene.clone();
+        let mut history = History::new();
+
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 0,
+                entry: shadow_entry(4.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 1,
+                entry: blur_entry(2.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(
+            effects_of(&scene, a),
+            vec![shadow_entry(4.0), blur_entry(2.0)]
+        );
+
+        // 拖动排序:blur 从 1 移到 0(摘除后列表解释)
+        history.exec(
+            MoveEffect {
+                id: a,
+                from: 1,
+                to: 0,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(
+            effects_of(&scene, a),
+            vec![blur_entry(2.0), shadow_entry(4.0)]
+        );
+
+        // 移除(捕获条目后执行)
+        let cmd = RemoveEffect::capture(&scene, a, 1).expect("捕获");
+        assert_eq!(cmd.entry, shadow_entry(4.0));
+        history.exec(cmd.boxed(), &mut scene);
+        assert_eq!(effects_of(&scene, a), vec![blur_entry(2.0)]);
+
+        // 一步步撤销回到初始(无效果)状态
+        while history.can_undo() {
+            history.undo(&mut scene);
+        }
+        assert_eq!(scene, snapshot, "效果命令全部撤销后与初始一致");
+        assert!(effects_of(&scene, a).is_empty());
+
+        // 重做一步不少
+        while history.can_redo() {
+            history.redo(&mut scene);
+        }
+        assert_eq!(effects_of(&scene, a), vec![blur_entry(2.0)]);
+    }
+
+    #[test]
+    fn move_effect_to_out_of_range_clamps_append() {
+        let (mut scene, _root, a, _sub, _b, _c) = demo_scene();
+        let mut history = History::new();
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 0,
+                entry: shadow_entry(4.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 1,
+                entry: blur_entry(2.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        // to 越界 → clamp 到尾部(摘除后 len = 1)
+        history.exec(
+            MoveEffect {
+                id: a,
+                from: 0,
+                to: 9,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(
+            effects_of(&scene, a),
+            vec![blur_entry(2.0), shadow_entry(4.0)]
+        );
+        history.undo(&mut scene);
+        assert_eq!(
+            effects_of(&scene, a),
+            vec![shadow_entry(4.0), blur_entry(2.0)]
+        );
+    }
+
+    #[test]
+    fn effect_commands_skip_invalid_targets() {
+        let (mut scene, _root, a, _sub, _b, _c) = demo_scene();
+        let snapshot = scene.clone();
+        let mut history = History::new();
+
+        // 插入下标越界 → 空操作
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 9,
+                entry: blur_entry(2.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        eprintln!("[dbg] exec1 后 A.effects = {:?}", effects_of(&scene, a));
+        assert!(effects_of(&scene, a).is_empty());
+        // 越界开关/参数/移动/移除 → 全部空操作
+        history.exec(
+            SetEffectEnabled {
+                id: a,
+                index: 0,
+                old: true,
+                new: false,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        eprintln!("[dbg] exec2 后 A.effects = {:?}", effects_of(&scene, a));
+        history.exec(
+            SetEffectSpec {
+                id: a,
+                index: 0,
+                old: EffectSpec::brightness(1.0),
+                new: EffectSpec::brightness(2.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        eprintln!("[dbg] exec3 后 A.effects = {:?}", effects_of(&scene, a));
+        history.exec(
+            MoveEffect {
+                id: a,
+                from: 0,
+                to: 1,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        eprintln!("[dbg] exec4 后 A.effects = {:?}", effects_of(&scene, a));
+        history.exec(
+            RemoveEffect {
+                id: a,
+                index: 0,
+                entry: blur_entry(2.0),
+                applied: false,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        eprintln!("[dbg] exec5 后 A.effects = {:?}", effects_of(&scene, a));
+        // 不存在的节点同样静默跳过。注意:slotmap key 跨场景可能碰撞
+        // (本场景首个节点 = (0,1) 恰撞 demo 根组),故 ghost 场景先造 7 个
+        // 节点,取下标 6 的 key——demo 场景从未分配过该槽,保证缺席。
+        let mut other = Scene::new();
+        let ghost = (0..7)
+            .map(|i| {
+                other
+                    .add_node(None, format!("g{i}"), NodeContent::Group)
+                    .expect("ghost")
+            })
+            .last()
+            .expect("至少一个");
+        let _ = ghost;
+
+        eprintln!("[dbg] 终态 A.effects = {:?}", effects_of(&scene, a));
+        eprintln!("[dbg] 终态 根.effects = {:?}", effects_of(&scene, _root));
+        assert_eq!(scene, snapshot, "非法目标不得改状态");
+        while history.can_undo() {
+            history.undo(&mut scene);
+        }
+        assert_eq!(scene, snapshot);
+    }
+
+    #[test]
+    fn set_effect_enabled_roundtrip() {
+        let (mut scene, _root, a, _sub, _b, _c) = demo_scene();
+        let mut history = History::new();
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 0,
+                entry: blur_entry(2.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetEffectEnabled {
+                id: a,
+                index: 0,
+                old: true,
+                new: false,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert!(!effects_of(&scene, a)[0].enabled, "开关应生效");
+        history.undo(&mut scene);
+        assert!(effects_of(&scene, a)[0].enabled, "撤销恢复开关");
+        history.redo(&mut scene);
+        assert!(!effects_of(&scene, a)[0].enabled);
+    }
+
+    #[test]
+    fn set_effect_spec_merges_per_node_and_index() {
+        let (mut scene, _root, a, _sub, b, _c) = demo_scene();
+        let mut history = History::new();
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 0,
+                entry: blur_entry(1.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 1,
+                entry: blur_entry(0.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        let first = blur_entry(1.0).spec;
+        let second = blur_entry(0.0).spec;
+
+        // 同节点同下标:拖动式连续修改 → 合并为一步
+        history.exec(
+            SetEffectSpec {
+                id: a,
+                index: 0,
+                old: first.clone(),
+                new: blur_entry(3.0).spec,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetEffectSpec {
+                id: a,
+                index: 0,
+                old: blur_entry(3.0).spec,
+                new: blur_entry(5.0).spec,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(
+            history.undo_len(),
+            3,
+            "[add, add, SetEffectSpec×2 合并为一步]"
+        );
+        assert_eq!(effects_of(&scene, a)[0].spec, blur_entry(5.0).spec);
+
+        history.undo(&mut scene);
+        assert_eq!(effects_of(&scene, a)[0].spec, first, "保留最早的 old");
+        history.redo(&mut scene);
+        assert_eq!(
+            effects_of(&scene, a)[0].spec,
+            blur_entry(5.0).spec,
+            "保留最新的 new"
+        );
+
+        // 同节点不同下标不合并
+        history.exec(
+            SetEffectSpec {
+                id: a,
+                index: 1,
+                old: second,
+                new: blur_entry(7.0).spec,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(history.undo_len(), 4);
+        // 不同节点不合并
+        history.exec(
+            AddEffect {
+                id: b,
+                index: 0,
+                entry: blur_entry(1.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetEffectSpec {
+                id: b,
+                index: 0,
+                old: blur_entry(1.0).spec,
+                new: blur_entry(9.0).spec,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(history.undo_len(), 6);
+    }
+
+    #[test]
+    fn effect_commands_heal_after_subtree_restore() {
+        // 子树恢复换发 id 后,历史栈里的效果命令必须被重映射
+        let (mut scene, _root, _a, sub, b, _c) = demo_scene();
+        let before = scene.clone(); // 加效果前(全撤销的最终基准)
+        let mut history = History::new();
+        history.exec(
+            AddEffect {
+                id: b,
+                index: 0,
+                entry: shadow_entry(4.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        let snapshot = scene.clone();
+        history.exec(RemoveNode::new(sub).boxed(), &mut scene);
+        assert_eq!(scene.len(), snapshot.len() - 2);
+
+        history.undo(&mut scene); // 恢复子树(矩形B 换新 id,快照含效果)
+        history.undo(&mut scene); // AddEffect 必须重映射到新 id 才能撤销
+        let new_b = scene
+            .nodes
+            .iter()
+            .find(|(_, n)| n.name == "矩形B")
+            .map(|(id, _)| id)
+            .expect("矩形B 已恢复");
+        assert!(
+            effects_of(&scene, new_b).is_empty(),
+            "重映射后的撤销生效:恢复的矩形B 不再带效果"
+        );
+        assert_eq!(scene, before, "全撤销回到加效果前(结构化相等)");
     }
 
     // —— proptest:随机命令序列全部撤销后回到初始快照 ——

@@ -9,8 +9,18 @@
 //!
 //! 顶→底逆序遍历保证"最上面的对象优先命中";Group 自身不响应命中,但子节点
 //! 可以穿透命中(选择工具点到组内对象选中的是对象本身)。
+//!
+//! # 锚点几何辅助(docs/04 §3 钢笔续接 + 锚点编辑共用)
+//!
+//! [`first_subpath`] 把单子路径 `BezPath` 分解为锚点序列(直角/带手柄),
+//! [`hit_anchor`] 做点到锚点的容差命中,[`nearest_on_subpath`] 用 kurbo
+//! `ParamCurveNearest` 求路径最近点(AddAnchor 吸附提示)。三者为纯几何
+//! 函数,坐标一律节点局部系,世界换算由调用方(工具层)负责。
 
-use kurbo::{BezPath, PathEl, Point, Rect, Shape};
+use kurbo::{
+    BezPath, CubicBez, Line, ParamCurve, ParamCurveNearest, PathEl, PathSeg, Point, QuadBez, Rect,
+    Shape,
+};
 use sable_foundation::scene::{NodeContent, NodeId, Scene};
 
 /// `Scene` 的命中测试能力(foreign trait 模式:`use sable_canvas::hit_test::SceneHitTest;` 后,
@@ -135,6 +145,163 @@ fn point_segment_distance(p: Point, a: Point, b: Point) -> f64 {
     let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
     let closest = a + ab * t;
     (p - closest).hypot()
+}
+
+// ===========================================================================
+// 锚点几何辅助(钢笔续接 / 锚点编辑;docs/04 §3)
+// ===========================================================================
+
+/// 锚点(节点局部坐标;手柄 = 贝塞尔控制点)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnchorPoint {
+    /// 锚点位置。
+    pub pos: Point,
+    /// 入手柄(进入该锚点方向的控制点)。
+    pub in_handle: Option<Point>,
+    /// 出手柄(离开该锚点方向的控制点)。
+    pub out_handle: Option<Point>,
+}
+
+/// 单个子路径的锚点分解。
+///
+/// 闭合路径的闭合段按**末锚→首锚的直线**建模(与 tool 层 `build_path` 的
+/// `close_path()` 同构;曲率闭合段在 v1.0 锚点模型里不可表达,见该模块注记)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubPath {
+    /// 是否以 `ClosePath` 收尾。
+    pub closed: bool,
+    /// 锚点序列(至少 1 个)。
+    pub anchors: Vec<AnchorPoint>,
+}
+
+/// 分解 `BezPath` 的首个(也是唯一)子路径为锚点序列。
+///
+/// 空路径、无 `MoveTo` 的病态路径、**多子路径**都返回 `None`(v1.0 限制:
+/// 锚点编辑/续接只面向单子路径节点)。`QuadTo` 经 `QuadBez::raise` 精确升阶
+/// 为三次贝塞尔后并入(几何等价,升阶无误差)。
+pub fn first_subpath(path: &BezPath) -> Option<SubPath> {
+    let move_count = path
+        .iter()
+        .filter(|el| matches!(el, PathEl::MoveTo(_)))
+        .count();
+    if move_count != 1 {
+        return None;
+    }
+    let mut anchors: Vec<AnchorPoint> = Vec::new();
+    let mut closed = false;
+    for el in path.iter() {
+        match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => {
+                anchors.push(AnchorPoint {
+                    pos: p,
+                    in_handle: None,
+                    out_handle: None,
+                });
+            }
+            PathEl::QuadTo(c, p) => {
+                let start = anchors.last()?.pos;
+                push_cubic(&mut anchors, QuadBez::new(start, c, p).raise());
+            }
+            PathEl::CurveTo(c1, c2, p) => {
+                let start = anchors.last()?.pos;
+                push_cubic(&mut anchors, CubicBez::new(start, c1, c2, p));
+            }
+            PathEl::ClosePath => closed = true,
+        }
+    }
+    if anchors.is_empty() {
+        None
+    } else {
+        Some(SubPath { closed, anchors })
+    }
+}
+
+/// 把一段三次贝塞尔并入锚点序列:前锚补出手柄,新锚点带入入手柄。
+fn push_cubic(anchors: &mut Vec<AnchorPoint>, c: CubicBez) {
+    if let Some(prev) = anchors.last_mut() {
+        // 控制点与端点重合 = "缺手柄以锚点补位"的退化写法(build_path 约定),非真手柄
+        if prev.out_handle.is_none() && c.p1 != prev.pos {
+            prev.out_handle = Some(c.p1);
+        }
+    }
+    let in_handle = (c.p2 != c.p3).then_some(c.p2);
+    anchors.push(AnchorPoint {
+        pos: c.p3,
+        in_handle,
+        out_handle: None,
+    });
+}
+
+/// 点到锚点的容差命中:返回**首个**命中的锚点下标(点到点距离,世界/局部
+/// 坐标口径由调用方统一)。
+pub fn hit_anchor(anchors: &[AnchorPoint], pt: Point, tolerance: f64) -> Option<usize> {
+    anchors
+        .iter()
+        .position(|a| (a.pos - pt).hypot() <= tolerance)
+}
+
+/// 锚点模型相邻两锚点之间的段(与 tool 层 `build_path` 同构:
+/// 双侧无手柄 = 直线,否则三次贝塞尔、缺侧手柄以锚点自身补位)。
+pub fn anchor_segment(a: &AnchorPoint, b: &AnchorPoint) -> PathSeg {
+    match (a.out_handle, b.in_handle) {
+        (None, None) => PathSeg::Line(Line::new(a.pos, b.pos)),
+        (out, in_) => PathSeg::Cubic(CubicBez::new(
+            a.pos,
+            out.unwrap_or(a.pos),
+            in_.unwrap_or(b.pos),
+            b.pos,
+        )),
+    }
+}
+
+/// [`nearest_on_subpath`] 的查询结果。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PathNearest {
+    /// 段下标:锚点序列 `windows(2)` 的顺序;闭合路径最后一段 = 末锚→首锚
+    /// (下标 `anchors.len() - 1`)。
+    pub segment: usize,
+    /// 段内参数(0..1)。
+    pub t: f64,
+    /// 路径上的最近点。
+    pub point: Point,
+    /// 到最近点的距离。
+    pub distance: f64,
+}
+
+/// 路径上离 `pt` 最近的点(kurbo `ParamCurveNearest`,内部逐段求解;
+/// `accuracy` 为 flatten 精度,与 [`distance_to_path`] 的 0.25 量级同口径)。
+pub fn nearest_on_subpath(sub: &SubPath, pt: Point, accuracy: f64) -> Option<PathNearest> {
+    let mut best: Option<PathNearest> = None;
+    let consider = |segment: usize, seg: PathSeg, best: &mut Option<PathNearest>| {
+        let n = seg.nearest(pt, accuracy);
+        let distance = n.distance_sq.sqrt();
+        let better = match best {
+            Some(b) => distance < b.distance,
+            None => true,
+        };
+        if better {
+            *best = Some(PathNearest {
+                segment,
+                t: n.t,
+                point: seg.eval(n.t),
+                distance,
+            });
+        }
+    };
+    for (i, pair) in sub.anchors.windows(2).enumerate() {
+        consider(i, anchor_segment(&pair[0], &pair[1]), &mut best);
+    }
+    if sub.closed {
+        let n = sub.anchors.len();
+        if n >= 2 {
+            consider(
+                n - 1,
+                anchor_segment(&sub.anchors[n - 1], &sub.anchors[0]),
+                &mut best,
+            );
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -369,5 +536,125 @@ mod tests {
         // bbox 外但容差内
         assert_eq!(scene.hit_test(Point::new(42.0 + 0.4, 6.0), 0.5), Some(id));
         assert_eq!(scene.hit_test(Point::new(60.0, 6.0), 0.5), None);
+    }
+
+    // —— 锚点几何辅助(docs/04 §3) ——
+
+    #[test]
+    fn first_subpath_decomposes_lines_and_curves() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((10.0, 0.0));
+        path.curve_to((12.0, -3.0), (18.0, -3.0), (20.0, 0.0));
+        path.close_path();
+
+        let sub = first_subpath(&path).expect("单子路径");
+        assert!(sub.closed);
+        assert_eq!(sub.anchors.len(), 3);
+        // 直线锚点不带手柄;曲线段给前锚配出手柄、后锚配入手柄
+        assert_eq!(sub.anchors[0].out_handle, None);
+        assert_eq!(sub.anchors[1].in_handle, None);
+        assert_eq!(sub.anchors[1].out_handle, Some(Point::new(12.0, -3.0)));
+        assert_eq!(sub.anchors[2].in_handle, Some(Point::new(18.0, -3.0)));
+        assert_eq!(sub.anchors[2].out_handle, None);
+    }
+
+    #[test]
+    fn first_subpath_raises_quad_to_cubic_exactly() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.quad_to((5.0, 10.0), (10.0, 0.0));
+
+        let sub = first_subpath(&path).expect("单子路径");
+        assert!(!sub.closed);
+        assert_eq!(sub.anchors.len(), 2);
+        assert_eq!(sub.anchors[1].pos, Point::new(10.0, 0.0));
+        // 升阶后 t=0.5 的点与原二次曲线一致(QuadBez::raise 无误差)
+        let seg = anchor_segment(&sub.anchors[0], &sub.anchors[1]);
+        let mid = seg.eval(0.5);
+        let quad_mid = Point::new(5.0, 5.0); // (0,0)-(5,10)-(10,0) 的 t=0.5 点
+        assert!((mid - quad_mid).hypot() < 1e-9);
+    }
+
+    #[test]
+    fn first_subpath_rejects_empty_and_multi_subpath() {
+        assert!(first_subpath(&BezPath::new()).is_none(), "空路径");
+
+        let mut multi = BezPath::new();
+        multi.move_to((0.0, 0.0));
+        multi.line_to((1.0, 1.0));
+        multi.move_to((5.0, 5.0));
+        multi.line_to((6.0, 6.0));
+        assert!(first_subpath(&multi).is_none(), "多子路径 v1.0 不支持");
+    }
+
+    #[test]
+    fn hit_anchor_returns_first_within_tolerance() {
+        let anchors = vec![
+            AnchorPoint {
+                pos: Point::new(0.0, 0.0),
+                in_handle: None,
+                out_handle: None,
+            },
+            AnchorPoint {
+                pos: Point::new(10.0, 0.0),
+                in_handle: None,
+                out_handle: None,
+            },
+        ];
+        assert_eq!(hit_anchor(&anchors, Point::new(10.5, 0.5), 1.0), Some(1));
+        assert_eq!(hit_anchor(&anchors, Point::new(5.0, 5.0), 1.0), None);
+    }
+
+    #[test]
+    fn nearest_on_subpath_finds_line_midpoint() {
+        let sub = SubPath {
+            closed: false,
+            anchors: vec![
+                AnchorPoint {
+                    pos: Point::new(0.0, 0.0),
+                    in_handle: None,
+                    out_handle: None,
+                },
+                AnchorPoint {
+                    pos: Point::new(10.0, 0.0),
+                    in_handle: None,
+                    out_handle: None,
+                },
+            ],
+        };
+        let n = nearest_on_subpath(&sub, Point::new(5.0, 1.0), 0.25).expect("有线段");
+        assert_eq!(n.segment, 0);
+        assert!((n.t - 0.5).abs() < 0.01);
+        assert!((n.point - Point::new(5.0, 0.0)).hypot() < 0.01);
+        assert!((n.distance - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn nearest_on_subpath_indexes_closing_segment() {
+        let sub = SubPath {
+            closed: true,
+            anchors: vec![
+                AnchorPoint {
+                    pos: Point::new(0.0, 0.0),
+                    in_handle: None,
+                    out_handle: None,
+                },
+                AnchorPoint {
+                    pos: Point::new(10.0, 0.0),
+                    in_handle: None,
+                    out_handle: None,
+                },
+                AnchorPoint {
+                    pos: Point::new(5.0, 8.0),
+                    in_handle: None,
+                    out_handle: None,
+                },
+            ],
+        };
+        // 闭合段 = 末锚(5,8) → 首锚(0,0),中点 (2.5,4)
+        let n = nearest_on_subpath(&sub, Point::new(2.5, 4.0), 0.25).expect("有闭合段");
+        assert_eq!(n.segment, 2, "闭合段下标 = anchors.len()-1");
+        assert!(n.distance < 0.01);
     }
 }

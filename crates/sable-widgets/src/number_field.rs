@@ -1,40 +1,76 @@
 //! 数值拖拽框 NumberField(分册四 §6,设计软件的灵魂小件)。
 //!
-//! # v0.1 交互矩阵(与分册四 §6 的差异均已注明)
+//! # v1.0 交互矩阵(08 迭代计划 S3 3.3;分册四 §6 验收表逐行对应)
 //!
 //! | 输入 | 行为 | 状态 |
 //! |---|---|---|
-//! | 按住左右拖 | `start + dx × step × 修饰键倍率`,钳制 range | ✅ 完整(拖拽路径必须完整) |
+//! | 按住左右拖 | `start + dx × step × 修饰键倍率`,钳制 range | ✅ 完整 |
 //! | Shift 拖 | ×10 | ✅ |
 //! | Alt 拖 | ×0.1(**Alt 优先**,上游 NumField 同款) | ✅ |
 //! | 滚轮 | ±1 步进(Shift ×10) | ✅ |
-//! | ↑/↓ 键 | ±1 步进(Shift ×10) | ⚠️ 已挂 `on_key_down`,但 gpui 0.2.2 的
-//!   元素级键盘事件只在元素持有焦点时派发,v0.1 未接焦点系统(track_focus)——
-//!   **键盘步进的可用性 = M2 接焦点后生效**(TODO-M2) |
-//! | 双击 | 进入文本编辑态(v0.1 简化:仅展示当前值 + 强调描边) | ⚠️ **简化**:
-//!   gpui-component 0.7.0 的 Input 跑在 gpui-pre 0.3.7 类型世界(已核实其
-//!   Cargo.toml),与 gpui 0.2.2 不互通,接入成本过高——真文本输入 = TODO-M2 |
+//! | ↑/↓ 键 | ±1 步进(Shift ×10);需焦点(元素恒 `track_focus`,点击/Tab 即得焦点) | ✅ |
+//! | 双击 / Enter | 进入文本编辑态(**真编辑**,v1.0 升级:双击"简化展示"已移除) | ✅ |
+//! | 编辑态键入 | 字符 0-9 `.` `e` `E` `+` `-` 插入 buffer | ✅ |
+//! | Backspace / Delete | 删光标前/后字符 | ✅ |
+//! | ←/→ / Home / End | 移动光标(选择区间 = M2,`EditBuffer` 已留扩展位) | ✅ |
+//! | Enter | 提交(parse f64 → 钳制 range → [`Binding::set`] **一次**) | ✅ |
+//! | Esc | 取消,回落旧值(不产生命令) | ✅ |
+//! | Tab | 提交 + `window.focus_next()` 跳下一字段(gpui 0.2.2 已核实存在
+//!   `Window::focus_next`,按渲染序的 tab stop 环游) | ✅ |
+//! | 失焦(点击别处) | 渲染帧检测 `editing && !focused` → 自动提交(与 Enter 同路) | ✅ |
+//! | IME | [`EntityInputHandler`] 实现挂 `track_focus` 元素,`Window::handle_input`
+//!   在 paint 阶段注册(见下方"IME 钩子") | ✅ 接口全通 |
+//!
+//! # 编辑态状态机
+//!
+//! ```text
+//! Display ──双击/Enter/键入数字──▶ Editing { buffer, caret } ──Enter/Tab/失焦──▶ Display(提交)
+//!                                     │──────Esc───────────────▶ Display(回落旧值)
+//! ```
+//!
+//! 编辑态渲染 = buffer 分段着色(光标前文本 + 1px 光标条 + 光标后文本),
+//! 走 flex 布局天然定位,不做字形测量(gpui 0.2.2 下最稳方案)。
 //!
 //! # 撤销与节流
 //!
-//! 每次 scrub 都走 [`Binding::set`];widgets 层不做 16ms 节流,**连续 set 由
-//! 调用方 set 闭包里的命令 `merge` 语义兜底**(分册三 §2 拖动范式,契约允许
-//! 二选一);值未变化时跳过 set(PartialEq 短路)。
+//! **提交一次 = [`Binding::set`] 一次**(编辑中的每个 keystroke 只改本地
+//! buffer,不产生命令);拖拽/滚轮/步进仍逐次 set,由调用方 set 闭包里的
+//! 命令 `merge` 语义兜底(分册三 §2 拖动范式)。widgets 层不做 16ms 节流,
+//! 值未变化时跳过 set(PartialEq 短路)。
+//!
+//! # IME 钩子(2026-10 gpui 0.2.2 源码核实)
+//!
+//! gpui 0.2.2 **有** `InputHandler` 平台文本输入 trait(`src/platform.rs:995`)
+//! 与视图侧 `EntityInputHandler`(`src/input.rs`)+ paint 阶段注册点
+//! `Window::handle_input`(`src/window.rs:3403`,内部断言 Paint 阶段——
+//! 故经 `canvas()` 元素的 paint 闭包挂载,而非 render/prepaint)。本组件
+//! 实现全部 8 个方法:中文/scientific 输入法文本经
+//! `replace_text_in_range` 进 buffer;候选窗定位返回控件 bounds
+//! (字符级定位 = M2;composing 高亮未追踪,预提交文本直插 buffer——
+//! **真机验证 = TG-03 项**,Windows DirectWrite IMM32 路径需真机回归)。
+//!
+//! # 焦点系统(gpui 0.2.2 源码核实)
+//!
+//! `FocusHandle`(`cx.focus_handle()`)、`InteractiveElement::track_focus`、
+//! `Window::focus`/`focus_next` 均存在;track_focus 元素被点击时自动接管
+//! 焦点(`elements/div.rs` paint 期的 mousedown 派发)。构造函数无 cx
+//! (受 [`crate::inspector`] 调用形态约束),焦点句柄在首帧 render 惰性
+//! 创建并以 `tab_stop(true)` 进 Tab 环游序。
 //!
 //! # A7 微交互(hover/press 三态,分册六 §4.3 #1)
 //!
 //! 底色 = `surface_2` 基色上插值:hover 时经 [`hover_tint`](crate::interact::hover_tint)
 //! 加亮 4%(120ms ease-out,由 [`HoverState`](crate::interact::HoverState) 驱动),
-//! 按下(scrub 拖拽中)直接取 `pressed_tint` 加亮 8%。动画插值需要 hover
-//! 进出事件(`on_hover` 只存在于 Stateful 元素),故**同屏多个实例时必须
-//! 经 [`.element_id`](Self::element_id) 给唯一 id**;未给 id 时退化为 gpui
+//! 按下(scrub 拖拽中)直接取 `pressed_tint` 加亮 8%。同屏多个实例时必须
+//! 经 [`.element_id`](Self::element_id) 给唯一 id;未给 id 时退化为 gpui
 //! hover 样式即时切换(无动画,不破缺省构造)。减弱动态(A8)下插值被
-//! [`reduced_motion`](crate::anim::reduced_motion) 短路,进度直通 0/1。
+//! [`reduced_motion`](crate::anim::reduced_motion) 短路,进度直通 0/1;
+//! 编辑态光标为常亮竖线(不闪烁),与 A8 无关。
 
 use gpui::{
-    Context, ElementId, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, Window, px,
+    Context, ElementId, EntityInputHandler, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent,
+    SharedString, StatefulInteractiveElement, Styled, Window, canvas, px,
 };
 
 use crate::anim::lerp_hsla;
@@ -51,6 +87,8 @@ const LINE_HEIGHT_PX: f32 = 14.0;
 const V_PADDING_PX: f32 = 4.0;
 /// 滚轮一行折算像素(与 sable-canvas 同款惯例)。
 const SCROLL_LINE_PX: f32 = 24.0;
+/// 编辑态光标条宽(1px 竖线,token 取 accent 色)。
+const CARET_WIDTH_PX: f32 = 1.0;
 
 /// 数值框(有状态 Entity):`cx.new(|_| NumberField::new(binding).range(0.0, 100.0))`。
 pub struct NumberField {
@@ -60,8 +98,10 @@ pub struct NumberField {
     unit: &'static str,
     /// 拖拽中:窗口 x 起点 + 起始值
     drag: Option<ScrubDrag>,
-    /// 文本编辑态(v0.1 简化,见模块 doc)
-    editing: bool,
+    /// 文本编辑态(v1.0 真编辑:buffer + 光标;`None` = 展示态)
+    editing: Option<EditBuffer>,
+    /// 焦点句柄(首帧惰性创建,`tab_stop(true)` 进 Tab 环游;见模块 doc)
+    focus: Option<gpui::FocusHandle>,
     /// A7 悬停进度(120ms ease-out;拖拽 = pressed 态,复用 ScrubDrag 判定)
     hover: HoverState,
     /// 悬停事件跟踪用的元素 id(`on_hover` 需要 Stateful 元素;同屏多实例
@@ -75,6 +115,164 @@ struct ScrubDrag {
     start_val: f64,
 }
 
+/// 文本编辑态缓冲:`caret` 是 **char 边界上的字节偏移**(数值输入全 ASCII,
+/// IME 插入的 CJK 按整字符推进,不变量恒成立)。
+///
+/// 纯数据 + 纯函数操作,单测覆盖插入/删除/光标边界(无 App 依赖)。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditBuffer {
+    text: String,
+    caret: usize,
+}
+
+impl EditBuffer {
+    /// 从展示值构造(光标在末尾)。
+    pub fn new(initial: &str) -> Self {
+        EditBuffer {
+            caret: initial.len(),
+            text: initial.to_string(),
+        }
+    }
+
+    /// 光标前插入文本,光标推进 `text.len()`(调用方保证 caret 在边界上;
+    /// 本类型全部公开操作恒维持该不变量)。
+    pub fn insert(&mut self, text: &str) {
+        self.text.insert_str(self.caret, text);
+        self.caret += text.len();
+    }
+
+    /// 删除光标前一个字符;光标在起点时无操作。返回是否发生删除。
+    pub fn backspace(&mut self) -> bool {
+        if self.caret == 0 {
+            return false;
+        }
+        let prev = self.text[..self.caret]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or_default();
+        self.text.replace_range(prev..self.caret, "");
+        self.caret = prev;
+        true
+    }
+
+    /// 删除光标后一个字符;光标在终点时无操作。返回是否发生删除。
+    pub fn delete(&mut self) -> bool {
+        if self.caret >= self.text.len() {
+            return false;
+        }
+        let end = self.text[self.caret..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or_default();
+        self.text.replace_range(self.caret..self.caret + end, "");
+        true
+    }
+
+    /// 光标移动(纯函数语义:越界钳到 0/len)。返回位置是否变化。
+    pub fn move_caret(&mut self, direction: CaretMove) -> bool {
+        let next = match direction {
+            CaretMove::Left => self.text[..self.caret]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0),
+            CaretMove::Right => self.text[self.caret..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .map(|n| self.caret + n)
+                .unwrap_or(self.caret),
+            CaretMove::Home => 0,
+            CaretMove::End => self.text.len(),
+        };
+        if next == self.caret {
+            return false;
+        }
+        self.caret = next;
+        true
+    }
+
+    /// 区间替换(IME `replace_text_in_range` 路径):start/end 一律**向下取**
+    /// char 边界(平台发来撕裂的 UTF-16 下标时只删整字符,宁少勿多),
+    /// 替换后光标落在插入文本之后。
+    pub fn replace_range(&mut self, range: std::ops::Range<usize>, text: &str) {
+        let start = self.boundary_floor(range.start.min(self.text.len()));
+        let end = self.boundary_floor(range.end.min(self.text.len()));
+        if start > end {
+            return; // 防御:非法区间原样保留
+        }
+        self.text.replace_range(start..end, text);
+        self.caret = start + text.len();
+    }
+
+    /// 直接移动光标(IME 提交后的定位;越界钳到 [0, len] 的 char 边界)。
+    pub fn set_caret(&mut self, byte_index: usize) {
+        self.caret = self.boundary_floor(byte_index.min(self.text.len()));
+    }
+
+    /// ≤ index 的最近 char 边界(IME/平台下标防御)。
+    fn boundary_floor(&self, index: usize) -> usize {
+        let mut i = index.min(self.text.len());
+        while i > 0 && !self.text.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+
+    /// 光标两侧文本(渲染分段:左段 + 光标条 + 右段)。
+    pub fn segments(&self) -> (&str, &str) {
+        (&self.text[..self.caret], &self.text[self.caret..])
+    }
+
+    /// 光标位置(字节偏移,char 边界)。
+    pub fn caret(&self) -> usize {
+        self.caret
+    }
+
+    /// 缓冲文本。
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// 光标移动方向(编辑态 ←/→/Home/End;shift 选择区间 = M2)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaretMove {
+    /// 左移一个字符(起点钳 0)。
+    Left,
+    /// 右移一个字符(终点钳 len)。
+    Right,
+    /// 行首。
+    Home,
+    /// 行尾。
+    End,
+}
+
+/// 编辑字符白名单:数字/小数点/科学计数 e/正负号(任务 3.3 #2)。
+pub fn is_editable_char(c: char) -> bool {
+    c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-')
+}
+
+/// 提交结果(纯函数 [`commit_value`] 的输出;便于无 App 单测"提交一次命令"
+/// 的语义——`Value` 才走 [`Binding::set`],`Invalid` 回落旧值)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CommitOutcome {
+    /// 合法数值(已钳制到 range;调用方执行一次 set)。
+    Value(f64),
+    /// 非数值(空串/非法串):回落旧值,不产生命令。
+    Invalid,
+}
+
+/// 提交校验(纯函数):trim 后 parse f64;合法值钳制到 range。
+pub fn commit_value(text: &str, range: (f64, f64)) -> CommitOutcome {
+    match text.trim().parse::<f64>() {
+        Ok(v) if v.is_finite() => CommitOutcome::Value(clamp_range(v, range)),
+        _ => CommitOutcome::Invalid,
+    }
+}
+
 impl NumberField {
     /// 绑定驱动的数值框;默认范围 0..=100、步长 1、无单位。
     pub fn new(binding: Binding<f64>) -> Self {
@@ -84,7 +282,8 @@ impl NumberField {
             step: 1.0,
             unit: "",
             drag: None,
-            editing: false,
+            editing: None,
+            focus: None,
             hover: HoverState::new(),
             element_id: None,
         }
@@ -120,19 +319,59 @@ impl NumberField {
         control_height(HEIGHT_COMPACT, LINE_HEIGHT_PX, V_PADDING_PX)
     }
 
+    /// 进入编辑态:以当前值展示形式播 buffer,光标在末尾,并接管焦点。
+    fn begin_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.binding.get(cx);
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        self.editing = Some(EditBuffer::new(&format_value(value)));
+        focus.focus(window);
+        cx.notify();
+    }
+
+    /// 提交:合法 → `Binding::set` **一次**;非法 → 回落旧值(无命令)。
+    /// Enter / Tab / 失焦三路共用(任务 3.3 #3/#4)。
+    fn commit(&mut self, cx: &mut Context<Self>) {
+        let Some(buffer) = self.editing.take() else {
+            return;
+        };
+        if let CommitOutcome::Value(v) = commit_value(buffer.text(), self.range) {
+            if v != self.binding.get(cx) {
+                // 提交一次 = 命令一次(编辑中 keystroke 不产生命令,模块 doc)
+                self.binding.set(v, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// 取消(Esc):丢弃 buffer,回落旧值,不产生命令。
+    fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.editing.take().is_some() {
+            cx.notify();
+        }
+    }
+
     // —— 事件(gpui 事件坐标一律窗口坐标,dx 与 bounds 无关)——
 
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.button != MouseButton::Left {
             return;
         }
-        // 双击 → 文本编辑态(v0.1 简化展示;真输入 = TODO-M2)
-        self.editing = event.click_count >= 2;
+        // 编辑态禁用拖拽(任务 3.3 #7);双击进入编辑态(真编辑,v1.0)
+        if self.editing.is_some() {
+            return;
+        }
+        if event.click_count >= 2 {
+            self.begin_editing(window, cx);
+            return;
+        }
         // gpui 0.2.2 的 Pixels 字段 crate 私有(已核实),公开通道是 From<Pixels> for f64
         self.drag = Some(ScrubDrag {
             start_x: f64::from(event.position.x),
@@ -147,6 +386,9 @@ impl NumberField {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.editing.is_some() {
+            return; // 编辑态时拖拽禁用(任务 3.3 #7)
+        }
         let Some(drag) = self.drag else { return };
         if event.pressed_button != Some(MouseButton::Left) {
             return; // 拖出元素后松键的场景由 on_mouse_up_out 兜底(M2)
@@ -177,6 +419,9 @@ impl NumberField {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.editing.is_some() {
+            return; // 编辑态滚轮不步进(文本正在编辑,语义冲突)
+        }
         let dy = f64::from(event.delta.pixel_delta(px(SCROLL_LINE_PX)).y);
         if dy == 0.0 {
             return;
@@ -194,30 +439,104 @@ impl NumberField {
     fn on_key_down(
         &mut self,
         event: &gpui::KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match event.keystroke.key.as_str() {
+        let keystroke = &event.keystroke;
+        // —— 编辑态:控制键先行(提交/取消/跳格),再进 buffer 状态机
+        // (先分流控制键,避免与 `self.editing.as_mut()` 的借用交叠)——
+        if self.editing.is_some() {
+            match keystroke.key.as_str() {
+                "enter" => {
+                    self.commit(cx);
+                    return;
+                }
+                "escape" => {
+                    self.cancel(cx); // 取消回旧值,不产生命令
+                    return;
+                }
+                "tab" => {
+                    // 提交 + Tab 跳下一字段(gpui 0.2.2 的 Window::focus_next,
+                    // 按渲染序在 tab stop 间环游——已核实存在)
+                    self.commit(cx);
+                    window.focus_next();
+                    return;
+                }
+                _ => {}
+            }
+            let Some(buffer) = self.editing.as_mut() else {
+                return;
+            };
+            match keystroke.key.as_str() {
+                "backspace" => {
+                    buffer.backspace();
+                    cx.notify();
+                }
+                "delete" => {
+                    buffer.delete();
+                    cx.notify();
+                }
+                "left" => {
+                    buffer.move_caret(CaretMove::Left);
+                    cx.notify();
+                }
+                "right" => {
+                    buffer.move_caret(CaretMove::Right);
+                    cx.notify();
+                }
+                "home" => {
+                    buffer.move_caret(CaretMove::Home);
+                    cx.notify();
+                }
+                "end" => {
+                    buffer.move_caret(CaretMove::End);
+                    cx.notify();
+                }
+                _ => {
+                    // 字符输入:优先平台给出的实际键入字符(IME/非美式布局),
+                    // 回退单字符 key;经白名单过滤(任务 3.3 #2)
+                    let ch = keystroke
+                        .key_char
+                        .as_deref()
+                        .filter(|s| s.chars().count() == 1)
+                        .and_then(|s| s.chars().next())
+                        .or_else(|| single_char(keystroke.key.as_str()));
+                    if let Some(ch) = ch.filter(|c| is_editable_char(*c)) {
+                        buffer.insert(&ch.to_string());
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
+        // —— 展示态:步进 / 进入编辑 ——
+        match keystroke.key.as_str() {
             "up" | "down" => {
-                // 焦点系统接好后生效(模块 doc:TODO-M2);逻辑先行落地
-                let dir: f64 = if event.keystroke.key == "up" {
-                    1.0
-                } else {
-                    -1.0
-                };
-                let scale = modifier_scale(false, event.keystroke.modifiers.shift);
+                let dir: f64 = if keystroke.key == "up" { 1.0 } else { -1.0 };
+                let scale = modifier_scale(false, keystroke.modifiers.shift);
                 let current = self.binding.get(cx);
-                let next = scrub(current, dir, self.step, scale, self.range);
+                let next = step_by(current, dir, self.step, scale, self.range);
                 if next != current {
                     self.binding.set(next, cx);
                     cx.notify();
                 }
             }
-            "enter" | "escape" if self.editing => {
-                self.editing = false;
-                cx.notify();
+            "enter" => {
+                self.begin_editing(window, cx);
             }
-            _ => {}
+            _ => {
+                // 聚焦状态下直接键入数字/负号等:立即进入编辑态并带入该字符
+                if let Some(ch) = single_char(keystroke.key.as_str()).filter(|c| {
+                    is_editable_char(*c) && !keystroke.modifiers.control && !keystroke.modifiers.alt
+                }) {
+                    self.begin_editing(window, cx);
+                    if let Some(buffer) = self.editing.as_mut() {
+                        *buffer = EditBuffer::new(&ch.to_string());
+                    }
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -232,51 +551,120 @@ impl NumberField {
         }
         cx.notify();
     }
+
+    /// 失焦自动提交:渲染帧检测"编辑中但焦点已走"(点击别处/切窗口),
+    /// 与 Enter 同一条提交路径(任务书"Enter=提交"的失焦等价语义)。
+    fn commit_if_blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self
+            .focus
+            .as_ref()
+            .is_some_and(|handle| handle.is_focused(window));
+        if self.editing.is_some() && !focused {
+            self.commit(cx);
+        }
+    }
 }
 
 impl Render for NumberField {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.commit_if_blurred(window, cx);
+
         let colors = &theme(cx).colors;
-        let value = self.binding.get(cx);
+        let editing = self.editing.clone();
         let dragging = self.drag.is_some();
-        let display: SharedString = format!("{}{}", format_value(value), self.unit).into();
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+
+        // 展示文本:编辑态 = buffer 分段;展示态 = 值 + 单位
+        // (tabular-nums 等宽数字字体随字体 token 化挂接 = M2,分册四 §6)
+        let display = match &editing {
+            Some(buffer) => {
+                let (left, right) = buffer.segments();
+                // 分段着色 + 1px 光标条(flex 流式定位,不做字形测量)
+                h_flex()
+                    .child(gpui::div().child(SharedString::from(left.to_string())))
+                    .child(
+                        gpui::div()
+                            .w(px(CARET_WIDTH_PX))
+                            .h(px(LINE_HEIGHT_PX))
+                            .bg(colors.accent),
+                    )
+                    .child(gpui::div().child(SharedString::from(right.to_string())))
+                    .into_any_element()
+            }
+            None => {
+                let value = self.binding.get(cx);
+                gpui::div()
+                    .child(SharedString::from(format!(
+                        "{}{}",
+                        format_value(value),
+                        self.unit
+                    )))
+                    .into_any_element()
+            }
+        };
 
         // A7 三态底色:静止/悬停 = surface_2 → hover_tint 插值;按下 = pressed_tint
         let base_bg = colors.surface_2;
         let now = interact::now_ms();
         let hover_progress = self.hover.progress_at(now);
-        let bg = if dragging {
+        let bg = if dragging || editing.is_some() {
             interact::pressed_tint(base_bg)
         } else {
             lerp_hsla(base_bg, interact::hover_tint(base_bg), hover_progress)
         };
 
+        // IME 钩子:paint 阶段注册平台输入处理器(Window::handle_input 断言
+        // Paint 阶段,故经 canvas() 的 paint 闭包挂载;见模块 doc)
+        let ime_focus = focus.clone();
+        let ime_entity = cx.entity();
+
         let root = h_flex()
+            .relative()
             .justify_center()
             .h(px(Self::control_height()))
             .min_w_0()
             .px(px(SpacingTokens::SM))
             .rounded(px(RadiusTokens::SM))
             .border_1()
-            .border_color(if dragging || self.editing {
+            .border_color(if dragging || editing.is_some() {
                 colors.border_strong
             } else {
                 colors.border_subtle
             })
             .bg(bg)
             .text_size(px(FONT_SIZE_BODY))
-            .text_color(if dragging || self.editing {
+            .text_color(if dragging || editing.is_some() {
                 colors.text_primary
             } else {
                 colors.text_secondary
             })
             .cursor_pointer()
-            .child(display)
+            .track_focus(&focus)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
-            .on_key_down(cx.listener(Self::on_key_down));
+            .on_key_down(cx.listener(Self::on_key_down))
+            .child(display)
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| {
+                        // focus 已聚焦时注册输入处理器(handle_input 内部同样
+                        // 有 is_focused 断言,双保险;实体消亡后闭包不再被装帧)
+                        window.handle_input(
+                            &ime_focus,
+                            gpui::ElementInputHandler::new(bounds, ime_entity),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
 
         // 悬停动画在跑就续帧(静止零帧提交,分册六 §4.4)
         if self.hover.is_running(now) {
@@ -294,6 +682,154 @@ impl Render for NumberField {
                 .into_any_element(),
         }
     }
+}
+
+/// IME / 平台文本输入(gpui 0.2.2 `EntityInputHandler`,见模块 doc"IME 钩子")。
+///
+/// 范围语义:trait 文档以 **UTF-16** 计;数值 buffer 全 ASCII 时 UTF-16 下标
+/// 与字节下标一致,含 CJK 的中间态经 [`utf16_to_byte`](纯函数)换算。
+/// composing(预提交)文本 v0.1 直插 buffer、不追踪 marked 区间——真机
+/// 回归(TG-03)若发现双写,再引入 marked 追踪。
+impl EntityInputHandler for NumberField {
+    fn text_for_range(
+        &mut self,
+        range_utf16: std::ops::Range<usize>,
+        adjusted_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let buffer = self.editing.as_ref()?;
+        let text = buffer.text();
+        let start = utf16_to_byte(text, range_utf16.start)?;
+        let end = utf16_to_byte(text, range_utf16.end)?;
+        // adjusted_range 按 trait 契约回 UTF-16 口径
+        adjusted_range.replace(byte_to_utf16(text, start)..byte_to_utf16(text, end));
+        Some(text[start..end].to_string())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::UTF16Selection> {
+        // v0.1 无选择区间:光标处空选择(IME 由此定位插入点)
+        let buffer = self.editing.as_ref()?;
+        let caret = byte_to_utf16(buffer.text(), buffer.caret());
+        Some(gpui::UTF16Selection {
+            range: caret..caret,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        None // composing 区间未追踪(模块 doc:TG-03 真机项)
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 平台未先经过 begin_editing 就发文本(极路径):以当前值播种 buffer
+        if self.editing.is_none() {
+            let value = self.binding.get(cx);
+            self.editing = Some(EditBuffer::new(&format_value(value)));
+        }
+        let Some(buffer) = self.editing.as_mut() else {
+            return;
+        };
+        match range_utf16 {
+            Some(range) => {
+                let (start, end) = (
+                    utf16_to_byte(buffer.text(), range.start).unwrap_or(buffer.caret()),
+                    utf16_to_byte(buffer.text(), range.end).unwrap_or(buffer.caret()),
+                );
+                let (start, end) = (start.min(end), start.max(end));
+                buffer.replace_range(start..end, text);
+            }
+            None => {
+                buffer.insert(text); // 无范围 = 在光标处插入
+            }
+        }
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // composing 文本直插(不追踪 marked);最终提交再走 replace_text_in_range
+        self.replace_text_in_range(range_utf16, new_text, window, cx);
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        // 无 marked 区间需要解除(模块 doc:TG-03)
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        element_bounds: gpui::Bounds<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::Bounds<gpui::Pixels>> {
+        // 候选窗定位到控件本身(字符级定位 = M2:需字形测量)
+        Some(element_bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: gpui::Point<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        // 点选定位 = M2(需命中字形);返回当前光标(近似,文档已注明)
+        let buffer = self.editing.as_ref()?;
+        Some(byte_to_utf16(buffer.text(), buffer.caret()))
+    }
+}
+
+/// 单字符 key 判定("a" → 'a',"shift+2" 场景 key 恒单字符;命名键返回 None)。
+fn single_char(key: &str) -> Option<char> {
+    let mut chars = key.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
+}
+
+/// UTF-16 下标 → char 边界字节下标(越界返回 `None`;落在多单元字符中间
+/// 时吸附到该字符的**后边界**;纯函数,IME 路径单测)。
+fn utf16_to_byte(text: &str, utf16_index: usize) -> Option<usize> {
+    let mut utf16 = 0usize;
+    for (byte, ch) in text.char_indices() {
+        if utf16 >= utf16_index {
+            return Some(byte);
+        }
+        utf16 += ch.len_utf16();
+        if utf16 > utf16_index {
+            // 下标落在本字符内部(如代理对中间):取其后边界
+            return Some(byte + ch.len_utf8());
+        }
+    }
+    (utf16 == utf16_index).then_some(text.len())
+}
+
+/// char 边界字节下标 → UTF-16 下标(越界钳到末尾;纯函数)。
+fn byte_to_utf16(text: &str, byte_index: usize) -> usize {
+    text[..byte_index.min(text.len())]
+        .chars()
+        .map(char::len_utf16)
+        .sum()
 }
 
 /// 修饰键倍率(纯函数):**Alt 优先 ×0.1,其次 Shift ×10**(上游 NumField
@@ -415,5 +951,192 @@ mod tests {
     fn control_height_fills_tier_floor() {
         // 14 行高 + 8 padding = 22,恰好紧凑档下限
         assert_eq!(NumberField::control_height(), HEIGHT_COMPACT);
+    }
+
+    // —— v1.0 编辑态:buffer 状态机(任务 3.3 测试清单)——
+
+    #[test]
+    fn buffer_insert_advances_caret_and_keeps_boundary() {
+        let mut b = EditBuffer::new("12");
+        b.insert(".5");
+        assert_eq!(b.text(), "12.5");
+        assert_eq!(b.caret(), 4, "光标推进插入长度");
+        b.insert("e");
+        assert_eq!(b.text(), "12.5e");
+        assert_eq!(b.segments(), ("12.5e", ""), "光标在末尾");
+    }
+
+    #[test]
+    fn buffer_backspace_and_delete_respect_caret_bounds() {
+        let mut b = EditBuffer::new("123");
+        b.move_caret(CaretMove::Home);
+        assert!(!b.backspace(), "起点 backspace 无操作");
+        assert!(b.delete(), "删除光标后字符:123 → 23");
+        assert_eq!(b.text(), "23");
+        assert_eq!(b.caret(), 0);
+        // 标准 caret 语义:delete = 删光标**后**字符(0 处仍有 '2' 可删)
+        assert!(b.delete(), "再次 delete:23 → 3");
+        assert_eq!(b.text(), "3");
+        assert_eq!(b.caret(), 0);
+        assert!(!b.backspace(), "光标在起点,backspace 无操作");
+        assert_eq!(b.text(), "3");
+        // 光标移到终点再 backspace:删前字符 3 → ""
+        assert!(b.move_caret(CaretMove::Right));
+        assert!(b.backspace(), "终点 backspace 删前字符");
+        assert_eq!(b.text(), "");
+        assert_eq!(b.caret(), 0);
+    }
+
+    #[test]
+    fn buffer_caret_moves_and_clamps() {
+        let mut b = EditBuffer::new("42");
+        assert!(b.move_caret(CaretMove::Left));
+        assert_eq!(b.caret(), 1);
+        assert!(b.move_caret(CaretMove::Left));
+        assert!(!b.move_caret(CaretMove::Left), "起点钳 0");
+        assert!(b.move_caret(CaretMove::End));
+        assert_eq!(b.caret(), 2, "Home/End 走到头");
+        assert!(!b.move_caret(CaretMove::Right), "终点钳 len");
+        assert!(b.move_caret(CaretMove::Home));
+        assert_eq!(b.caret(), 0);
+    }
+
+    #[test]
+    fn buffer_handles_multibyte_chars_on_boundaries() {
+        // IME 插入 CJK 后 backspace 必须按字符边界删(不撕开 UTF-8)
+        let mut b = EditBuffer::new("12");
+        b.insert("厘米");
+        assert_eq!(b.text(), "12厘米");
+        assert!(b.backspace());
+        assert_eq!(b.text(), "12厘", "整字符删除");
+        assert_eq!(b.caret(), "12厘".len(), "字节偏移落在 char 边界");
+    }
+
+    #[test]
+    fn editable_char_whitelist() {
+        for c in '0'..='9' {
+            assert!(is_editable_char(c));
+        }
+        assert!(is_editable_char('.'));
+        assert!(is_editable_char('e'));
+        assert!(is_editable_char('E'));
+        assert!(is_editable_char('-'));
+        assert!(is_editable_char('+'));
+        assert!(!is_editable_char('x'));
+        assert!(!is_editable_char(' '));
+        assert!(!is_editable_char(';'));
+    }
+
+    #[test]
+    fn commit_value_parses_and_falls_back_on_garbage() {
+        assert_eq!(commit_value("42", (0.0, 100.0)), CommitOutcome::Value(42.0));
+        assert_eq!(
+            commit_value(" 3.5 ", (0.0, 100.0)),
+            CommitOutcome::Value(3.5),
+            "首尾空白容忍"
+        );
+        assert_eq!(
+            commit_value("1e2", (0.0, 1000.0)),
+            CommitOutcome::Value(100.0),
+            "科学计数"
+        );
+        assert_eq!(commit_value("", (0.0, 100.0)), CommitOutcome::Invalid);
+        assert_eq!(commit_value("abc", (0.0, 100.0)), CommitOutcome::Invalid);
+        assert_eq!(commit_value("1..2", (0.0, 100.0)), CommitOutcome::Invalid);
+        assert_eq!(
+            commit_value("150", (0.0, 100.0)),
+            CommitOutcome::Value(100.0),
+            "提交值钳制 range"
+        );
+        assert_eq!(
+            commit_value("-5", (-10.0, 10.0)),
+            CommitOutcome::Value(-5.0),
+            "负值合法(负范围)"
+        );
+        assert_eq!(
+            commit_value("nan", (0.0, 100.0)),
+            CommitOutcome::Invalid,
+            "非有限回落旧值"
+        );
+    }
+
+    #[test]
+    fn buffer_segments_split_at_caret() {
+        let mut b = EditBuffer::new("12.5");
+        b.move_caret(CaretMove::Left);
+        assert_eq!(b.segments(), ("12.", "5"));
+        b.move_caret(CaretMove::Home);
+        assert_eq!(b.segments(), ("", "12.5"));
+        b.move_caret(CaretMove::End);
+        assert_eq!(b.segments(), ("12.5", ""));
+    }
+
+    #[test]
+    fn utf16_byte_mapping_round_trip_with_cjk() {
+        let text = "12厘米e";
+        let byte_of_cjk = "12".len();
+        let byte_of_e = byte_of_cjk + "厘米".len();
+        // ASCII 前缀:两套下标一致
+        assert_eq!(utf16_to_byte(text, 2), Some(2));
+        assert_eq!(byte_to_utf16(text, 2), 2);
+        // CJK(BMP):utf16 每字 1 单位、utf8 每字 3 字节
+        assert_eq!(byte_to_utf16(text, byte_of_cjk), 2);
+        assert_eq!(utf16_to_byte(text, 2), Some(byte_of_cjk));
+        assert_eq!(utf16_to_byte(text, 4), Some(byte_of_e));
+        assert_eq!(byte_to_utf16(text, byte_of_e), 4);
+        // 末尾与越界
+        assert_eq!(utf16_to_byte(text, 5), Some(text.len()));
+        assert_eq!(utf16_to_byte(text, 6), None);
+        assert_eq!(byte_to_utf16(text, text.len()), 5, "字节下标越界钳到末尾");
+    }
+
+    #[test]
+    fn utf16_index_inside_surrogate_pair_snaps_forward() {
+        // '🎉' 是 4 字节 / 2 个 utf16 单位:落在其间的下标吸附到字符后边界
+        let text = "1🎉";
+        assert_eq!(utf16_to_byte(text, 0), Some(0));
+        assert_eq!(utf16_to_byte(text, 1), Some(1));
+        assert_eq!(
+            utf16_to_byte(text, 2),
+            Some(text.len()),
+            "吸附到星体面后边界"
+        );
+        assert_eq!(utf16_to_byte(text, 3), Some(text.len()));
+        assert_eq!(utf16_to_byte(text, 4), None, "越界");
+    }
+
+    #[test]
+    fn replace_range_clamps_to_char_boundaries() {
+        let mut b = EditBuffer::new("12厘米");
+        // 平台可能发来撕裂 CJK 的下标(字节 3 = '厘' 中间):一律向下取边界,
+        // 只删整字符(宁少勿多)
+        b.replace_range(3..6, "X");
+        assert_eq!(b.text(), "12X米");
+        assert_eq!(b.caret(), "12X".len(), "光标落在插入文本之后");
+        // caret 钳制到边界后插入:set_caret(9) 越界 → 钳到 3,落在尾部
+        // (replace_range 不自动推进 caret,二次插入前显式重设)
+        let mut c = EditBuffer::new("abc");
+        c.set_caret(9);
+        c.replace_range(3..3, "!");
+        c.set_caret(9);
+        c.replace_range(4..4, "X");
+        assert_eq!(c.text(), "abc!X");
+    }
+
+    #[test]
+    fn set_caret_clamps_to_boundary() {
+        let mut b = EditBuffer::new("12厘米");
+        b.set_caret(999);
+        assert_eq!(b.caret(), b.text().len(), "越界钳末尾");
+        b.set_caret(3);
+        assert_eq!(b.caret(), 2, "撕裂下标向下取整到边界");
+    }
+
+    #[test]
+    fn single_char_keys_only() {
+        assert_eq!(single_char("5"), Some('5'));
+        assert_eq!(single_char("-"), Some('-'));
+        assert_eq!(single_char("enter"), None);
+        assert_eq!(single_char(""), None);
     }
 }

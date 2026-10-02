@@ -51,6 +51,23 @@ pub trait PaintSink {
 
     /// 关闭最近一次 [`PaintSink::push_blend`] 开启的混合层。
     fn pop_blend(&mut self) {}
+
+    /// 把一段**预乘 RGBA8** 像素(节点效果链的离屏求值结果,见
+    /// [`crate::effects::apply_effects_rgba`])按设备像素偏移 `(dx, dy)`
+    /// 以 src-over 合成回画布(迭代计划 08 S4 #4.2)。
+    ///
+    /// 默认 no-op:不支持像素回贴的后端应同时让
+    /// [`PaintSink::supports_draw_rgba`] 返回 `false`,渲染调度层就不会走
+    /// 效果离屏分支——节点按无效果绘制,绝不丢内容(E12 纪律)。
+    fn draw_rgba(&mut self, _rgba: &[u8], _w: u16, _h: u16, _dx: i32, _dy: i32) {}
+
+    /// 是否具备 [`PaintSink::draw_rgba`] 回贴能力(效果离屏管线的门槛)。
+    ///
+    /// 默认 `false`;CPU 后端(vello_cpu image paint)为 `true`,GPU 后端
+    /// 在 S3 真机效果管线落地前保持 `false`(效果链暂不参与 GPU 渲染)。
+    fn supports_draw_rgba(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

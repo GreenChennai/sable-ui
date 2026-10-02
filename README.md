@@ -72,3 +72,35 @@ cargo run -p video_editor     # 迷你剪映示例
 ## 许可
 
 MIT OR Apache-2.0 双许可。对 gpui-component(Apache-2.0)、egui、Graphite、Gausian 等参考实现的借鉴与移植在 [NOTICE.md](NOTICE.md) 中逐项致谢。
+
+---
+
+## English
+
+**Sable UI** (formerly Lumina UI) is a high-performance Rust UI toolkit purpose-built for
+creative desktop applications — think Illustrator-class vector design plus CapCut-class
+video editing, on Windows first.
+
+- **One-line architecture**: GPUI owns windows & panels, Vello owns the canvas,
+  Sable glues them into what creative tools actually need.
+- **Crates**: `sable-foundation` (viewport / scene graph / undo commands, zero UI deps),
+  `sable-paint` (paint primitives, GPU+CPU backends, effects), `sable-canvas` (scene,
+  hit-testing, pen/select tools), `sable-video` (timeline model), `sable-widgets`
+  (design tokens, animated components), `sable-dock` (workspace), `sable` (facade).
+- **Highlights**: every document mutation is an undoable command (property-tested),
+  a GSAP-style animation timeline with spring physics, a per-node effect stack
+  (blend modes / shadows / glow / color matrices, CPU verified + GPU pipeline ready),
+  `.sable` project format with history that survives save/load, and golden-image
+  render regression tests.
+- **Status**: v1.0. MSRV 1.85 (Rust 2024). Windows first; wgpu backends keep Linux in reach.
+- **Handbook**: [docs/00-总纲.md](docs/00-总纲.md) (Chinese, 8 volumes). See
+  [CHANGELOG.md](CHANGELOG.md) and [docs/release-checklist.md](docs/release-checklist.md).
+
+```toml
+[dependencies]
+sable = { version = "1.0" }                      # full suite
+# CLI / headless: sable = { default-features = false, features = ["core"] }
+# server-side render: features = ["core", "cpu-render"]
+```
+
+Licensed under MIT OR Apache-2.0. Ported code is credited per-file in [NOTICE.md](NOTICE.md).

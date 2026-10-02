@@ -22,11 +22,21 @@
 //! |---|---|---|
 //! | [`viewport`] | 世界坐标 ↔ 屏幕坐标换算、锚点缩放 | docs/02 §2 |
 //! | [`scene`] | 场景图:节点/子树/渲染列表/包围盒,随时可 serde | docs/02 §3 |
+//! | [`effects`] | 节点效果栈数据模型(分册七;求值在 sable-paint) | docs/07 |
 //! | [`command`] | Command trait、History 撤销栈、内置命令集 | docs/03 §2 |
 //! | [`persistence`] | atomic_write 原子写、自动保存目录与轮换 | docs/06 §1.2 |
 //! | [`error`] | `CoreError` / `CoreResult` 统一错误 | — |
+//!
+//! 命令集:`AddNode`/`RemoveNode`/`SetTransform`/`SetFill`/`SetStroke`/
+//! `SetVisibility`/`SetOpacity`/`SetName`/`Reparent` + 效果栈五命令
+//! `AddEffect`/`RemoveEffect`/`MoveEffect`/`SetEffectEnabled`/`SetEffectSpec`
+//! (迭代计划 08 S4 #4.1)。
+//!
+//! 像素求值链路在 sable-paint(分册七):`effects::apply_effects_rgba` 逐条
+//! 应用本模块定义的 [`EffectSpec`],渲染调度见 sable-canvas `render`。
 
 pub mod command;
+pub mod effects;
 pub mod error;
 pub mod persistence;
 pub mod project;
@@ -36,9 +46,11 @@ pub mod viewport;
 /// 常用类型一站式 re-export:`use sable_foundation::prelude::*;`
 pub mod prelude {
     pub use crate::command::{
-        AddNode, BatchCommand, Command, History, RemoveNode, Reparent, SetFill, SetName,
-        SetOpacity, SetStroke, SetTransform, SetVisibility,
+        AddEffect, AddNode, BatchCommand, Command, History, MoveEffect, RemoveEffect, RemoveNode,
+        Reparent, SetEffectEnabled, SetEffectSpec, SetFill, SetName, SetOpacity, SetStroke,
+        SetTransform, SetVisibility,
     };
+    pub use crate::effects::{EffectEntry, EffectSpec};
     pub use crate::error::{CoreError, CoreResult};
     pub use crate::persistence::{AutosavePlan, atomic_write, autosave_dir};
     pub use crate::scene::{

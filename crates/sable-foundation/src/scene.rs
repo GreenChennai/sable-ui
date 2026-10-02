@@ -20,6 +20,7 @@ use kurbo::{Affine, BezPath, Rect, Shape};
 use serde::{Deserialize, Serialize};
 use slotmap::{SlotMap, new_key_type};
 
+use crate::effects::EffectEntry;
 use crate::error::{CoreError, CoreResult};
 
 new_key_type! {
@@ -209,11 +210,18 @@ pub struct Node {
     /// 把本节点内容作为一个混合层与其下背景混合。serde default 兼容旧工程。
     #[serde(default)]
     pub blend_mode: BlendMode,
+    /// 节点效果栈(迭代计划 08 S4 #4.1,分册七):按序应用到"本节点单独
+    /// 渲染的结果"上再合成回画布(Illustrator 外观面板语义)。空 vec =
+    /// 无效果(渲染零开销路径)。serde default 兼容旧工程(与 blend_mode
+    /// 同款)。
+    #[serde(default)]
+    pub effects: Vec<EffectEntry>,
     pub content: NodeContent,
 }
 
 impl Node {
-    /// 用库约定默认值构造节点(可见、不锁定、opacity 1.0、单位变换、Normal 混合)。
+    /// 用库约定默认值构造节点(可见、不锁定、opacity 1.0、单位变换、
+    /// Normal 混合、无效果)。
     pub fn new(name: impl Into<String>, content: NodeContent) -> Self {
         Node {
             name: name.into(),
@@ -224,6 +232,7 @@ impl Node {
             locked: false,
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
+            effects: Vec::new(),
             content,
         }
     }
@@ -706,6 +715,7 @@ impl Scene {
             && na.locked == nb.locked
             && na.opacity == nb.opacity
             && na.blend_mode == nb.blend_mode
+            && na.effects == nb.effects
             && na.content == nb.content
             && na.children.len() == nb.children.len()
             && na
@@ -1055,6 +1065,76 @@ mod tests {
         );
     }
 
+    /// 效果栈(迭代计划 08 S4 #4.1)序列化 + 旧工程兼容:带效果的节点
+    /// 无损往返;旧文件(无 effects 字段)→ serde(default) 回落空栈。
+    #[test]
+    fn node_effects_serialize_and_default_to_empty() {
+        use crate::effects::{EffectEntry, EffectSpec};
+        let (mut scene, _root, a, _sub, _b, _c) = demo_scene();
+        scene.node_mut(a).expect("a 在").effects = vec![EffectEntry {
+            spec: EffectSpec::DropShadow {
+                blur: 4.0,
+                offset: [0.0, 2.0],
+                color: [0, 0, 0, 128],
+            },
+            enabled: true,
+        }];
+
+        let json = serde_json::to_string(&scene).expect("序列化");
+        assert!(json.contains("DropShadow"), "效果必须出现在序列化产物里");
+        let back: Scene = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(back.node(a).expect("a 在").effects.len(), 1);
+        assert_eq!(back, scene, "效果栈参与结构化相等");
+
+        // 旧工程文件(无 effects 字段)→ serde(default) 回落空栈,不报错
+        let stripped = strip_json_array_field(&json, "effects");
+        let old: Scene = serde_json::from_str(&stripped).expect("旧版文件应可打开");
+        assert!(
+            old.node(a).expect("a 在").effects.is_empty(),
+            "缺字段 → serde(default) 回落空效果栈"
+        );
+    }
+
+    /// 从 JSON 文本里剥掉 `"字段名":[...],`(仅测试用;effects 的序列化
+    /// 形态是数组)。按括号配平找数组结尾,悬挂逗号一并移除。
+    fn strip_json_array_field(json: &str, field: &str) -> String {
+        let needle = format!("\"{field}\":");
+        let mut out = String::new();
+        let mut rest = json;
+        // 循环剥掉**每一处**出现:每个节点都有自己的该字段,只剥首个达不到目的
+        while let Some(start) = rest.find(&needle) {
+            out.push_str(&rest[..start]);
+            let arr_start = start + needle.len();
+            debug_assert!(rest[arr_start..].starts_with('['), "字段应为数组形态");
+            let mut depth = 0usize;
+            let mut end = arr_start;
+            for (i, ch) in rest[arr_start..].char_indices() {
+                match ch {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = arr_start + i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let after = &rest[end..];
+            if let Some(stripped) = after.strip_prefix(',') {
+                rest = stripped;
+            } else if out.ends_with(',') {
+                out.pop();
+                rest = after;
+            } else {
+                rest = after;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// 从 JSON 文本里剥掉 `"字段名":<字符串值>,`(仅测试用;BlendMode 的
     /// 序列化形态是字符串)。剥掉后若该字段是对象的最后一项,遗留的悬挂
     /// 逗号一并移除。
@@ -1065,16 +1145,7 @@ mod tests {
         while let Some(pos) = rest.find(&needle) {
             out.push_str(&rest[..pos]);
             let after = &rest[pos + needle.len()..];
-            // 值是字符串(BlendMode 的 serde 形态):越过开引号到收引号
-            let skipped = if let Some(stripped) = after.strip_prefix('"') {
-                match stripped.find('"') {
-                    Some(end) => end + 2, // 收引号及其自身
-                    None => after.len(),
-                }
-            } else {
-                after.len()
-            };
-            rest = &after[skipped..];
+            rest = &after[skip_json_value(after)..];
             // 剥掉本字段后,前后必剩一个多余逗号:rest 以 ',' 开头就吃 rest 侧;
             // 否则本字段是末项,吃 out 侧悬挂逗号
             if rest.starts_with(',') {
@@ -1085,6 +1156,37 @@ mod tests {
         }
         out.push_str(rest);
         out
+    }
+
+    /// 值的字节长度(测试辅助):字符串越过收引号(转义不处理,serde 输出
+    /// 无需转义的测试值即可);数组/对象走括号配对;字面量读到逗号/括号/尾。
+    fn skip_json_value(v: &str) -> usize {
+        match v.as_bytes().first() {
+            Some(b'"') => match v[1..].find('"') {
+                Some(end) => end + 2,
+                None => v.len(),
+            },
+            Some(b'[') | Some(b'{') => {
+                let (open, close) = if v.starts_with('[') {
+                    (b'[', b']')
+                } else {
+                    (b'{', b'}')
+                };
+                let mut depth = 0usize;
+                for (i, b) in v.bytes().enumerate() {
+                    if b == open {
+                        depth += 1;
+                    } else if b == close {
+                        depth -= 1;
+                        if depth == 0 {
+                            return i + 1;
+                        }
+                    }
+                }
+                v.len()
+            }
+            _ => v.find([',', ']', '}']).unwrap_or(v.len()),
+        }
     }
 
     #[test]

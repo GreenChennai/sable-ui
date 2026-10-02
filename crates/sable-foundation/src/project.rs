@@ -131,9 +131,10 @@ mod tests {
 
     use super::*;
     use crate::command::{
-        AddNode, Command, RemoveNode, SerializedCommand, SetFill, SetName, SetOpacity,
-        SetVisibility,
+        AddEffect, AddNode, Command, MoveEffect, RemoveNode, SerializedCommand, SetEffectEnabled,
+        SetEffectSpec, SetFill, SetName, SetOpacity, SetVisibility,
     };
+    use crate::effects::{EffectEntry, EffectSpec};
     use crate::error::CoreError;
     use crate::scene::{Node, NodeContent, NodeId, Paint, PathNode};
     use kurbo::BezPath;
@@ -299,6 +300,134 @@ mod tests {
         );
 
         // 再全部重做/撤销一遍(覆盖 RemoveNode 恢复重映射在重开历史中的正确性)
+        while reopened.can_redo() {
+            reopened.redo(&mut scene);
+        }
+        assert_eq!(scene, fully_edited);
+        while reopened.can_undo() {
+            reopened.undo(&mut scene);
+        }
+        assert_eq!(scene, snapshot_before);
+    }
+
+    /// 效果命令跨保存存活(S4 #4.1 镜像验收):AddEffect/MoveEffect/
+    /// SetEffectEnabled/SetEffectSpec(拖动 merge)保存 → 重开 → 全部撤销
+    /// 回到编辑前快照、全部重做到编辑后状态(与 3.4 金句同标准)。
+    #[test]
+    fn effect_commands_survive_save_load() {
+        let dir = temp_dir("effects");
+        let path = dir.join("效果.sable");
+
+        let (mut scene, a, _sub, _c) = demo_scene();
+        let snapshot_before = scene.clone();
+        let shadow = EffectEntry {
+            spec: EffectSpec::DropShadow {
+                blur: 4.0,
+                offset: [0.0, 2.0],
+                color: [0, 0, 0, 128],
+            },
+            enabled: true,
+        };
+        let blur = |radius: f64| EffectEntry {
+            spec: EffectSpec::GaussianBlur { radius },
+            enabled: true,
+        };
+
+        let mut history = History::new();
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 0,
+                entry: shadow,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            AddEffect {
+                id: a,
+                index: 1,
+                entry: blur(2.0),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            MoveEffect {
+                id: a,
+                from: 1,
+                to: 0,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetEffectEnabled {
+                id: a,
+                index: 0,
+                old: true,
+                new: false,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        // 参数拖动:同节点同下标两条 SetEffectSpec 合并为一步
+        history.exec(
+            SetEffectSpec {
+                id: a,
+                index: 1,
+                old: blur(2.0).spec,
+                new: blur(4.0).spec,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetEffectSpec {
+                id: a,
+                index: 1,
+                old: blur(4.0).spec,
+                new: blur(8.0).spec,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(
+            history.undo_len(),
+            5,
+            "add×2 + move + enable + merge(spec×2)"
+        );
+        let fully_edited = scene.clone();
+
+        // 撤销一步再保存:顺带验证效果命令的 redo 栈跨保存存活
+        history.undo(&mut scene);
+        let scene_at_save = scene.clone();
+
+        let bytes = save_project(&path, &scene, &history).expect("保存");
+        assert!(bytes > HEADER_LEN);
+        let data = load_project(&path).expect("读回");
+        assert_eq!(data.scene, scene_at_save, "场景(含效果栈)无损往返");
+        // 被撤销的效果命令进 redo 栈且以镜像形态存在
+        assert!(
+            matches!(&data.history.redo[0], SerializedCommand::SetEffectSpec(_)),
+            "SetEffectSpec 必须以专属镜像变体保存"
+        );
+
+        let mut reopened = History::from_serialized(data.history);
+        assert_eq!(reopened.undo_len(), 4);
+        assert!(reopened.can_redo(), "redo 栈一并保存");
+
+        reopened.redo(&mut scene);
+        assert_eq!(scene, fully_edited, "redo 栈跨保存可用(效果参数恢复)");
+
+        // 金句:全部撤销 → 回到编辑前快照
+        while reopened.can_undo() {
+            reopened.undo(&mut scene);
+        }
+        assert_eq!(scene, snapshot_before, "重开后撤销栈可用:效果命令逐条回退");
+        assert!(scene.node(a).expect("a 在").effects.is_empty());
+
+        // 再全部重做/撤销一遍
         while reopened.can_redo() {
             reopened.redo(&mut scene);
         }

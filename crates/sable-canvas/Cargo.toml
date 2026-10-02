@@ -34,3 +34,15 @@ image = { workspace = true, optional = true }
 [dev-dependencies]
 image.workspace = true
 proptest.workspace = true
+# 分册六 §5.1 基准体系(criterion 微基准;CI 默认不执行 bench harness)
+criterion = "0.5"
+
+# 基准目标:1000 节点随机分布的点选命中(确定性 xorshift 伪随机,不引 rand)
+[[bench]]
+name = "hit_test_bench"
+harness = false
+
+# 基准目标:render_scene 200 形状 96×96 CpuRenderer(E12 Off 降级路径)
+[[bench]]
+name = "render_bench"
+harness = false

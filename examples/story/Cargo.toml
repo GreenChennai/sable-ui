@@ -1,0 +1,19 @@
+[package]
+name = "story"
+description = "组件 story 示例:输入/色彩/渐变/图层/时间轴/动画/效果/token 八组演示(分册五 §3 每组件一示例的聚合形态)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+sable = { path = "../../crates/sable" }
+# 契约允许的追加依赖(与 video_editor 的 image 先例同性质,报告已注明):
+# 1) sable-paint:效果页/token 页离屏渲染(CpuRenderer/render_shadow_rgba)——
+#    门面未 re-export sable-paint,示例直取内部 crate(纯 Rust,零原生依赖);
+# 2) image:gpui 0.2.2 的 RenderImage::new 只吃 image crate 的 animation::Frame
+#    (与 sable-canvas "png" feature 的豁免同因,无 PNG 编码步骤)。
+sable-paint.workspace = true
+image.workspace = true
