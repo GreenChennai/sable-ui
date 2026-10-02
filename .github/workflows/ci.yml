@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 系统库(gpui Linux 编译 + fontique/fontconfig + pkg-config)
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libudev-dev libasound2-dev libfontconfig-dev libxkbcommon-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libudev-dev libasound2-dev libfontconfig-dev libxkbcommon-dev libwayland-dev libgbm-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 系统库(usvg→fontdb→fontconfig)
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev libwayland-dev libudev-dev libasound2-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: GPU 路径 check(backend-vulkan/dx12/auto 共用 gpu feature)
