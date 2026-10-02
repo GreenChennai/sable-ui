@@ -40,7 +40,11 @@ pub mod effects;
 pub mod error;
 pub mod persistence;
 pub mod project;
+
 pub mod scene;
+/// SVG 互通(docs/08 V2.0 T1;feature `svg`)。
+#[cfg(feature = "svg")]
+pub mod svg;
 pub mod viewport;
 
 /// 常用类型一站式 re-export:`use sable_foundation::prelude::*;`

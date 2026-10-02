@@ -16,9 +16,15 @@ slotmap.workspace = true
 serde.workspace = true
 # .sable 工程文件 MessagePack 编解码(分册五 §5.1;src/project.rs,serde 家族序列化面)
 rmp-serde.workspace = true
+usvg = { version = "0.48", optional = true }
 thiserror.workspace = true
 
+[features]
+# SVG 互通(docs/08 V2.0 T1):usvg 解析/自研序列化;默认关,门禁单测开启
+svg = ["dep:usvg"]
+
 [dev-dependencies]
+usvg.workspace = true
 proptest.workspace = true
 # 分册六 §1.2 铁律验收:Scene 序列化→反序列化 == 原值
 serde_json = "1"

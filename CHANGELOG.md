@@ -2,6 +2,19 @@
 
 本库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [2.0.0] - 2026-10-02
+
+V2.0 迭代(docs/08-迭代计划V2.0.md):同类库对标(Qt/egui/Flutter/SwiftUI/ImGui/Konva)
+后的差距分析 → T1 SVG 互通落地;其余主题按"主会话可独立小步合入"排序推进。
+
+### Added
+- **SVG 互通**(foundation,feature `svg`):`export_svg(scene) -> String`
+  (路径/组/变换/纯色与线性渐变/描边/混合模式 `mix-blend-mode` 序列化,零额外依赖)
+  + `import_svg`(usvg 0.48 解析;Text/Image 跳过计数;渐变降级首停纯色并计数;
+  10MB/深度 64 恶意输入防御,全 Result 无 panic)
+- 门面 `svg` feature 转发;CI 增 SVG 测试 job
+- 手册:`docs/08-迭代计划V2.0.md`(对标差距矩阵 G1-G12 + 主题 T1-T6 + 诚实边界)
+
 ## [1.0.0] - 2026-10-02
 
 v1.0 目标(分册五 §3 M5"性能与打磨"+ 08 号迭代计划 S3/S4 收束):矢量编辑核心闭环、

@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -62,6 +62,7 @@ wgpu  = "29"
 image = "0.25"
 # 工程文件序列化(.sable,分册五 §5.1:MessagePack + 版本号前向兼容)
 rmp-serde = "1.3"
+usvg = "0.48"
 
 # —— 平台层(feature 门控,进 core/canvas/paint/video 者格杀勿论)——
 gpui = "0.2.2"

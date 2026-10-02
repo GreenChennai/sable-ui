@@ -40,6 +40,12 @@ pub enum CoreError {
     /// `.sable` 数据体 MessagePack 编解码失败(文件截断/损坏;编码失败同用此变体)。
     #[error(".sable 数据编解码失败: {0}")]
     Deserialization(String),
+    /// SVG 输入超限(docs/08 T1:分册六 §1.3 恶意输入防御)
+    #[error("SVG 输入过大:{size} 字节 > 上限 {limit}")]
+    SvgTooLarge { size: usize, limit: usize },
+    /// SVG 解析失败(usvg 0.48)
+    #[error("SVG 解析失败:{0}")]
+    SvgParse(String),
 }
 
 /// core 层统一 `Result` 别名。
