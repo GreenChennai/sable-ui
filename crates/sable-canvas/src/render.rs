@@ -22,10 +22,14 @@
 //! `viewport × 节点世界变换`(f64 仿射),f32 降级只发生在后端内部。
 
 use kurbo::{Affine, Point, Rect, Shape};
+use sable_foundation::effects::EffectEntry;
 use sable_foundation::scene::{
     BlendMode, NodeContent, NodeId, Paint, Rgba8, Scene, StrokeStyle, TextNode,
 };
 use sable_foundation::viewport::Viewport;
+#[cfg(feature = "cpu")]
+use sable_paint::effects::EffectCaps;
+use sable_paint::effects::{self, EffectLevel};
 use sable_paint::sink::PaintSink;
 
 use crate::grid;
@@ -83,6 +87,11 @@ pub struct RenderOpts {
     /// 都需要目标尺寸,故挂进 opts。`(0.0, 0.0)`(Default)表示"尺寸未知",
     /// 此时**不做剔除**也不画网格(保守行为,绝不把可见对象剔掉)。
     pub screen_size: (f64, f64),
+    /// 效果降级档位直控(G20/V4.0 T2):`None`(Default)= 按
+    /// `SABLE_EFFECTS_LEVEL` env 检测(未设回落编译期默认,gpu→Full /
+    /// cpu→Reduced)。测试与嵌入方可显式指定——如 `Some(EffectLevel::Off)`
+    /// 锁定与 v3.0 逐位一致的回归基线。
+    pub effect_level: Option<EffectLevel>,
 }
 
 /// 视口可见区域对应的世界矩形(视锥剔除与网格的判定范围)。
@@ -116,6 +125,20 @@ pub fn visible_world_rect(viewport: &Viewport, screen_size: (f64, f64)) -> Rect 
 /// Path 一致(Point 跳过 / Silhouette 包围盒色块 / Full 真字形);节点
 /// 不透明度折入字形颜色 alpha。命中测试的 Text 分支(hit_test)继续用
 /// 世界包围盒粗估,不在本函数范围。
+///
+/// # 节点效果栈(G20,V4.0 T2)
+///
+/// 节点 `effects` 存在**活动条目**(启用且非恒等,`EffectEntry::is_active`)、
+/// 当前档位允许(E12:`RenderOpts::effect_level` 直控或 `SABLE_EFFECTS_LEVEL`
+/// env 检测,Off 档关闭全部)、且后端支持像素回贴
+/// ([`PaintSink::supports_draw_rgba`])时,该节点走**效果路径**:单独光栅化
+/// 到透明离屏([`effects::EffectSurface`],LOD 档位与直绘同一判定)→
+/// [`effects::apply_effects_rgba`] 按栈序求值 → [`PaintSink::draw_rgba`]
+/// 合成回画布。嵌套顺序定义为**效果先于混合**(T2.2):回贴发生在该节点的
+/// push_blend 层之内,即效果先作用于节点内容、其结果作为整体参与混合。
+/// 阴影/光晕可投到节点包围盒之外,故剔除用"bbox 外扩效果支撑域"复检。
+/// **任一门槛不满足(Off 档/空栈/全禁用/后端不支持)→ 与 v3.0 完全相同的
+/// 直绘路径,输出逐位一致**(硬验收)。
 pub fn render_scene(
     scene: &Scene,
     viewport: &Viewport,
@@ -125,6 +148,11 @@ pub fn render_scene(
     let vp = viewport.world_to_viewport();
     let size_known = opts.screen_size.0 > 0.0 && opts.screen_size.1 > 0.0;
     let visible = size_known.then(|| visible_world_rect(viewport, opts.screen_size));
+
+    // E12 降级档位(opts 直控优先,env 检测兜底):整帧求值一次,逐节点
+    // 只查能力位。Off 档 blur=false → effects_active 恒 false → 与 v3.0
+    // 完全相同的直绘路径。
+    let effect_caps = effects::caps(opts.effect_level.unwrap_or_else(effects::detect));
 
     // 网格是背景层:先画(在一切对象之下)
     if opts.show_grid {
@@ -143,64 +171,89 @@ pub fn render_scene(
             continue;
         };
 
-        // 视锥剔除:包围盒经视口变换后与可见世界矩形不相交 → 跳过
+        // 效果路径门槛(G20/T2.1):活动效果(启用且非恒等)× 档位允许 ×
+        // 后端支持像素回贴。任一不满足 → 与 v3.0 完全相同的直绘路径
+        // (Off 档 / 空栈 / 全禁用条目零开销,输出逐位一致——硬验收)。
+        let effects_active = effect_caps.blur
+            && node.effects.iter().any(EffectEntry::is_active)
+            && sink.supports_draw_rgba();
+
+        // 视锥剔除:包围盒经视口变换后与可见世界矩形不相交 → 跳过。
+        // 例外(G20):阴影/光晕可把内容投到节点 bbox 之外——活动效果时用
+        // "bbox 外扩效果支撑域(像素 margin / zoom 换算回世界)"复检一次,
+        // 不把影子还在视口内的节点误剔。
         if let Some(visible) = visible {
             if !rects_intersect(world_bbox, visible) {
-                continue;
+                let culled = if effects_active {
+                    let m = effects::effect_margins_px(&node.effects, viewport.zoom);
+                    let pad = m[0].max(m[1]).max(m[2]).max(m[3]) / viewport.zoom;
+                    !rects_intersect(world_bbox.inflate(pad, pad), visible)
+                } else {
+                    true
+                };
+                if culled {
+                    continue;
+                }
             }
         }
 
         // 传给 sink 的变换 = 视口 × 节点世界变换(f64,docs/02 §4.2 的 `total`)
         let total = vp * world_xform;
 
+        // LOD(docs/02 §7.2):以包围盒短边为特征尺寸(Text/Path 同一判定)
+        let feature_size = world_bbox.width().min(world_bbox.height());
+        let detail = lod::detail_level(feature_size, viewport.zoom);
+
         // 混合层先开:E5 要求节点内容(fill/stroke/文本字形)作为一个整体
         // 参与混合;之后的分支全部汇合到循环尾的 pop_blend,配对由结构保证。
         let blended = node.blend_mode != BlendMode::Normal;
+
+        // —— 效果路径(G20/T2.1):节点单独离屏光栅化 → 效果求值 → 回贴。——
+        // Point 档连内容都不画,效果无从作用,与直绘同语义跳过(混合节点仍
+        // 弹掉空混合层,保持 push/pop 配对)。回贴被包裹在混合层**之内** =
+        // "效果先于混合"(T2.2:效果作用在节点内容上,其结果作为整体参与
+        // 混合)。
+        if effects_active {
+            if detail == DetailLevel::Point {
+                if blended {
+                    sink.push_blend(node.blend_mode);
+                    sink.pop_blend();
+                }
+                continue;
+            }
+            #[cfg(feature = "cpu")]
+            if let Some((rgba, w, h, dx, dy)) = rasterize_node_effects(
+                &EffectRasterParams {
+                    content: &node.content,
+                    effects: &node.effects,
+                    detail,
+                    zoom: viewport.zoom,
+                    world_bbox,
+                    total,
+                    vp,
+                    opacity: node.opacity,
+                },
+                opts.screen_size,
+                effect_caps,
+            ) {
+                if blended {
+                    sink.push_blend(node.blend_mode);
+                }
+                sink.draw_rgba(&rgba, w, h, dx, dy);
+                if blended {
+                    sink.pop_blend();
+                }
+                continue;
+            }
+            // 非 cpu 构建(离屏光栅化未实现)或离屏预算失败:回落直绘,
+            // 内容绝不丢(E12 纪律),只是无效果。
+        }
+
         if blended {
             sink.push_blend(node.blend_mode);
         }
 
-        // LOD(docs/02 §7.2):以包围盒短边为特征尺寸(Text/Path 同一判定)
-        let feature_size = world_bbox.width().min(world_bbox.height());
-        match &node.content {
-            NodeContent::Path(path_node) => {
-                match lod::detail_level(feature_size, viewport.zoom) {
-                    DetailLevel::Point => {} // 屏幕上不足 1px:不画(仅弹掉混合层)
-                    DetailLevel::Silhouette => {
-                        // 降级为包围盒色块:保留体量感,跳过描边等细节
-                        if let Some(fill) = &path_node.fill {
-                            let silhouette = world_bbox.to_path(0.1);
-                            sink.fill_with_opacity(fill, node.opacity, total, &silhouette);
-                        }
-                    }
-                    DetailLevel::Full => {
-                        if let Some(fill) = &path_node.fill {
-                            sink.fill_with_opacity(fill, node.opacity, total, &path_node.path);
-                        }
-                        // 世界线宽原样传入:随视图缩放(模块 doc "对原文的修正")
-                        if let Some(stroke) = &path_node.stroke {
-                            sink.stroke(stroke, total, &path_node.path);
-                        }
-                    }
-                }
-            }
-            // 画布真文本(V3.0 T1):布局(TD-10 缓存)→ 字形轮廓填充。
-            // Silhouette 与 Path 同语义降级为包围盒色块(字形在 1–4px 下
-            // 不可读,色块保体量感);Point 完全跳过。
-            NodeContent::Text(text_node) => match lod::detail_level(feature_size, viewport.zoom) {
-                DetailLevel::Point => {}
-                DetailLevel::Silhouette => {
-                    let silhouette = world_bbox.to_path(0.1);
-                    let fill = Paint::Solid(text_node.color);
-                    sink.fill_with_opacity(&fill, node.opacity, total, &silhouette);
-                }
-                DetailLevel::Full => {
-                    draw_text_node(sink, text_node, total, node.opacity);
-                }
-            },
-            // Image(资产管线 = M2)与 Group(无直接内容)不产生绘制
-            NodeContent::Image(_) | NodeContent::Group => {}
-        }
+        draw_node_content_at_lod(sink, &node.content, detail, world_bbox, total, node.opacity);
 
         if blended {
             sink.pop_blend();
@@ -229,6 +282,168 @@ pub fn render_scene(
     if let Some(bbox) = selection_union {
         draw_handles(sink, vp, bbox, viewport.zoom, &opts.overlay);
     }
+}
+
+/// 单节点内容的 LOD 分派(直绘路径与效果离屏路径**共用**,保证两路对同一
+/// 节点产生逐位相同的绘制指令;混合层配对由调用方负责,本函数不碰)。
+///
+/// - Path:Full = fill + stroke(世界线宽原样传入,模块 doc "对原文的修正");
+///   Silhouette = 包围盒色块(保留体量感,跳过描边);Point = 不画。
+/// - Text(V3.0 T1):布局(TD-10 缓存)→ 字形轮廓填充,Silhouette 同语义
+///   降级为包围盒色块;节点不透明度折入字形颜色 alpha。
+/// - Image(资产管线 = M2)与 Group(无直接内容)不产生绘制。
+fn draw_node_content_at_lod(
+    sink: &mut dyn PaintSink,
+    content: &NodeContent,
+    detail: DetailLevel,
+    world_bbox: Rect,
+    total: Affine,
+    opacity: f64,
+) {
+    match content {
+        NodeContent::Path(path_node) => match detail {
+            DetailLevel::Point => {} // 屏幕上不足 1px:不画
+            DetailLevel::Silhouette => {
+                if let Some(fill) = &path_node.fill {
+                    let silhouette = world_bbox.to_path(0.1);
+                    sink.fill_with_opacity(fill, opacity, total, &silhouette);
+                }
+            }
+            DetailLevel::Full => {
+                if let Some(fill) = &path_node.fill {
+                    sink.fill_with_opacity(fill, opacity, total, &path_node.path);
+                }
+                if let Some(stroke) = &path_node.stroke {
+                    sink.stroke(stroke, total, &path_node.path);
+                }
+            }
+        },
+        NodeContent::Text(text_node) => match detail {
+            DetailLevel::Point => {}
+            DetailLevel::Silhouette => {
+                let silhouette = world_bbox.to_path(0.1);
+                let fill = Paint::Solid(text_node.color);
+                sink.fill_with_opacity(&fill, opacity, total, &silhouette);
+            }
+            DetailLevel::Full => {
+                draw_text_node(sink, text_node, total, opacity);
+            }
+        },
+        NodeContent::Image(_) | NodeContent::Group => {}
+    }
+}
+
+/// 效果离屏光栅化的单节点参数(压参数计数;`cpu` feature 内部使用)。
+#[cfg(feature = "cpu")]
+struct EffectRasterParams<'a> {
+    /// 节点内容。
+    content: &'a NodeContent,
+    /// 节点效果栈(按栈序求值)。
+    effects: &'a [EffectEntry],
+    /// LOD 档位(调用方按包围盒短边 × zoom 判定,与直绘同一结论)。
+    detail: DetailLevel,
+    /// 世界→像素换算(zoom),支撑域 margin 定尺寸用。
+    zoom: f64,
+    /// 节点内容世界包围盒(Silhouette 色块与窗口预算用)。
+    world_bbox: Rect,
+    /// 内容变换 = 视口 × 节点世界变换。
+    total: Affine,
+    /// 视口变换(屏幕包围盒换算用)。
+    vp: Affine,
+    /// 节点不透明度。
+    opacity: f64,
+}
+
+/// 单节点效果离屏管线(G20/T2.1,`cpu` feature):
+///
+/// 1. 预算离屏窗口:节点屏幕包围盒(整数外扩,保留 AA 分数位)∩(画布 +
+///    效果支撑域)。窗口外内容回贴时本来就被画布裁掉,而模糊/投影对可见区
+///    的影响被 margin 完整覆盖——已知屏幕尺寸时离屏面积因此有界(视口 +
+///    margin),不随极端缩放爆炸;
+/// 2. [`effects::EffectSurface`] 透明离屏光栅化:窗口原点平移进表面,内容
+///    变换 = 平移 × 视口 × 节点世界变换;LOD 档位与直绘同一判定(见
+///    [`draw_node_content_at_lod`]);
+/// 3. [`effects::apply_effects_rgba`] 按栈序求值——它**内部自行外扩**容纳
+///    支撑域,本函数不预垫 margin,避免双重外扩;
+/// 4. 返回 `(rgba, w, h, dx, dy)`,`(dx, dy)` 是结果左上角的**设备像素**
+///    坐标(窗口原点 + 效果外扩偏移),调用方经 `draw_rgba` 回贴。
+///
+/// `None` = 窗口预算失败(空包围盒/画布外退化/超出 u16 上限):调用方回落
+/// 直绘路径,内容绝不丢(E12 纪律),只是无效果。
+///
+/// TD(v4.1 缓存化):每节点每帧一次离屏光栅化 + 全量效果求值,静止场景
+/// 重复付费;应按(内容指纹, 变换, 效果参数, 档位, 窗口)为键缓存离屏结果
+/// (v4.0 先正确性),参照 `sable_paint::effects::ShadowCache` 的 FIFO
+/// 驱逐范式。
+#[cfg(feature = "cpu")]
+fn rasterize_node_effects(
+    params: &EffectRasterParams,
+    screen_size: (f64, f64),
+    caps: EffectCaps,
+) -> Option<(Vec<u8>, u16, u16, i32, i32)> {
+    let EffectRasterParams {
+        content,
+        effects: effects_entries,
+        detail,
+        zoom,
+        world_bbox,
+        total,
+        vp,
+        opacity,
+    } = *params;
+    // 节点屏幕包围盒(vp = 缩放 + 平移,变换两对角点归一即可)
+    let p0 = vp * Point::new(world_bbox.x0, world_bbox.y0);
+    let p1 = vp * Point::new(world_bbox.x1, world_bbox.y1);
+    let (bx0, bx1) = (p0.x.min(p1.x), p0.x.max(p1.x));
+    let (by0, by1) = (p0.y.min(p1.y), p0.y.max(p1.y));
+    let mut wx0 = bx0.floor();
+    let mut wy0 = by0.floor();
+    let mut wx1 = bx1.ceil();
+    let mut wy1 = by1.ceil();
+
+    // 与"画布 ± 支撑域"相交(margin 上取整,宁可多留)。注意方向:**对侧**
+    // margin——内容像素 p 能影响画布,当且仅当 p ∈ [-m_r, w+m_l](p 处的
+    // 结果向左最多伸 m_l、向右最多伸 m_r;故左边界由右侧 margin 决定,
+    // 反之亦然)。已知屏幕尺寸时离屏面积因此有界(视口 + margin),不随
+    // 极端缩放爆炸。
+    let [m_l, m_t, m_r, m_b] = effects::effect_margins_px(effects_entries, zoom);
+    if screen_size.0 > 0.0 && screen_size.1 > 0.0 {
+        wx0 = wx0.max(-m_r.ceil());
+        wy0 = wy0.max(-m_b.ceil());
+        wx1 = wx1.min(screen_size.0 + m_l.ceil());
+        wy1 = wy1.min(screen_size.1 + m_t.ceil());
+    }
+    let (ww, wh) = ((wx1 - wx0).round() as i64, (wy1 - wy0).round() as i64);
+    if ww <= 0 || wh <= 0 {
+        return None; // 窗口退化(空包围盒/完全在画布+margin 之外):回落直绘
+    }
+    let Ok(w16) = u16::try_from(ww) else {
+        return None; // 极端参数:宁可无效果,不溢出(u16::MAX 以上不可表示)
+    };
+    let Ok(h16) = u16::try_from(wh) else {
+        return None;
+    };
+
+    // 离屏光栅化:窗口原点平移进表面(内容落位 = 屏幕坐标 − 窗口原点)
+    let mut surface = effects::EffectSurface::new(w16, h16);
+    let total_off = Affine::translate((-wx0, -wy0)) * total;
+    surface.draw(|off| {
+        draw_node_content_at_lod(off, content, detail, world_bbox, total_off, opacity);
+    });
+    let (rgba, w, h) = surface.into_rgba();
+
+    // 效果求值(栈序;内部按需外扩,返回相对窗口原点的外扩偏移 ≤ 0)
+    let (rgba, dx, dy, w, h) = effects::apply_effects_rgba((rgba, w, h), effects_entries, caps);
+
+    // 设备像素偏移 = 窗口原点 + 效果外扩偏移(i64 域夹取后转 i32,回贴由
+    // 光栅器按画布裁剪)
+    let ox = (wx0 as i64)
+        .saturating_add(i64::from(dx))
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+    let oy = (wy0 as i64)
+        .saturating_add(i64::from(dy))
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+    Some((rgba, w, h, ox as i32, oy as i32))
 }
 
 /// 渲染一个文本节点(V3.0 T1):布局(TD-10 缓存)→ 字形轮廓填充。
@@ -309,15 +524,19 @@ fn rects_intersect(a: Rect, b: Rect) -> bool {
 mod tests {
     use super::*;
     use kurbo::BezPath;
+    use sable_foundation::effects::EffectSpec;
     use sable_foundation::scene::PathNode;
 
     /// 记录型 sink:数 fill/stroke 调用,存下变换与路径包围盒供断言;
-    /// 另记统一事件流(含混合层 push/pop)供顺序断言。
+    /// 另记统一事件流(含混合层 push/pop 与 draw_rgba 回贴)供顺序断言。
     struct RecordingSink {
         fills: Vec<(Rgba8, Affine, Rect)>,
         strokes: Vec<(Rgba8, f64, Affine, Rect)>,
-        /// 统一事件流:fill/stroke/push_blend/pop_blend 按发生顺序记录。
+        /// 统一事件流:fill/stroke/push_blend/pop_blend/draw_rgba 按发生顺序记录。
         events: Vec<Event>,
+        /// 效果管线门槛:是否声明 draw_rgba 回贴能力(`new()` 默认 false,
+        /// 效果路径不触发;`rgba_capable()` 打开)。
+        rgba_capable: bool,
     }
 
     /// [`RecordingSink::events`] 的事件种类。
@@ -327,6 +546,13 @@ mod tests {
         Stroke,
         PushBlend(BlendMode),
         PopBlend,
+        /// draw_rgba 回贴(尺寸 + 设备像素偏移)。
+        DrawRgba {
+            w: u16,
+            h: u16,
+            dx: i32,
+            dy: i32,
+        },
     }
 
     impl RecordingSink {
@@ -335,7 +561,15 @@ mod tests {
                 fills: Vec::new(),
                 strokes: Vec::new(),
                 events: Vec::new(),
+                rgba_capable: false,
             }
+        }
+
+        /// 声明支持 draw_rgba 的记录 sink(效果路径门槛打开)。
+        fn rgba_capable() -> Self {
+            let mut sink = Self::new();
+            sink.rgba_capable = true;
+            sink
         }
 
         fn paint_solid(paint: &Paint) -> Rgba8 {
@@ -374,6 +608,14 @@ mod tests {
 
         fn pop_blend(&mut self) {
             self.events.push(Event::PopBlend);
+        }
+
+        fn draw_rgba(&mut self, _rgba: &[u8], w: u16, h: u16, dx: i32, dy: i32) {
+            self.events.push(Event::DrawRgba { w, h, dx, dy });
+        }
+
+        fn supports_draw_rgba(&self) -> bool {
+            self.rgba_capable
         }
     }
 
@@ -1007,6 +1249,204 @@ mod tests {
         assert_eq!(sink.strokes.len(), 9);
     }
 
+    // —— 效果栈(G20/V4.0 T2:render_scene 消费 node.effects)——
+
+    /// 投影效果条目(硬影 [+6,0],纯黑;blur=0 便于精确推算窗口尺寸)。
+    fn shadow_entry() -> EffectEntry {
+        EffectEntry {
+            spec: EffectSpec::DropShadow {
+                blur: 0.0,
+                offset: [6.0, 0.0],
+                color: [0, 0, 0, 255],
+            },
+            enabled: true,
+        }
+    }
+
+    /// T2.2 顺序锁定:**效果先于混合** —— 效果回贴(draw_rgba)发生在该
+    /// 节点的 push/pop 混合层**之内**:效果先作用于节点内容,其结果再作为
+    /// 整体参与混合;且效果节点不得再直绘内容(离屏结果替代原绘制)。
+    #[test]
+    fn effect_composite_is_wrapped_by_blend_layer() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(None, "效果+混合", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+        scene.node_mut(id).expect("在").blend_mode = BlendMode::Multiply;
+        scene.node_mut(id).expect("在").effects = vec![shadow_entry()];
+
+        let mut sink = RecordingSink::rgba_capable();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert_eq!(sink.events.len(), 3, "必须恰为 push/draw_rgba/pop 三事件");
+        assert_eq!(sink.events[0], Event::PushBlend(BlendMode::Multiply));
+        assert!(
+            matches!(sink.events[1], Event::DrawRgba { .. }),
+            "回贴必须落在混合层之内(效果先于混合),实际 {:?}",
+            sink.events[1]
+        );
+        assert_eq!(sink.events[2], Event::PopBlend);
+        assert!(
+            !sink.events.contains(&Event::Fill),
+            "效果节点的内容经离屏求值回贴,不得再直绘"
+        );
+    }
+
+    /// 空效果栈零开销路径:即使后端声明 draw_rgba 能力,空栈节点也必须走
+    /// 直绘(恰一次 fill),不得进离屏分支(v3.0 输出逐位保持的门槛前提)。
+    #[test]
+    fn empty_effect_stack_takes_direct_draw_path() {
+        let mut scene = Scene::new();
+        scene
+            .add_node(None, "普通矩形", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+
+        let mut sink = RecordingSink::rgba_capable();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert_eq!(sink.events, vec![Event::Fill], "空栈必须直绘、零效果调用");
+    }
+
+    /// 全禁用(或恒等)效果条目与空栈同语义:is_active 门槛拦下,不进
+    /// 离屏分支(禁用条目保留参数但渲染时整条跳过——数据模型契约)。
+    #[test]
+    fn disabled_effect_entries_take_direct_draw_path() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(None, "禁用效果", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+        scene.node_mut(id).expect("在").effects = vec![EffectEntry {
+            enabled: false,
+            ..shadow_entry()
+        }];
+
+        let mut sink = RecordingSink::rgba_capable();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert_eq!(sink.events, vec![Event::Fill], "全禁用栈必须与空栈同路径");
+    }
+
+    /// 效果节点经 draw_rgba 回贴恰一次,窗口与偏移可精确推算:10×10 矩形
+    /// 在原点,硬影 offset [+6,0] → 支撑域右侧 6px → 窗口 16×10、回贴
+    /// 偏移 (0,0)(左侧未外扩)。
+    #[test]
+    fn effect_node_composites_via_single_draw_rgba() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(None, "投影矩形", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+        scene.node_mut(id).expect("在").effects = vec![shadow_entry()];
+
+        let mut sink = RecordingSink::rgba_capable();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert_eq!(
+            sink.events,
+            vec![Event::DrawRgba {
+                w: 16,
+                h: 10,
+                dx: 0,
+                dy: 0
+            }],
+            "效果节点必须恰一次回贴,窗口 = bbox + 偏移方向支撑域"
+        );
+    }
+
+    /// Point 档效果节点:内容都不画,效果无从作用 —— 零 draw_rgba;混合
+    /// 节点仍弹掉空混合层(与直绘 Point 分支的 push/pop 配对一致)。
+    #[test]
+    fn point_level_effect_node_skips_rasterization_but_keeps_blend_pairing() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(None, "极小效果", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+        scene.node_mut(id).expect("在").blend_mode = BlendMode::Screen;
+        scene.node_mut(id).expect("在").effects = vec![shadow_entry()];
+
+        // 10×0.05 = 0.5px 屏幕 → Point
+        let mut sink = RecordingSink::rgba_capable();
+        let opts = RenderOpts {
+            screen_size: (64.0, 64.0),
+            ..RenderOpts::default()
+        };
+        render_scene(&scene, &viewport_at_origin(0.05), &mut sink, &opts);
+        assert_eq!(
+            sink.events,
+            vec![Event::PushBlend(BlendMode::Screen), Event::PopBlend],
+            "Point 档不得离屏/回贴,混合层必须保持空配对"
+        );
+    }
+
+    /// 阴影可投进视口:节点 bbox 在视口外、但"bbox + 效果支撑域"与视口
+    /// 相交时不得被剔除(向视口方向的投影必须存活);远离视口的同款节点
+    /// 仍照常剔除。
+    #[test]
+    fn effect_node_reaching_into_viewport_is_not_culled() {
+        let opts = RenderOpts {
+            screen_size: (64.0, 64.0),
+            ..RenderOpts::default()
+        };
+        let build = |x0: f64, offset_x: f64| {
+            let mut scene = Scene::new();
+            let id = scene
+                .add_node(
+                    None,
+                    "远处投影",
+                    rect_content(x0, 0.0, x0 + 10.0, 10.0, red()),
+                )
+                .expect("节点");
+            scene.node_mut(id).expect("在").effects = vec![EffectEntry {
+                spec: EffectSpec::DropShadow {
+                    blur: 0.0,
+                    offset: [offset_x, 0.0],
+                    color: [0, 0, 0, 255],
+                },
+                enabled: true,
+            }];
+            scene
+        };
+
+        // 影子向左 30px:bbox (70..80) 在视口 (0..64) 外,外扩后 x0=40 < 64 → 保留
+        let mut sink = RecordingSink::rgba_capable();
+        render_scene(
+            &build(70.0, -30.0),
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &opts,
+        );
+        assert!(
+            matches!(sink.events[0], Event::DrawRgba { .. }),
+            "投影伸入视口的节点不得被剔除,实际 {:?}",
+            sink.events
+        );
+
+        // 节点与影子都在视口外((200..210),影子向右到 240)→ 照常剔除
+        let mut sink = RecordingSink::rgba_capable();
+        render_scene(
+            &build(200.0, 30.0),
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &opts,
+        );
+        assert!(sink.events.is_empty(), "视口外且影子也在视口外的节点应剔除");
+    }
+
     #[cfg(feature = "cpu")]
     mod blend_pixel {
         use super::*;
@@ -1040,6 +1480,161 @@ mod tests {
             let j = 4 * (2 * 64 + 2);
             let outside = [buf[j], buf[j + 1], buf[j + 2], buf[j + 3]];
             assert_eq!(outside, gray, "混合矩形外保持底色");
+        }
+    }
+
+    // —— 效果栈像素回归(G20/T2.1,CpuRenderer 64×64 真实回贴)——
+
+    #[cfg(feature = "cpu")]
+    mod effect_pixel {
+        use super::*;
+        use sable_paint::cpu::CpuRenderer;
+
+        const WHITE: Rgba8 = [255, 255, 255, 255];
+
+        fn pixel(buf: &[u8], x: u16, y: u16) -> [u8; 4] {
+            let i = 4 * (usize::from(y) * 64 + usize::from(x));
+            [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+        }
+
+        fn render(scene: &Scene, level: Option<EffectLevel>) -> Vec<u8> {
+            let opts = RenderOpts {
+                screen_size: (64.0, 64.0),
+                effect_level: level,
+                ..RenderOpts::default()
+            };
+            let mut renderer = CpuRenderer::new(64, 64, WHITE);
+            render_scene(scene, &viewport_at_origin(1.0), renderer.sink(), &opts);
+            renderer.finish()
+        }
+
+        /// 高斯模糊场景:32×32 红矩形(16..48),`with_effect` 决定是否挂
+        /// radius=6 的模糊(支撑域 = 3×box 半径 = 9px)。
+        fn blur_scene(with_effect: bool) -> Scene {
+            let mut scene = Scene::new();
+            let id = scene
+                .add_node(None, "红", rect_content(16.0, 16.0, 48.0, 48.0, red()))
+                .expect("节点");
+            if with_effect {
+                scene.node_mut(id).expect("在").effects = vec![EffectEntry {
+                    spec: EffectSpec::GaussianBlur { radius: 6.0 },
+                    enabled: true,
+                }];
+            }
+            scene
+        }
+
+        /// T2.1a 高斯模糊:同一场景开/关效果像素必有差异,且模糊后边缘向
+        /// 外扩散(原矩形外 6px、支撑域 9px 之内出现红色覆盖);支撑域外
+        /// 的矩形深处保持原样。
+        #[test]
+        fn gaussian_blur_changes_pixels_and_spreads_edges() {
+            let without = render(&blur_scene(false), None);
+            let with = render(&blur_scene(true), None);
+
+            assert_ne!(without, with, "开/关效果必须有像素差异");
+            // 原矩形左缘外 6px:无效果 = 纯白底;模糊后有覆盖(边缘扩散)
+            assert_eq!(pixel(&without, 10, 32), WHITE, "无效果时矩形外是纯底色");
+            let spread = pixel(&with, 10, 32);
+            assert!(
+                spread[3] > 0 && spread != WHITE,
+                "模糊后矩形外 6px 应有扩散覆盖,实际 {spread:?}"
+            );
+            // 距边缘 16px > 支撑域 9px:矩形深处逐位不变
+            assert_eq!(
+                pixel(&with, 32, 32),
+                [255, 0, 0, 255],
+                "支撑域外的矩形内部保持不透明红"
+            );
+        }
+
+        /// T2.1b 投影:偏移方向上出现阴影像素 —— 硬影 offset [+6,0]、
+        /// α=140 黑:矩形右侧 6px 外的影子专属区变中性灰(255·(1−140/255)
+        /// ≈ 115),反方向与矩形本体不变。
+        #[test]
+        fn drop_shadow_appears_in_offset_direction() {
+            let shadow_scene = |with_effect: bool| {
+                let mut scene = Scene::new();
+                let id = scene
+                    .add_node(None, "红", rect_content(8.0, 24.0, 24.0, 40.0, red()))
+                    .expect("节点");
+                if with_effect {
+                    scene.node_mut(id).expect("在").effects = vec![EffectEntry {
+                        spec: EffectSpec::DropShadow {
+                            blur: 0.0,
+                            offset: [6.0, 0.0],
+                            color: [0, 0, 0, 140],
+                        },
+                        enabled: true,
+                    }];
+                }
+                scene
+            };
+            let without = render(&shadow_scene(false), None);
+            let buf = render(&shadow_scene(true), None);
+
+            // 影子专属区(矩形右侧,base 未覆盖):无效果 = 白,有效果 = 中性灰
+            assert_eq!(pixel(&without, 28, 32), WHITE, "无效果时该处是纯底色");
+            let shadow = pixel(&buf, 28, 32);
+            assert!(
+                (i32::from(shadow[0]) - 115).abs() <= 4,
+                "偏移方向上应出现阴影像素(≈115 灰),实际 {shadow:?}"
+            );
+            assert!(
+                (i32::from(shadow[0]) - i32::from(shadow[1])).abs() <= 2
+                    && (i32::from(shadow[1]) - i32::from(shadow[2])).abs() <= 2,
+                "黑影叠白底应为中性灰,实际 {shadow:?}"
+            );
+            // 反方向(矩形左侧)保持底色
+            assert_eq!(pixel(&buf, 4, 32), WHITE, "偏移反方向不得出现阴影");
+            // 矩形本体不透明,base over shadow 后保持红
+            assert_eq!(pixel(&buf, 16, 32), [255, 0, 0, 255], "矩形本体保持红");
+        }
+
+        /// T2.1c Off 档:输出与无效果基线**逐位一致**(E12 军规)。
+        ///
+        /// 档位来源链:`SABLE_EFFECTS_LEVEL=off` → `detect_with` →
+        /// `caps(Off).blur == false`(sable-paint 既有单测)→ 本测试以
+        /// `RenderOpts::effect_level` 直控同一能力位,等价锁定 env 路径。
+        /// 对照组用 `Some(Reduced)` 显式开档,防止断言空转。
+        #[test]
+        fn off_level_output_is_bitwise_identical_to_no_effects() {
+            let effect_scene = |with_effects: bool| {
+                let mut scene = Scene::new();
+                let a = scene
+                    .add_node(None, "模糊", rect_content(16.0, 16.0, 48.0, 48.0, red()))
+                    .expect("模糊节点");
+                let b = scene
+                    .add_node(None, "投影", rect_content(0.0, 0.0, 12.0, 12.0, blue()))
+                    .expect("投影节点");
+                if with_effects {
+                    scene.node_mut(a).expect("在").effects = vec![EffectEntry {
+                        spec: EffectSpec::GaussianBlur { radius: 6.0 },
+                        enabled: true,
+                    }];
+                    scene.node_mut(b).expect("在").effects = vec![EffectEntry {
+                        spec: EffectSpec::DropShadow {
+                            blur: 4.0,
+                            offset: [6.0, 6.0],
+                            color: [0, 0, 0, 150],
+                        },
+                        enabled: true,
+                    }];
+                }
+                scene
+            };
+            let with = effect_scene(true);
+            let without = effect_scene(false);
+
+            let off = render(&with, Some(EffectLevel::Off));
+            let baseline = render(&without, None);
+            assert_eq!(
+                off, baseline,
+                "Off 档输出必须与无效果基线逐位一致(E12 军规)"
+            );
+
+            let on = render(&with, Some(EffectLevel::Reduced));
+            assert_ne!(on, off, "Reduced 档必须真实进效果路径(否则断言空转)");
         }
     }
 }

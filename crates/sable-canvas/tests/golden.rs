@@ -1,5 +1,5 @@
-//! 渲染回归基线(迭代计划 08 S3 #3.5):vello_cpu 离屏渲染 5 个确定性场景,
-//! 与 `tests/golden/{name}.png` 黄金文件逐像素对比。
+//! 渲染回归基线(迭代计划 08 S3 #3.5;V4.0 T2.3 增效果场景):vello_cpu
+//! 离屏渲染 6 个确定性场景,与 `tests/golden/{name}.png` 黄金文件逐像素对比。
 //!
 //! # 生成/更新基线(主 Agent 跑一次并提交 PNG)
 //!
@@ -31,6 +31,7 @@ use std::path::PathBuf;
 
 use kurbo::{Affine, Rect, Shape};
 use sable_canvas::render::{OverlayTheme, RenderOpts, render_scene};
+use sable_foundation::effects::{EffectEntry, EffectSpec};
 use sable_foundation::scene::{NodeContent, NodeId, Paint, PathNode, Scene, StrokeStyle};
 use sable_foundation::viewport::Viewport;
 use sable_paint::cpu::CpuRenderer;
@@ -45,13 +46,14 @@ const CHANNEL_TOLERANCE: i32 = 2;
 /// 不匹配像素比例的分母:上限 = 总数 / 本值(1000 → 0.1%)。
 const MISMATCH_DENOMINATOR: usize = 1000;
 
-/// 五个黄金场景名(与下方 #[test] 一一对应;守卫测试按名查文件)。
-const SCENARIO_NAMES: [&str; 5] = [
+/// 六个黄金场景名(与下方 #[test] 一一对应;守卫测试按名查文件)。
+const SCENARIO_NAMES: [&str; 6] = [
     "grid_rects",
     "selection",
     "rubber_band",
     "lod_zoomout",
     "opacity_stack",
+    "effects_shadow",
 ];
 
 /// 黄金基线路径:`crates/sable-canvas/tests/golden/{name}.png`。
@@ -198,6 +200,7 @@ fn selection_matches_golden() {
         show_grid: false,
         overlay: OverlayTheme::default(),
         screen_size: (f64::from(SIZE), f64::from(SIZE)),
+        effect_level: None,
     };
     let buf = render_frame(&scene, viewport(1.0), &opts);
     assert_matches_golden("selection", &buf);
@@ -325,6 +328,40 @@ fn opacity_stack_matches_golden() {
     };
     let buf = render_frame(&scene, viewport(1.0), &opts);
     assert_matches_golden("opacity_stack", &buf);
+}
+
+/// 场景 6:节点效果栈(V4.0 T2.3,G20)——蓝矩形 + 投影(blur 4、
+/// offset [+6,+6]、α=150 深蓝黑),混合保持 Normal。
+///
+/// 走 `render_scene` 效果路径:节点单独离屏光栅化 → `apply_effects_rgba`
+/// → `draw_rgba` 回贴(CpuRenderer 声明 `supports_draw_rgba`,档位 = env
+/// 未设 → cpu-only 编译期默认 Reduced,blur 开)。投影落向右下方,支撑域
+/// (3×box 半径 = 6px)与偏移的合成扩散进基线。
+#[test]
+fn effects_shadow_matches_golden() {
+    let mut scene = Scene::new();
+    let id = solid_rect(
+        &mut scene,
+        "投影矩形",
+        Rect::new(28.0, 28.0, 60.0, 60.0),
+        [50, 90, 220, 255],
+    );
+    scene.node_mut(id).expect("节点在").effects = vec![EffectEntry {
+        spec: EffectSpec::DropShadow {
+            blur: 4.0,
+            offset: [6.0, 6.0],
+            color: [10, 10, 30, 150],
+        },
+        enabled: true,
+    }];
+    let opts = RenderOpts {
+        show_grid: false,
+        overlay: OverlayTheme::default(),
+        screen_size: (f64::from(SIZE), f64::from(SIZE)),
+        ..RenderOpts::default()
+    };
+    let buf = render_frame(&scene, viewport(1.0), &opts);
+    assert_matches_golden("effects_shadow", &buf);
 }
 
 /// 基线存在守卫:文件缺失时 panic 并给出补救命令(生成方式见模块 doc)。

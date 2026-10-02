@@ -103,6 +103,37 @@ impl PaintSink for VelloCpuSink {
     fn pop_blend(&mut self) {
         self.ctx.pop_layer();
     }
+
+    /// 真实现:vello_cpu image paint(peniko `ImageBrush`)。像素按**预乘
+    /// RGBA8**(`AlphaPremultiplied`,与 [`crate::effects::apply_effects_rgba`]
+    /// 的输出同语义)喂给 `ImageSource::from_peniko_image_data`——该转换对
+    /// 预乘数据逐位直通,不做二次预乘。变换取整数平移 `(dx, dy)`:vello_common
+    /// 对"纯整数平移 + Medium 采样"自动降为最近邻(`encode.rs` 的 quality
+    /// 优化),像素 1:1 落位,无双线性渗色;填充矩形恰好覆盖图像域
+    /// `(0,0)-(w,h)`,越界部分由光栅器按瓦片裁剪。
+    fn draw_rgba(&mut self, rgba: &[u8], w: u16, h: u16, dx: i32, dy: i32) {
+        let image_data = peniko::ImageData {
+            data: peniko::Blob::new(std::sync::Arc::new(rgba.to_vec())),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
+            width: u32::from(w),
+            height: u32::from(h),
+        };
+        let source = vello_cpu::ImageSource::from_peniko_image_data(&image_data);
+        self.ctx.set_paint(vello_cpu::Image {
+            image: source,
+            sampler: peniko::ImageSampler::default(),
+        });
+        self.ctx
+            .set_transform(Affine::translate((f64::from(dx), f64::from(dy))));
+        let rect = kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h)).to_path(0.1);
+        self.ctx.fill_path(&rect);
+    }
+
+    /// 本后端以 vello_cpu image paint 支持像素回贴(效果离屏管线门槛)。
+    fn supports_draw_rgba(&self) -> bool {
+        true
+    }
 }
 
 /// 独立的 CPU 渲染器:管理画布尺寸、底色与资源,渲染后取回 RGBA8 缓冲。
@@ -301,6 +332,35 @@ mod tests {
             renderer.finish()
         };
         assert_eq!(with_layer, without_layer, "Normal 混合层必须逐位等价");
+    }
+
+    /// draw_rgba 整数平移回贴:预乘像素 1:1 落位、边界外不渗色(效果链
+    /// 合成回画布的门槛真实现,见 `PaintSink::draw_rgba`)。
+    #[test]
+    fn draw_rgba_pastes_pixels_at_device_offset() {
+        let mut renderer = CpuRenderer::new(W, H, WHITE);
+        let rgba = [255u8, 0, 0, 255].repeat(4 * 2); // 4×2 全红预乘块
+        renderer.sink().draw_rgba(&rgba, 4, 2, 10, 20);
+        let buf = renderer.finish();
+        assert_eq!(pixel(&buf, 12, 21), [255, 0, 0, 255], "块内像素原样落位");
+        assert_eq!(pixel(&buf, 9, 21), WHITE, "块左缘外保持底色");
+        assert_eq!(pixel(&buf, 14, 21), WHITE, "块右缘外保持底色");
+        assert_eq!(pixel(&buf, 12, 19), WHITE, "块上缘外保持底色");
+        assert_eq!(pixel(&buf, 12, 22), WHITE, "块下缘外保持底色");
+    }
+
+    /// draw_rgba 半透明预乘像素按 src-over 与底色合成(0.5 红 → 白底变粉)。
+    #[test]
+    fn draw_rgba_src_over_composites_semitransparent_pixels() {
+        let mut renderer = CpuRenderer::new(W, H, WHITE);
+        let rgba = vec![128u8, 0, 0, 128]; // 预乘 0.5 红(单像素)
+        renderer.sink().draw_rgba(&rgba, 1, 1, 32, 32);
+        let buf = renderer.finish();
+        let p = pixel(&buf, 32, 32);
+        assert!(
+            (255i32 - i32::from(p[0])).abs() <= 2 && (128i32 - i32::from(p[1])).abs() <= 2,
+            "白底叠预乘 0.5 红应得 ≈(255,128,128),实际 {p:?}"
+        );
     }
 
     /// 锥形渐变(E9):全周扫描红→蓝,+X 方向取首色、+90°(Y 向下顺时针)

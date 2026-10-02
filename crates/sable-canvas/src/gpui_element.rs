@@ -279,6 +279,7 @@ impl Render for SableCanvas {
             show_grid: self.show_grid,
             overlay: self.overlay,
             screen_size: (f64::from(width), f64::from(height)),
+            effect_level: None, // 按 SABLE_EFFECTS_LEVEL env 检测(E12 档位)
         };
         let mut renderer = CpuRenderer::new(width, height, self.base_color);
         render_scene(&self.scene, &self.viewport, renderer.sink(), &opts);
