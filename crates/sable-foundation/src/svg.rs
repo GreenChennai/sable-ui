@@ -5,9 +5,12 @@
 //! 范围:路径/组/变换/纯色填充/描边宽度颜色/混合模式;线性与径向渐变
 //! 双向完整映射(几何/全部色标/stop 透明度;导入侧 gradientTransform
 //! 折入几何坐标);Conic 渐变导出降级为首停纯色(SVG 1.1 无锥形
-//! paint server,doc 保留说明);Text/Image 导入跳过并计数;`<pattern>`
-//! 导入降级中性灰计数;效果(EffectSpec)不进 SVG(filter 映射 =
-//! v2.1,doc 记录)。
+//! paint server,doc 保留说明);Text 双向互通(V4.0 T3:导出 `<text>`,
+//! 导入消费 usvg 解析期轮廓化好的 `Text::flattened()` 路径组,与场景
+//! "文本渲染走字形轮廓"同模型;仅轮廓组缺失/为空——典型无字体环境——
+//! 才跳过计数);Image 导入跳过并计数;`<pattern>` 导入降级中性灰计数;
+//! reflect/repeat `spreadMethod` 按 pad 近似并计数(G26);效果
+//! (EffectSpec)不进 SVG(filter 映射 = v2.1,doc 记录)。
 
 use crate::error::CoreResult;
 use crate::scene::{
@@ -24,9 +27,13 @@ const MAX_DEPTH: usize = 64;
 /// 导入统计:跳过/降级项一目了然(不静默)。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImportReport {
-    /// 成功导入的节点数(含组)。
+    /// 成功导入的节点数(含组;V4.0 T3 起文本轮廓化产出的组/路径也计)。
     pub nodes: usize,
-    /// 跳过的 `<text>` 节点数(v2.0 不做字形轮廓化)。
+    /// 无法轮廓化而跳过的 `<text>` 节点数。
+    ///
+    /// V4.0 T3 起语义:仅当文本轮廓组缺失/为空(典型是无字体环境,
+    /// usvg 解析期字形布局失败)才计数;正常轮廓化产出组+路径,
+    /// 计入 [`ImportReport::nodes`]。
     pub skipped_text: usize,
     /// 跳过的 `<image>` 节点数。
     pub skipped_image: usize,
@@ -35,28 +42,61 @@ pub struct ImportReport {
     /// v3.0 T2 起语义收窄:Linear/Radial 渐变已完整映射,不再计入;
     /// 仅 Pattern 降级仍计数。
     pub simplified_gradients: usize,
+    /// 以 pad 语义近似的 reflect/repeat `spreadMethod` 渐变数(G26,
+    /// V4.0 T3 起计数不再静默;Paint 模型无 spread 概念,渐变结构
+    /// 完整保留,仅首尾色标外区域按 pad 钳制)。
+    pub simplified_spreads: usize,
 }
 
 // ---------------------------------------------------------------------------
 // 导出
 // ---------------------------------------------------------------------------
 
-/// 场景 → SVG 字符串(`xmlns` 齐备,可直接写 `.svg` 文件)。
-pub fn export_svg(scene: &Scene) -> String {
+/// 导出统计(V4.0 T3):导出了什么一目了然,文本不再静默丢弃。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExportReport {
+    /// 导出的组/路径节点数(与导入侧 [`ImportReport::nodes`] 同口径,组也计;
+    /// 不可见节点不导出故不计)。
+    pub nodes: usize,
+    /// 导出的 `<text>` 文本节点数。
+    pub texts: usize,
+    /// 下一个渐变 defs id 的序号(内部计数器:单调派生 `g0/g1/…`,
+    /// 不外露;G26 起替代可碰撞的"defs 长度+名字节和"派生)。
+    grad_next: usize,
+}
+
+/// 场景 → SVG 字符串 + 导出报告(需要计数口径时用;纯字符串用
+/// [`export_svg`])。
+pub fn export_svg_with_report(scene: &Scene) -> (String, ExportReport) {
     let mut defs = String::new();
     let mut body = String::new();
+    let mut report = ExportReport::default();
     for &root in &scene.roots {
-        export_node(scene, root, &mut body, &mut defs);
+        export_node(scene, root, &mut body, &mut defs, &mut report);
     }
     let defs = if defs.is_empty() {
         String::new()
     } else {
         format!("<defs>{defs}</defs>")
     };
-    format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{defs}{body}</svg>")
+    (
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{defs}{body}</svg>"),
+        report,
+    )
 }
 
-fn export_node(scene: &Scene, id: crate::scene::NodeId, body: &mut String, defs: &mut String) {
+/// 场景 → SVG 字符串(`xmlns` 齐备,可直接写 `.svg` 文件)。
+pub fn export_svg(scene: &Scene) -> String {
+    export_svg_with_report(scene).0
+}
+
+fn export_node(
+    scene: &Scene,
+    id: crate::scene::NodeId,
+    body: &mut String,
+    defs: &mut String,
+    report: &mut ExportReport,
+) {
     let Some(node) = scene.node(id) else {
         return;
     };
@@ -77,21 +117,22 @@ fn export_node(scene: &Scene, id: crate::scene::NodeId, body: &mut String, defs:
                 esc(&node.name)
             ));
             for &child in &node.children {
-                export_node(scene, child, body, defs);
+                export_node(scene, child, body, defs, report);
             }
             body.push_str("</g>");
+            report.nodes += 1;
         }
         NodeContent::Path(p) => {
             let mut attrs = format!(" data-name=\"{}\"{}", esc(&node.name), open);
             let fill_attr_s: String = match &p.fill {
-                Some(fill) => format!(" fill=\"{}\"", fill_attr(fill, &node.name, defs)),
+                Some(fill) => format!(" fill=\"{}\"", fill_attr(fill, defs, report)),
                 None => " fill=\"none\"".to_string(),
             };
             attrs.push_str(&fill_attr_s);
             if let Some(stroke) = &p.stroke {
                 attrs.push_str(&format!(
                     " stroke=\"{}\" stroke-width=\"{}\"",
-                    fill_attr(&stroke.paint, &node.name, defs),
+                    fill_attr(&stroke.paint, defs, report),
                     f(stroke.width)
                 ));
             }
@@ -99,9 +140,36 @@ fn export_node(scene: &Scene, id: crate::scene::NodeId, body: &mut String, defs:
                 "<path d=\"{}\"{attrs}{blend}/>",
                 path_data(&p.path)
             ));
+            report.nodes += 1;
         }
-        // Text/Image 不进 SVG v2.0(与导入侧跳过对称)
-        _ => {}
+        NodeContent::Text(t) => {
+            // 文本导出为 <text>(V4.0 T3 收口 v2.0 遗留):字号/颜色直写,
+            // 内容 XML 转义。定位:场景 Text 节点位置存在节点 transform 里
+            // (文本局部锚点是原点)。SVG 的 x/y 在 transform 之前应用——
+            // 若把平移拆到 x/y、线性部分留在 transform,旋转/斜切会把锚点
+            // 再变换一遍而漂移;故仅纯平移(线性部分为单位阵)时把平移写成
+            // x/y(锚点即节点位置字段),其余情况锚点保持原点、位置整体走
+            // transform,两种写法渲染结果逐点一致。
+            let c = node.transform.as_coeffs();
+            let linear_identity = c[0] == 1.0 && c[1] == 0.0 && c[2] == 0.0 && c[3] == 1.0;
+            let (xy, open_text) = if linear_identity {
+                (
+                    format!(" x=\"{}\" y=\"{}\"", f(c[4]), f(c[5])),
+                    String::new(),
+                )
+            } else {
+                (String::from(" x=\"0\" y=\"0\""), open)
+            };
+            body.push_str(&format!(
+                "<text{xy} font-size=\"{}\" fill=\"{}\"{open_text}{blend}>{}</text>",
+                f(t.font_size),
+                rgba_attr(t.color),
+                esc(&t.text)
+            ));
+            report.texts += 1;
+        }
+        // Image 不进 SVG v2.0(位图走资产管线;与导入侧跳过计数对称)
+        NodeContent::Image(_) => {}
     }
 }
 
@@ -133,11 +201,11 @@ fn path_data(path: &BezPath) -> String {
     d
 }
 
-fn fill_attr(paint: &Paint, node_name: &str, defs: &mut String) -> String {
+fn fill_attr(paint: &Paint, defs: &mut String, report: &mut ExportReport) -> String {
     match paint {
         Paint::Solid(c) => rgba_attr(*c),
         Paint::LinearGradient { start, end, stops } => {
-            let id = grad_id(defs, node_name);
+            let id = next_grad_id(report);
             defs.push_str(&format!(
                 "<linearGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">",
                 f(start[0]),
@@ -155,7 +223,7 @@ fn fill_attr(paint: &Paint, node_name: &str, defs: &mut String) -> String {
             radius,
             stops,
         } => {
-            let id = grad_id(defs, node_name);
+            let id = next_grad_id(report);
             defs.push_str(&format!(
                 "<radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" cx=\"{}\" cy=\"{}\" r=\"{}\">",
                 f(center[0]),
@@ -176,12 +244,13 @@ fn fill_attr(paint: &Paint, node_name: &str, defs: &mut String) -> String {
     }
 }
 
-/// 渐变 defs id(与 v2.0 同款:以 defs 已有长度 + 节点名派生,零状态)。
-fn grad_id(defs: &str, node_name: &str) -> String {
-    format!(
-        "g{}",
-        defs.len() + node_name.bytes().map(usize::from).sum::<usize>()
-    )
+/// 渐变 defs id(G26,V4.0 T3 起):按导出顺序单调计数派生
+/// `g0/g1/…`,永不碰撞——旧式"defs 已有长度 + 节点名字节和"在不同
+/// 命名组合下可产生相同值。
+fn next_grad_id(report: &mut ExportReport) -> String {
+    let id = format!("g{}", report.grad_next);
+    report.grad_next += 1;
+    id
 }
 
 /// 渐变色标序列化:不透明 stop 只写 stop-color;半透明补 `stop-opacity`
@@ -276,8 +345,8 @@ fn f(v: f64) -> String {
 // 导入
 // ---------------------------------------------------------------------------
 
-/// SVG 字符串 → 场景(新 Scene;Text/Image 跳过计数;`<pattern>` 降级中性灰计数;
-/// Linear/Radial 渐变完整映射)。
+/// SVG 字符串 → 场景(新 Scene;Text 轮廓化为路径组,仅轮廓缺失才计数;
+/// Image 跳过计数;`<pattern>` 降级中性灰计数;Linear/Radial 渐变完整映射)。
 pub fn import_svg(svg: &str) -> CoreResult<(Scene, ImportReport)> {
     import_svg_with_limit(svg, MAX_SVG_BYTES)
 }
@@ -290,7 +359,17 @@ pub fn import_svg_with_limit(svg: &str, max_bytes: usize) -> CoreResult<(Scene, 
             limit: max_bytes,
         });
     }
-    let opt = usvg::Options::default();
+    let mut opt = usvg::Options::default();
+    // 系统字体(V4.0 T3):默认 Options 的 fontdb 是**空库**——不加载
+    // 字体时文本布局在解析期直接失败,Text 节点根本不进树(usvg
+    // parser/text.rs 的 convert 提前 return,旧版"文本被静默丢"的真正
+    // 机制),文本互通无从谈起。加载系统字体后(Windows 字体目录 /
+    // Linux fontconfig),Text 节点携带解析期轮廓化好的 flattened 组
+    // 进树,导入侧才有现成轮廓可消费。Arc 刚构造必唯一,get_mut 必
+    // 成功;万一失败则维持空库,文本按 skipped_text 如实计数。
+    if let Some(db) = std::sync::Arc::get_mut(&mut opt.fontdb) {
+        db.load_system_fonts();
+    }
     let tree = usvg::Tree::from_str(svg, &opt)
         .map_err(|e| crate::error::CoreError::SvgParse(e.to_string()))?;
     let mut scene = Scene::new();
@@ -332,7 +411,7 @@ fn import_group(
                         width: f64::from(st.width().get()),
                     });
                 }
-                let path_id = scene.add_node(
+                scene.add_node(
                     Some(group_id),
                     node_name(p.id()),
                     NodeContent::Path(PathNode {
@@ -346,7 +425,23 @@ fn import_group(
                 let _ = p;
                 report.nodes += 1;
             }
-            usvg::Node::Text(_) => report.skipped_text += 1,
+            usvg::Node::Text(t) => {
+                // 文本轮廓化导入(V4.0 T3,docs/10 T3.1):usvg 0.48 在解析
+                // 期已完成文本布局与字形轮廓化,但 Text 节点仍留在树里,
+                // `Text::flattened()` 返回现成的轮廓组(路径/嵌套字形组/
+                // 位图字形;轮廓坐标在文本父级用户空间,与"我们按组链应用
+                // transform、路径保持局部"的模型一致——usvg 官方 writer
+                // 也是把该组就地序列化,不补变换)。走既有 Path/Group 导入
+                // 逻辑(fill/stroke/transform 同款),正常轮廓化计入节点数。
+                let flattened = t.flattened();
+                if flattened.children().is_empty() {
+                    // 无字体环境等导致的空轮廓组:无可导入内容,如实计数
+                    // 不 panic(skipped_text 的新语义)。
+                    report.skipped_text += 1;
+                } else {
+                    import_group(scene, Some(group_id), flattened, report, depth + 1)?;
+                }
+            }
             usvg::Node::Image(_) => report.skipped_image += 1,
         }
     }
@@ -361,6 +456,14 @@ fn node_name(id: &str) -> String {
     }
 }
 
+/// spreadMethod 降级计数:Paint 模型无 spread 概念,reflect/repeat 按
+/// pad 近似(渐变结构完整保留);G26 起计数,不再静默。
+fn note_spread(m: usvg::SpreadMethod, report: &mut ImportReport) {
+    if m != usvg::SpreadMethod::Pad {
+        report.simplified_spreads += 1;
+    }
+}
+
 fn import_paint(paint: &usvg::Paint, opacity: f32, report: &mut ImportReport) -> Paint {
     match paint {
         usvg::Paint::Color(c) => Paint::Solid(color_to_rgba8(*c, opacity)),
@@ -370,8 +473,10 @@ fn import_paint(paint: &usvg::Paint, opacity: f32, report: &mut ImportReport) ->
         // units 不进 pub API,"for the caller they are always
         // userSpaceOnUse"——usvg 源码 paint_server.rs),故坐标直读即
         // 用户空间。gradientTransform 折入几何;spreadMethod 不进
-        // Paint 模型,按 pad 语义直读首尾色标。
+        // Paint 模型,reflect/repeat 按 pad 语义近似并计数(G26,
+        // 不再静默),pad 直读首尾色标。
         usvg::Paint::LinearGradient(g) => {
+            note_spread(g.spread_method(), report);
             let t = tiny_transform_to_affine(g.transform());
             Paint::LinearGradient {
                 start: affine_point(t, f64::from(g.x1()), f64::from(g.y1())),
@@ -380,6 +485,7 @@ fn import_paint(paint: &usvg::Paint, opacity: f32, report: &mut ImportReport) ->
             }
         }
         usvg::Paint::RadialGradient(g) => {
+            note_spread(g.spread_method(), report);
             let t = tiny_transform_to_affine(g.transform());
             // 焦点 fx/fy/fr 不进模型(标准径向以圆心为准);非均匀
             // gradientTransform 下半径按面积等效缩放(sqrt|det|)近似。
@@ -509,6 +615,8 @@ fn apply_transform(scene: &mut Scene, id: crate::scene::NodeId, t: tiny_skia_pat
 mod tests {
     use super::*;
 
+    use crate::scene::TextNode;
+
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> BezPath {
         let mut p = BezPath::new();
         p.move_to((x0, y0));
@@ -621,11 +729,231 @@ mod tests {
 
     #[test]
     fn import_counts_skipped_text_and_images() {
-        // usvg 0.48 在解析期即完成文本布局(Text 节点转组+路径),
-        // skipped_text 只对残留 Text 节点计数——此处断言"含文本的 SVG 可导入"
-        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><text x=\"1\" y=\"2\">hi</text><rect width=\"4\" height=\"4\"/></svg>";
-        let (_, report) = import_svg(svg).expect("含文本 SVG 可导入");
-        assert!(report.nodes >= 1);
+        // V4.0 T3 语义修正(旧注释声称"usvg 0.48 解析期把 Text 节点转成
+        // 组+路径"——与 0.48.1 源码相反:解析后 Text 节点仍留在树里,轮廓
+        // 在 `Text::flattened()` 组,导入侧现消费它)。文本轮廓组非空时产出
+        // 路径节点(skipped_text=0);空轮廓组(无字体环境)才如实计数,
+        // 两种情况都不 panic。位图字形之外的 <image> 仍跳过计数。
+        let svg = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">",
+            "<text x=\"1\" y=\"2\">hi</text>",
+            "<rect width=\"4\" height=\"4\"/>",
+            "<image xlink:href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\" width=\"2\" height=\"2\"/>",
+            "</svg>"
+        );
+        let (scene, report) = import_svg(svg).expect("含文本/图像 SVG 可导入");
+        assert!(report.nodes >= 1, "rect 至少导入,实际 {report:?}");
+        assert_eq!(report.skipped_image, 1, "内嵌位图跳过计数");
+        if report.skipped_text == 0 {
+            // 字体可用环境(CI ubuntu fontconfig / 本机系统字体):
+            // 文本轮廓化为路径节点
+            assert!(
+                path_count(&scene) >= 1,
+                "文本应轮廓化为路径节点,实际 {report:?}"
+            );
+        } else {
+            assert_eq!(report.skipped_text, 1, "无字体环境如实计数不 panic");
+        }
+    }
+
+    /// 场景内路径节点数(文本轮廓化断言用)。
+    fn path_count(scene: &Scene) -> usize {
+        scene
+            .nodes
+            .iter()
+            .filter(|(_, n)| matches!(n.content, NodeContent::Path(_)))
+            .count()
+    }
+
+    // —— V4.0 T3:SVG 文本互通(G22,docs/10 T3)——
+
+    /// 导出:Text 节点 → `<text x y font-size fill>`(XML 转义),
+    /// 报告计 texts。
+    #[test]
+    fn export_text_node_to_svg_text_element() {
+        let mut scene = Scene::new();
+        scene
+            .add_node(
+                None,
+                "标题",
+                NodeContent::Text(TextNode {
+                    text: "a<b & c\"d".to_string(),
+                    font_size: 18.0,
+                    color: [10, 20, 30, 255],
+                }),
+            )
+            .expect("文本节点");
+        let (svg, report) = export_svg_with_report(&scene);
+        assert!(
+            svg.contains(
+                "<text x=\"0\" y=\"0\" font-size=\"18\" fill=\"rgb(10,20,30)\">a&lt;b &amp; c&quot;d</text>"
+            ),
+            "文本元素 + XML 转义,实际 {svg}"
+        );
+        assert_eq!(report.texts, 1, "文本计数");
+        assert_eq!(report.nodes, 0, "文本不计入几何节点");
+    }
+
+    /// 导出定位:纯平移 transform 的平移即节点位置字段,直接写 x/y
+    /// 且不再产生 transform 属性(锚点取位置字段)。
+    #[test]
+    fn export_text_position_uses_transform_translation() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(
+                None,
+                "文本",
+                NodeContent::Text(TextNode {
+                    text: "hi".to_string(),
+                    font_size: 12.0,
+                    color: [0, 0, 0, 255],
+                }),
+            )
+            .expect("文本节点");
+        scene.node_mut(id).expect("节点").transform =
+            Affine::new([1.0, 0.0, 0.0, 1.0, 100.0, 50.0]);
+        let (svg, _) = export_svg_with_report(&scene);
+        assert!(
+            svg.contains("<text x=\"100\" y=\"50\" font-size=\"12\""),
+            "平移写进 x/y,实际 {svg}"
+        );
+        assert!(
+            !svg.contains("transform"),
+            "纯平移不应残留 transform 属性,实际 {svg}"
+        );
+    }
+
+    /// roundtrip(V4.0 T3 验收):含 Text 场景 → 导出含 `<text>` → 导入
+    /// 得到轮廓路径节点(不再是双向静默丢)。导入侧按设计必然是路径/
+    /// 组而非 Text 节点——与场景"文本渲染走字形轮廓"一致;文本色折入
+    /// 路径填充保留。无字体环境分支如实计数不 panic。
+    #[test]
+    fn text_roundtrip_export_text_import_outline_paths() {
+        let mut scene = Scene::new();
+        scene
+            .add_node(
+                None,
+                "标题",
+                NodeContent::Text(TextNode {
+                    text: "Sable".to_string(),
+                    font_size: 24.0,
+                    color: [200, 40, 40, 255],
+                }),
+            )
+            .expect("文本节点");
+        let (exported, export_report) = export_svg_with_report(&scene);
+        assert!(
+            exported.contains("<text"),
+            "导出应含 <text> 元素,实际 {exported}"
+        );
+        assert_eq!(export_report.texts, 1, "导出报告文本计数");
+        let (imported, import_report) = import_svg(&exported).expect("导入");
+        if import_report.skipped_text == 0 {
+            // 字体可用环境:轮廓组非空,产出组+路径,填充即文本色
+            assert!(
+                path_count(&imported) >= 1,
+                "导入应得到路径节点,报告 {import_report:?}"
+            );
+            assert!(
+                import_report.nodes >= 1,
+                "轮廓组/路径计入节点数,报告 {import_report:?}"
+            );
+            assert!(
+                fills_of(&imported).contains(&Paint::Solid([200, 40, 40, 255])),
+                "文本色折入路径填充,实际 {:?}",
+                fills_of(&imported)
+            );
+        } else {
+            // 无字体环境:空轮廓组如实计数
+            assert_eq!(
+                import_report.skipped_text, 1,
+                "无字体环境如实计数,报告 {import_report:?}"
+            );
+        }
+    }
+
+    /// G26:reflect/repeat spreadMethod 不再静默按 pad——各计一次
+    /// simplified_spreads,渐变本身仍完整映射;pad 不计数。
+    #[test]
+    fn import_counts_non_pad_spread_methods() {
+        let svg = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><defs>",
+            "<linearGradient id=\"a\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"10\" y2=\"0\" spreadMethod=\"reflect\">",
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>",
+            "<radialGradient id=\"b\" gradientUnits=\"userSpaceOnUse\" cx=\"5\" cy=\"5\" r=\"5\" spreadMethod=\"repeat\">",
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></radialGradient>",
+            "<linearGradient id=\"c\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"10\" y2=\"0\">",
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>",
+            "</defs>",
+            "<rect width=\"4\" height=\"4\" fill=\"url(#a)\"/>",
+            "<rect x=\"10\" width=\"4\" height=\"4\" fill=\"url(#b)\"/>",
+            "<rect x=\"20\" width=\"4\" height=\"4\" fill=\"url(#c)\"/></svg>"
+        );
+        let (scene, report) = import_svg(svg).expect("导入");
+        assert_eq!(report.simplified_spreads, 2, "reflect + repeat 各计一次");
+        let grads = fills_of(&scene);
+        assert_eq!(
+            grads
+                .iter()
+                .filter(|p| matches!(p, Paint::LinearGradient { .. }))
+                .count(),
+            2,
+            "两条 linear 完整保留"
+        );
+        assert_eq!(
+            grads
+                .iter()
+                .filter(|p| matches!(p, Paint::RadialGradient { .. }))
+                .count(),
+            1,
+            "radial 完整保留"
+        );
+    }
+
+    /// G26:渐变 defs id 改计数器单调派生(g0/g1/…),同名词节点不再
+    /// 可能撞 id(旧式 defs 长度+名字节和可碰撞)。
+    #[test]
+    fn export_gradient_ids_counter_derived_unique() {
+        let mut scene = Scene::new();
+        let root = scene
+            .add_node(None, "同名", NodeContent::Group)
+            .expect("组");
+        for _ in 0..2 {
+            scene
+                .add_node(
+                    Some(root),
+                    "同名",
+                    NodeContent::Path(PathNode {
+                        path: rect(0.0, 0.0, 4.0, 4.0),
+                        fill: Some(Paint::LinearGradient {
+                            start: [0.0, 0.0],
+                            end: [4.0, 0.0],
+                            stops: vec![
+                                GradientStop {
+                                    offset: 0.0,
+                                    color: [255, 0, 0, 255],
+                                },
+                                GradientStop {
+                                    offset: 1.0,
+                                    color: [0, 0, 255, 255],
+                                },
+                            ],
+                        }),
+                        stroke: None,
+                    }),
+                )
+                .expect("路径节点");
+        }
+        let (svg, _) = export_svg_with_report(&scene);
+        assert!(
+            svg.contains("id=\"g0\"") && svg.contains("url(#g0)"),
+            "第一个渐变 g0,实际 {svg}"
+        );
+        assert!(
+            svg.contains("id=\"g1\"") && svg.contains("url(#g1)"),
+            "第二个渐变 g1,实际 {svg}"
+        );
+        assert!(!svg.contains("url(#g2)"), "计数恰好用尽,实际 {svg}");
     }
 
     // —— V3.0 T2:SVG 渐变完整映射(docs/09 T2;docs/08 G14)——
