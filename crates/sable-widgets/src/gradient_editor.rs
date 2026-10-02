@@ -275,10 +275,12 @@ fn text_button(
 
 // —— 纯函数(单测覆盖)——
 
-/// [`Paint`] → 可编辑色标序列:Linear/Radial 取其 stops;Solid = 两端同色。
+/// [`Paint`] → 可编辑色标序列:Linear/Radial/Conic 取其 stops;Solid = 两端同色。
 pub fn stops_of(paint: &Paint) -> Vec<GradientStop> {
     match paint {
-        Paint::LinearGradient { stops, .. } | Paint::RadialGradient { stops, .. } => stops.clone(),
+        Paint::LinearGradient { stops, .. }
+        | Paint::RadialGradient { stops, .. }
+        | Paint::ConicGradient { stops, .. } => stops.clone(),
         Paint::Solid(c) => vec![
             GradientStop {
                 offset: 0.0,
@@ -292,13 +294,24 @@ pub fn stops_of(paint: &Paint) -> Vec<GradientStop> {
     }
 }
 
-/// 把编辑后的色标序列写回 [`Paint`]:Linear/Radial 保持几何字段只换 stops;
+/// 把编辑后的色标序列写回 [`Paint`]:Linear/Radial/Conic 保持几何字段只换 stops;
 /// Solid 被首次编辑时升格为水平 LinearGradient(0,0)→(1,0)。
 pub fn with_stops(paint: &Paint, stops: Vec<GradientStop>) -> Paint {
     match paint {
         Paint::LinearGradient { start, end, .. } => Paint::LinearGradient {
             start: *start,
             end: *end,
+            stops,
+        },
+        Paint::ConicGradient {
+            center,
+            start_angle,
+            end_angle,
+            ..
+        } => Paint::ConicGradient {
+            center: *center,
+            start_angle: *start_angle,
+            end_angle: *end_angle,
             stops,
         },
         Paint::RadialGradient { center, radius, .. } => Paint::RadialGradient {

@@ -42,8 +42,8 @@ pub mod prelude {
     pub use crate::error::{CoreError, CoreResult};
     pub use crate::persistence::{AutosavePlan, atomic_write, autosave_dir};
     pub use crate::scene::{
-        GradientStop, IdRemap, ImageNode, Node, NodeContent, NodeId, Paint, PathNode,
-        RemovedSubtree, Rgba8, Scene, StrokeStyle, TextNode,
+        BlendMode, GradientStop, IdRemap, ImageNode, MeshGradient, Node, NodeContent, NodeId,
+        Paint, PathNode, RemovedSubtree, Rgba8, Scene, StrokeStyle, TextNode,
     };
     pub use crate::viewport::Viewport;
 }

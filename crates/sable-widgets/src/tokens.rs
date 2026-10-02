@@ -131,6 +131,62 @@ impl RadiusTokens {
     pub const XL: f32 = 12.0;
 }
 
+/// 单级海拔的阴影参数(迭代计划 08 E4,分册六 §3.2 两档扩为五档)。
+///
+/// 只描述"黑色环境影":`blur` = 高斯近似的模糊半径(px),`offset_y` =
+/// 垂直偏移(光源在正上方,水平偏移恒 0),`alpha` = 阴影不透明度。
+/// 颜色恒黑(rgba(0,0,0,alpha)),着色/内阴影等派生效果由消费方组合。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Elevation {
+    /// 模糊半径 px(0 = 无模糊,即无影/硬影)
+    pub blur: f32,
+    /// 垂直偏移 px(向下为正)
+    pub offset_y: f32,
+    /// 阴影 alpha(0~1)
+    pub alpha: f32,
+}
+
+/// 海拔阴影 5 级令牌(迭代计划 08 E4;对应 sable-paint `effects::ShadowParams`
+/// 的静态预设)。下标即海拔级:e0(无影)→ e4(对话框)。
+///
+/// | 级 | 用途 | blur | offset_y | alpha | 语义 |
+/// |---|---|---|---|---|---|
+/// | 0 | 平面元素 | 0 | 0 | 0 | 无影:贴地(工具栏内嵌、画布内图形) |
+/// | 1 | 卡片 | 2 | 1 | 0.08 | 微浮:列表卡片,边界可辨但不抢焦点 |
+/// | 2 | 浮面板 | 8 | 2 | 0.14 | 悬浮:Dock 面板/悬浮工具条 |
+/// | 3 | 下拉 | 16 | 4 | 0.20 | 高浮:下拉菜单/弹层,明显脱离背景 |
+/// | 4 | 对话框 | 32 | 8 | 0.32 | 最高:模态对话框,压暗一切下层 |
+///
+/// blur/alpha 严格单调递增(视觉重量随海拔单调),offset_y 取 blur 的
+/// 1/4 档(0/1/2/4/8)——光源接近正上方的设计软件惯例。
+pub const ELEVATIONS: [Elevation; 5] = [
+    Elevation {
+        blur: 0.0,
+        offset_y: 0.0,
+        alpha: 0.0,
+    },
+    Elevation {
+        blur: 2.0,
+        offset_y: 1.0,
+        alpha: 0.08,
+    },
+    Elevation {
+        blur: 8.0,
+        offset_y: 2.0,
+        alpha: 0.14,
+    },
+    Elevation {
+        blur: 16.0,
+        offset_y: 4.0,
+        alpha: 0.20,
+    },
+    Elevation {
+        blur: 32.0,
+        offset_y: 8.0,
+        alpha: 0.32,
+    },
+];
+
 /// 控件高度紧凑档下限(22px,分册六 §3.2)。
 pub const HEIGHT_COMPACT: f32 = 22.0;
 /// 控件高度默认档下限(26px,分册六 §3.2)。
@@ -363,6 +419,37 @@ mod tests {
             (4.0, 6.0, 8.0, 12.0),
             "圆角档 = 分册六 §3.2 的 4/6/8/12"
         );
+    }
+
+    #[test]
+    fn elevations_are_monotonic_and_e0_has_no_shadow() {
+        // e0 = 无影(三参数全零)
+        assert_eq!(
+            (
+                ELEVATIONS[0].blur,
+                ELEVATIONS[0].offset_y,
+                ELEVATIONS[0].alpha
+            ),
+            (0.0, 0.0, 0.0),
+            "e0 必须无影"
+        );
+        // 视觉重量随海拔单调:blur / offset_y / alpha 逐级不降且至少一项严格增
+        for pair in ELEVATIONS.windows(2) {
+            assert!(pair[0].blur <= pair[1].blur, "blur 应单调不降");
+            assert!(pair[0].offset_y <= pair[1].offset_y, "offset_y 应单调不降");
+            assert!(pair[0].alpha <= pair[1].alpha, "alpha 应单调不降");
+            assert!(
+                pair[0].blur < pair[1].blur
+                    || pair[0].offset_y < pair[1].offset_y
+                    || pair[0].alpha < pair[1].alpha,
+                "相邻海拔必须有一项严格递增,否则两级无区分度"
+            );
+        }
+        // 验收表数值:blur 0/2/8/16/32,alpha 0/0.08/0.14/0.20/0.32
+        let blurs: Vec<f32> = ELEVATIONS.iter().map(|e| e.blur).collect();
+        assert_eq!(blurs, vec![0.0, 2.0, 8.0, 16.0, 32.0]);
+        let alphas: Vec<f32> = ELEVATIONS.iter().map(|e| e.alpha).collect();
+        assert_eq!(alphas, vec![0.0, 0.08, 0.14, 0.20, 0.32]);
     }
 
     #[test]

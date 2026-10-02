@@ -6,19 +6,29 @@
 //! API 依据(docs.rs/vello_cpu/0.2.0,已核实签名):
 //! - `RenderContext::new(width: u16, height: u16)`
 //! - `set_transform(&mut self, transform: kurbo::Affine)` / `set_stroke(&mut self, kurbo::Stroke)`
-//! - `set_paint(&mut self, paint: impl Into<PaintType>)`,`PaintType = peniko::Brush<ImageBrush<ImageSource>>`
-//!   —— 实心色(`AlphaColor<Srgb>`)与 `peniko::Gradient` 都有 blanket `From` 实现;
+//! - `set_paint(&mut self, paint: impl Into<PaintType>)`,`PaintType =
+//!   peniko::Brush<Image, Gradient>`(vello_common 0.2 src/paint.rs 实测)——
+//!   实心色(`AlphaColor<Srgb>`)与 `peniko::Gradient` 都有 blanket `From` 实现;
 //! - `fill_path(&mut self, path: &BezPath)` / `stroke_path(&mut self, path: &BezPath)`
 //! - `flush(&mut self)` → `render<'a>(&self, target: impl Into<PixmapMut<'a>>, resources: &mut Resources)`
 //! - `Pixmap::new(width: u16, height: u16)` → `data_as_u8_slice() -> &[u8]`(预乘 RGBA8,行主序)
 
 use kurbo::{Affine, BezPath, Shape};
-use sable_foundation::scene::{Paint, Rgba8, StrokeStyle};
+use sable_foundation::scene::{BlendMode, Paint, Rgba8, StrokeStyle};
 
 use crate::sink::PaintSink;
 use crate::style;
 
 /// 基于 `vello_cpu::RenderContext` 的 [`PaintSink`] 实现。
+///
+/// # 混合模式(E5)与锥形渐变(E9)的 CPU 支持度(源码已核实)
+///
+/// vello_cpu 0.2.0 **原生支持混合层**:`RenderContext::push_blend_layer(
+/// peniko::BlendMode)` + `pop_layer()`(vello_cpu src/render.rs,混合在
+/// dispatch/single_threaded 合成路径真实现),因此本 Sink 对 E5 是**真实现**,
+/// 不存在"E12 降级为 Normal"的损失;`GradientKind::Sweep` 在
+/// vello_cpu src/fine/common/gradient/sweep.rs 有专用光栅化,E9 锥形渐变
+/// 同样为真实现。
 pub struct VelloCpuSink {
     ctx: vello_cpu::RenderContext,
 }
@@ -53,6 +63,19 @@ impl VelloCpuSink {
                 self.ctx
                     .set_paint(style::radial_gradient(center, *radius, stops));
             }
+            Paint::ConicGradient {
+                center,
+                start_angle,
+                end_angle,
+                stops,
+            } => {
+                self.ctx.set_paint(style::sweep_gradient(
+                    center,
+                    *start_angle,
+                    *end_angle,
+                    stops,
+                ));
+            }
         }
     }
 }
@@ -69,6 +92,16 @@ impl PaintSink for VelloCpuSink {
         self.set_cpu_paint(&style.paint);
         self.ctx.set_stroke(style::to_stroke(style));
         self.ctx.stroke_path(path);
+    }
+
+    /// 真实现:vello_cpu 0.2 的 `push_blend_layer`(混合层覆盖整个画布,
+    /// 后续绘制与已绘背景按 `mode` 混合,直到配对 `pop_layer`)。
+    fn push_blend(&mut self, mode: BlendMode) {
+        self.ctx.push_blend_layer(style::to_vello_blend(mode));
+    }
+
+    fn pop_blend(&mut self) {
+        self.ctx.pop_layer();
     }
 }
 
@@ -130,7 +163,7 @@ fn full_canvas_path(width: u16, height: u16) -> BezPath {
 
 #[cfg(test)]
 mod tests {
-    use sable_foundation::scene::StrokeStyle;
+    use sable_foundation::scene::{GradientStop, StrokeStyle};
 
     use super::*;
 
@@ -218,5 +251,100 @@ mod tests {
         let buf = renderer.finish();
         assert_eq!(pixel(&buf, 2, 2), base);
         assert_eq!(pixel(&buf, 32, 32), [255, 0, 0, 255]);
+    }
+
+    /// 同色灰的 multiply 混合必须把背景压暗(s·d < max(s,d)),
+    /// 且混合层外的像素不受影响(混合层覆盖全画布但绘制有形状边界)。
+    #[test]
+    fn multiply_blend_darkens_backdrop() {
+        const GRAY: Rgba8 = [180, 180, 180, 255];
+        let mut renderer = CpuRenderer::new(W, H, GRAY);
+        {
+            let sink = renderer.sink();
+            sink.push_blend(BlendMode::Multiply);
+            sink.fill(&Paint::Solid(GRAY), Affine::IDENTITY, &centered_rect());
+            sink.pop_blend();
+        }
+        let buf = renderer.finish();
+        let blended = pixel(&buf, 32, 32);
+        assert!(
+            i32::from(blended[1]) < 160,
+            "multiply(s=d=180) 应显著暗于 180(W3C compositing 的 multiply 语义,实际 {blended:?})"
+        );
+        assert!(
+            i32::from(blended[1]) > 80,
+            "multiply 不应把不透明同色压成黑(排除实现把混合当清空),实际 {blended:?}"
+        );
+        assert_eq!(pixel(&buf, 2, 2), GRAY, "混合矩形外保持底色");
+    }
+
+    /// Normal 混合(push_blend 默认语义)不得改变普通合成结果:同色覆盖
+    /// 不产生视觉差(对照 multiply_blend_darkens_backdrop)。
+    #[test]
+    fn normal_blend_layer_is_passthrough() {
+        const GRAY: Rgba8 = [180, 180, 180, 255];
+        let with_layer = {
+            let mut renderer = CpuRenderer::new(W, H, GRAY);
+            {
+                let sink = renderer.sink();
+                sink.push_blend(BlendMode::Normal);
+                sink.fill(&Paint::Solid(GRAY), Affine::IDENTITY, &centered_rect());
+                sink.pop_blend();
+            }
+            renderer.finish()
+        };
+        let without_layer = {
+            let mut renderer = CpuRenderer::new(W, H, GRAY);
+            renderer
+                .sink()
+                .fill(&Paint::Solid(GRAY), Affine::IDENTITY, &centered_rect());
+            renderer.finish()
+        };
+        assert_eq!(with_layer, without_layer, "Normal 混合层必须逐位等价");
+    }
+
+    /// 锥形渐变(E9):全周扫描红→蓝,+X 方向取首色、+90°(Y 向下顺时针)
+    /// 取 1/4 处混色、180° 取中点混色。
+    #[test]
+    fn conic_gradient_sweeps_by_angle() {
+        let paint = Paint::ConicGradient {
+            center: [32.0, 32.0],
+            start_angle: 0.0,
+            end_angle: std::f64::consts::TAU,
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: [255, 0, 0, 255],
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: [0, 0, 255, 255],
+                },
+            ],
+        };
+        let mut renderer = CpuRenderer::new(W, H, TRANSPARENT);
+        renderer
+            .sink()
+            .fill(&paint, Affine::IDENTITY, &full_canvas_path(W, H));
+        let buf = renderer.finish();
+
+        // t=0(+X 方向):纯红
+        let at_zero = pixel(&buf, 48, 32);
+        assert!(
+            at_zero[0] >= 240 && at_zero[1] <= 15 && at_zero[2] <= 15,
+            "0° 应为纯红,实际 {at_zero:?}"
+        );
+        // t=0.25(90°):红 3/4 + 蓝 1/4 → r≈191, b≈64
+        let at_quarter = pixel(&buf, 32, 48);
+        assert!(
+            at_quarter[0] > 150 && at_quarter[0] < 230 && at_quarter[2] > 30 && at_quarter[2] < 110,
+            "90° 应为红蓝 3:1 混色,实际 {at_quarter:?}"
+        );
+        // t=0.5(180°):中点混色 r≈b≈127
+        let at_half = pixel(&buf, 16, 32);
+        assert!(
+            (i32::from(at_half[0]) - 128).abs() <= 40 && (i32::from(at_half[2]) - 128).abs() <= 40,
+            "180° 应为红蓝中点,实际 {at_half:?}"
+        );
     }
 }

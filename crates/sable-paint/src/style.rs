@@ -9,7 +9,7 @@
 //! `ColorStop::From<(f32, AlphaColor<Srgb>)>`)。
 
 use kurbo::{Point, Stroke};
-use sable_foundation::scene::{GradientStop, Paint, Rgba8, StrokeStyle};
+use sable_foundation::scene::{BlendMode, GradientStop, Paint, Rgba8, StrokeStyle};
 
 /// `Rgba8` → `peniko::Color`(straight alpha,`from_rgba8`)。
 pub fn to_color(rgba: Rgba8) -> peniko::Color {
@@ -28,6 +28,12 @@ pub fn to_brush(paint: &Paint) -> peniko::Brush {
             radius,
             stops,
         } => peniko::Brush::Gradient(radial_gradient(center, *radius, stops)),
+        Paint::ConicGradient {
+            center,
+            start_angle,
+            end_angle,
+            stops,
+        } => peniko::Brush::Gradient(sweep_gradient(center, *start_angle, *end_angle, stops)),
     }
 }
 
@@ -48,6 +54,51 @@ pub fn radial_gradient(center: &[f64; 2], radius: f64, stops: &[GradientStop]) -
         peniko::Gradient::new_radial(point(center), (radius as f32).clamp(0.0, f32::MAX));
     push_stops(&mut gradient.stops, stops);
     gradient
+}
+
+/// 锥形渐变(迭代计划 08 E9)→ `peniko::Gradient`。
+///
+/// 角度 f64 弧度 → f32 弧度一次性降位:peniko 0.6.1 的
+/// `Gradient::new_sweep(center, start_angle: f32, end_angle: f32)` 以 f32
+/// 存储,自正 X 轴起、Y 向下坐标系顺时针(与 CSS conic 的视觉约定一致)。
+pub fn sweep_gradient(
+    center: &[f64; 2],
+    start_angle: f64,
+    end_angle: f64,
+    stops: &[GradientStop],
+) -> peniko::Gradient {
+    let mut gradient =
+        peniko::Gradient::new_sweep(point(center), start_angle as f32, end_angle as f32);
+    push_stops(&mut gradient.stops, stops);
+    gradient
+}
+
+/// 场景 [`BlendMode`] → `peniko::BlendMode`(迭代计划 08 E5)。
+///
+/// 16 种 `Mix` 逐一映射、`Compose` 恒为 `SrcOver`(Illustrator 图层混合
+/// 语义只涉及 Mix 轴)。返回值用本 crate 直接依赖的 `peniko::BlendMode`:
+/// workspace 与 vello 0.10 / vello_cpu 0.2 锁同一 peniko 0.6.1,三种路径下
+/// 是**同一类型**(cargo 版本统一),GPU/CPU 两个 Sink 共用本函数。
+pub fn to_vello_blend(mode: BlendMode) -> peniko::BlendMode {
+    let mix = match mode {
+        BlendMode::Normal => peniko::Mix::Normal,
+        BlendMode::Multiply => peniko::Mix::Multiply,
+        BlendMode::Screen => peniko::Mix::Screen,
+        BlendMode::Overlay => peniko::Mix::Overlay,
+        BlendMode::Darken => peniko::Mix::Darken,
+        BlendMode::Lighten => peniko::Mix::Lighten,
+        BlendMode::ColorDodge => peniko::Mix::ColorDodge,
+        BlendMode::ColorBurn => peniko::Mix::ColorBurn,
+        BlendMode::HardLight => peniko::Mix::HardLight,
+        BlendMode::SoftLight => peniko::Mix::SoftLight,
+        BlendMode::Difference => peniko::Mix::Difference,
+        BlendMode::Exclusion => peniko::Mix::Exclusion,
+        BlendMode::Hue => peniko::Mix::Hue,
+        BlendMode::Saturation => peniko::Mix::Saturation,
+        BlendMode::Color => peniko::Mix::Color,
+        BlendMode::Luminosity => peniko::Mix::Luminosity,
+    };
+    peniko::BlendMode::new(mix, peniko::Compose::SrcOver)
 }
 
 /// `StrokeStyle` → `kurbo::Stroke`(世界坐标 f64,交 GPU 前才由后端降 f32)。
@@ -75,6 +126,17 @@ pub fn with_opacity(paint: &Paint, opacity: f64) -> Paint {
         } => Paint::RadialGradient {
             center: *center,
             radius: *radius,
+            stops: scale_stops(stops, opacity),
+        },
+        Paint::ConicGradient {
+            center,
+            start_angle,
+            end_angle,
+            stops,
+        } => Paint::ConicGradient {
+            center: *center,
+            start_angle: *start_angle,
+            end_angle: *end_angle,
             stops: scale_stops(stops, opacity),
         },
     }
@@ -239,5 +301,103 @@ mod tests {
         let paint = Paint::Solid([255, 0, 0, 100]);
         assert_eq!(with_opacity(&paint, 2.0), paint);
         assert_eq!(with_opacity(&paint, -1.0), Paint::Solid([255, 0, 0, 0]));
+    }
+
+    #[test]
+    fn sweep_gradient_keeps_center_angles_and_stops() {
+        let paint = Paint::ConicGradient {
+            center: [32.0, 32.0],
+            start_angle: 0.25,
+            end_angle: 6.0,
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: [255, 0, 0, 255],
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: [0, 0, 255, 255],
+                },
+            ],
+        };
+        let brush = to_brush(&paint);
+        match brush {
+            peniko::Brush::Gradient(gradient) => {
+                match gradient.kind {
+                    peniko::GradientKind::Sweep(position) => {
+                        assert_eq!(position.center, Point::new(32.0, 32.0));
+                        // f32 降位:0.25/6.0 均可被 f32 精确表示
+                        assert_eq!(position.start_angle, 0.25f32);
+                        assert_eq!(position.end_angle, 6.0f32);
+                    }
+                    _ => panic!("ConicGradient 应映射到 GradientKind::Sweep"),
+                }
+                assert_eq!(gradient.stops.len(), 2, "色标数必须一致");
+                assert_eq!(gradient.stops[0].offset, 0.0);
+                assert_eq!(gradient.stops[1].offset, 1.0);
+            }
+            _ => panic!("渐变应转换为 Brush::Gradient"),
+        }
+    }
+
+    #[test]
+    fn with_opacity_scales_conic_stop_alphas() {
+        let paint = Paint::ConicGradient {
+            center: [0.0, 0.0],
+            start_angle: 0.0,
+            end_angle: 1.0,
+            stops: vec![GradientStop {
+                offset: 0.5,
+                color: [10, 20, 30, 255],
+            }],
+        };
+        let scaled = with_opacity(&paint, 0.5);
+        match scaled {
+            Paint::ConicGradient {
+                center,
+                start_angle,
+                end_angle,
+                stops,
+            } => {
+                assert_eq!(center, [0.0, 0.0]);
+                assert_eq!(start_angle, 0.0);
+                assert_eq!(end_angle, 1.0);
+                assert_eq!(stops[0].color, [10, 20, 30, 128], "只缩 alpha,几何不动");
+            }
+            _ => panic!("不应改变 Paint 的变体"),
+        }
+    }
+
+    /// 16 种混合模式逐一映射到同名 peniko `Mix`,Compose 恒为 SrcOver。
+    #[test]
+    fn to_vello_blend_maps_all_sixteen_modes() {
+        let pairs = [
+            (BlendMode::Normal, peniko::Mix::Normal),
+            (BlendMode::Multiply, peniko::Mix::Multiply),
+            (BlendMode::Screen, peniko::Mix::Screen),
+            (BlendMode::Overlay, peniko::Mix::Overlay),
+            (BlendMode::Darken, peniko::Mix::Darken),
+            (BlendMode::Lighten, peniko::Mix::Lighten),
+            (BlendMode::ColorDodge, peniko::Mix::ColorDodge),
+            (BlendMode::ColorBurn, peniko::Mix::ColorBurn),
+            (BlendMode::HardLight, peniko::Mix::HardLight),
+            (BlendMode::SoftLight, peniko::Mix::SoftLight),
+            (BlendMode::Difference, peniko::Mix::Difference),
+            (BlendMode::Exclusion, peniko::Mix::Exclusion),
+            (BlendMode::Hue, peniko::Mix::Hue),
+            (BlendMode::Saturation, peniko::Mix::Saturation),
+            (BlendMode::Color, peniko::Mix::Color),
+            (BlendMode::Luminosity, peniko::Mix::Luminosity),
+        ];
+        for (mode, mix) in pairs {
+            let blend = to_vello_blend(mode);
+            assert_eq!(blend.mix, mix, "{mode:?} 应映射到 {mix:?}");
+            assert_eq!(blend.compose, peniko::Compose::SrcOver);
+        }
+        // 默认(Normal)与 peniko 默认逐位一致
+        assert_eq!(
+            to_vello_blend(BlendMode::Normal),
+            peniko::BlendMode::default()
+        );
     }
 }

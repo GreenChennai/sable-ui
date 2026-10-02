@@ -20,11 +20,14 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod noise;
+pub mod shape;
 pub mod sink;
 pub mod style;
 
 #[cfg(feature = "cpu")]
 pub mod cpu;
+pub mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
@@ -34,10 +37,12 @@ pub use error::{PaintError, PaintResult};
 pub mod prelude {
     #[cfg(feature = "cpu")]
     pub use crate::cpu::{CpuRenderer, VelloCpuSink};
+    #[cfg(feature = "cpu")]
+    pub use crate::effects::{ShadowCache, ShadowParams, render_shadow_rgba};
     pub use crate::error::{PaintError, PaintResult};
     #[cfg(feature = "gpu")]
     pub use crate::gpu::{GpuGuard, VelloSink, create_device, create_instance};
     pub use crate::sink::PaintSink;
-    pub use crate::style::{to_brush, to_color, to_stroke, with_opacity};
-    pub use sable_foundation::scene::{GradientStop, Paint, Rgba8, StrokeStyle};
+    pub use crate::style::{to_brush, to_color, to_stroke, to_vello_blend, with_opacity};
+    pub use sable_foundation::scene::{BlendMode, GradientStop, Paint, Rgba8, StrokeStyle};
 }

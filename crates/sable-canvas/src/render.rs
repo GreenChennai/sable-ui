@@ -22,7 +22,7 @@
 //! `viewport × 节点世界变换`(f64 仿射),f32 降级只发生在后端内部。
 
 use kurbo::{Affine, Point, Rect, Shape};
-use sable_foundation::scene::{NodeContent, NodeId, Paint, Rgba8, Scene, StrokeStyle};
+use sable_foundation::scene::{BlendMode, NodeContent, NodeId, Paint, Rgba8, Scene, StrokeStyle};
 use sable_foundation::viewport::Viewport;
 use sable_paint::sink::PaintSink;
 
@@ -97,6 +97,14 @@ pub fn visible_world_rect(viewport: &Viewport, screen_size: (f64, f64)) -> Rect 
 /// 2. 橡皮筋等**交互预览**不在本函数绘制——预览状态在工具里,走
 ///    `ToolBehavior::preview`(docs/03 §4.2 的预览层;本函数是纯场景函数,
 ///    不持有工具状态)。
+///
+/// # 混合模式(迭代计划 08 E5)
+///
+/// 节点 `blend_mode != Normal` 时,该节点的 fill+stroke 被包进一次
+/// `push_blend`/`pop_blend`(**逐节点**一个混合层,与 Illustrator 图层面板
+/// 语义一致):节点内容作为整体与其下的已绘背景混合。网格与选中框/控制柄
+/// 等**覆盖层在混合循环之外,不受任何节点混合模式影响**。push/pop 严格
+/// 配对由本函数结构保证(push 之后的所有分支都汇合到同一个 pop)。
 pub fn render_scene(
     scene: &Scene,
     viewport: &Viewport,
@@ -140,10 +148,17 @@ pub fn render_scene(
         // 传给 sink 的变换 = 视口 × 节点世界变换(f64,docs/02 §4.2 的 `total`)
         let total = vp * world_xform;
 
+        // 混合层先开:E5 要求 fill 与 stroke 作为一个整体参与混合;
+        // 之后的分支全部汇合到循环尾的 pop_blend,配对由结构保证。
+        let blended = node.blend_mode != BlendMode::Normal;
+        if blended {
+            sink.push_blend(node.blend_mode);
+        }
+
         // LOD(docs/02 §7.2):以包围盒短边为特征尺寸
         let feature_size = world_bbox.width().min(world_bbox.height());
         match lod::detail_level(feature_size, viewport.zoom) {
-            DetailLevel::Point => continue, // 屏幕上不足 1px,跳过
+            DetailLevel::Point => {} // 屏幕上不足 1px:不画(仅弹掉混合层)
             DetailLevel::Silhouette => {
                 // 降级为包围盒色块:保留体量感,跳过描边等细节
                 if let Some(fill) = &path_node.fill {
@@ -160,6 +175,10 @@ pub fn render_scene(
                     sink.stroke(stroke, total, &path_node.path);
                 }
             }
+        }
+
+        if blended {
+            sink.pop_blend();
         }
     }
 
@@ -235,10 +254,22 @@ mod tests {
     use kurbo::BezPath;
     use sable_foundation::scene::PathNode;
 
-    /// 记录型 sink:数 fill/stroke 调用,存下变换与路径包围盒供断言。
+    /// 记录型 sink:数 fill/stroke 调用,存下变换与路径包围盒供断言;
+    /// 另记统一事件流(含混合层 push/pop)供顺序断言。
     struct RecordingSink {
         fills: Vec<(Rgba8, Affine, Rect)>,
         strokes: Vec<(Rgba8, f64, Affine, Rect)>,
+        /// 统一事件流:fill/stroke/push_blend/pop_blend 按发生顺序记录。
+        events: Vec<Event>,
+    }
+
+    /// [`RecordingSink::events`] 的事件种类。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Event {
+        Fill,
+        Stroke,
+        PushBlend(BlendMode),
+        PopBlend,
     }
 
     impl RecordingSink {
@@ -246,6 +277,7 @@ mod tests {
             RecordingSink {
                 fills: Vec::new(),
                 strokes: Vec::new(),
+                events: Vec::new(),
             }
         }
 
@@ -255,12 +287,18 @@ mod tests {
                 _ => [0, 0, 0, 0],
             }
         }
+
+        /// 最后一个 PopBlend 事件的下标(无则 None)。
+        fn last_pop_index(&self) -> Option<usize> {
+            self.events.iter().rposition(|e| *e == Event::PopBlend)
+        }
     }
 
     impl PaintSink for RecordingSink {
         fn fill(&mut self, paint: &Paint, transform: Affine, path: &BezPath) {
             self.fills
                 .push((Self::paint_solid(paint), transform, path.bounding_box()));
+            self.events.push(Event::Fill);
         }
 
         fn stroke(&mut self, style: &StrokeStyle, transform: Affine, path: &BezPath) {
@@ -270,6 +308,15 @@ mod tests {
                 transform,
                 path.bounding_box(),
             ));
+            self.events.push(Event::Stroke);
+        }
+
+        fn push_blend(&mut self, mode: BlendMode) {
+            self.events.push(Event::PushBlend(mode));
+        }
+
+        fn pop_blend(&mut self) {
+            self.events.push(Event::PopBlend);
         }
     }
 
@@ -584,5 +631,170 @@ mod tests {
         let visible = visible_world_rect(&panned, (100.0, 100.0));
         // screen_to_world = (screen - pan)/zoom:y1 = (100-(-10))/1 = 110
         assert_eq!(visible, Rect::new(-30.0, 10.0, 70.0, 110.0));
+    }
+
+    // —— 混合模式(E5:逐节点 push_blend/pop_blend)——
+
+    #[test]
+    fn blend_node_wraps_draw_in_push_pop_pair() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(None, "混合矩形", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+        scene.node_mut(id).expect("在").blend_mode = BlendMode::Multiply;
+
+        let mut sink = RecordingSink::new();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert_eq!(
+            sink.events,
+            vec![
+                Event::PushBlend(BlendMode::Multiply),
+                Event::Fill,
+                Event::PopBlend
+            ],
+            "非 Normal 节点必须被一对 push/pop 混合层完整包裹"
+        );
+    }
+
+    #[test]
+    fn normal_node_emits_no_blend_ops() {
+        let mut scene = Scene::new();
+        scene
+            .add_node(None, "普通矩形", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+
+        let mut sink = RecordingSink::new();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert!(
+            !sink
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::PushBlend(_) | Event::PopBlend)),
+            "Normal 节点不得产生混合层调用"
+        );
+    }
+
+    #[test]
+    fn culled_and_point_level_nodes_do_not_leak_blend_layer() {
+        let mut scene = Scene::new();
+        // 视口外的混合节点(剔除分支在 push 之前,不得开层)。
+        // zoom=0.05 时可见世界区 = (0,0)-(1280,1280),所以"远处"放在 5000。
+        let far = scene
+            .add_node(
+                None,
+                "远处",
+                rect_content(5000.0, 5000.0, 5010.0, 5010.0, red()),
+            )
+            .expect("节点1");
+        scene.node_mut(far).expect("在").blend_mode = BlendMode::Screen;
+        // 屏幕上不足 1px 的混合节点(Point LOD 分支)
+        let tiny = scene
+            .add_node(None, "极小", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点2");
+        scene.node_mut(tiny).expect("在").blend_mode = BlendMode::Screen;
+
+        // 极小节点 0.05 zoom → 10×0.05 = 0.5px 屏幕尺寸 → Point
+        let mut sink = RecordingSink::new();
+        let opts = RenderOpts {
+            screen_size: (64.0, 64.0),
+            ..RenderOpts::default()
+        };
+        render_scene(&scene, &viewport_at_origin(0.05), &mut sink, &opts);
+        let pushes = sink
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::PushBlend(_)))
+            .count();
+        let pops = sink
+            .events
+            .iter()
+            .filter(|e| **e == Event::PopBlend)
+            .count();
+        assert_eq!(pushes, pops, "push/pop 必须配对,任何分支不得泄漏混合层");
+        assert_eq!(pushes, 1, "只有 Point 分支的节点开层(远处节点被剔除)");
+    }
+
+    #[test]
+    fn overlay_is_drawn_outside_blend_layers() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(None, "混合矩形", rect_content(0.0, 0.0, 10.0, 10.0, red()))
+            .expect("节点");
+        scene.node_mut(id).expect("在").blend_mode = BlendMode::Difference;
+
+        let mut sink = RecordingSink::new();
+        let opts = RenderOpts {
+            selection: vec![id],
+            screen_size: (64.0, 64.0),
+            ..RenderOpts::default()
+        };
+        render_scene(&scene, &viewport_at_origin(1.0), &mut sink, &opts);
+
+        // 恰一对混合层;选中框/控制柄的全部描边发生在混合层之外
+        assert_eq!(
+            sink.events
+                .iter()
+                .filter(|e| matches!(e, Event::PushBlend(BlendMode::Difference)))
+                .count(),
+            1
+        );
+        let last_pop = sink.last_pop_index().expect("有 PopBlend");
+        let first_stroke = sink
+            .events
+            .iter()
+            .position(|e| *e == Event::Stroke)
+            .expect("选中框必有描边");
+        assert!(
+            first_stroke > last_pop,
+            "覆盖层(选中框/控制柄)必须画在混合层之外,不受节点混合影响"
+        );
+        // 选中框 + 8 控制柄描边全部存在
+        assert_eq!(sink.strokes.len(), 9);
+    }
+
+    #[cfg(feature = "cpu")]
+    mod blend_pixel {
+        use super::*;
+        use sable_paint::cpu::CpuRenderer;
+
+        /// 混合模式真正到达像素:同色灰 multiply 把背景压暗(vello_cpu 真实现);
+        /// 矩形外不受影响。
+        #[test]
+        fn multiply_node_darkens_pixels() {
+            let gray: Rgba8 = [180, 180, 180, 255];
+            let mut scene = Scene::new();
+            let id = scene
+                .add_node(None, "灰", rect_content(16.0, 16.0, 48.0, 48.0, gray))
+                .expect("节点");
+            scene.node_mut(id).expect("在").blend_mode = BlendMode::Multiply;
+
+            let mut renderer = CpuRenderer::new(64, 64, gray);
+            let opts = RenderOpts {
+                screen_size: (64.0, 64.0),
+                ..RenderOpts::default()
+            };
+            render_scene(&scene, &viewport_at_origin(1.0), renderer.sink(), &opts);
+            let buf = renderer.finish();
+
+            let i = 4 * (32 * 64 + 32);
+            let inside = [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]];
+            assert!(
+                i32::from(inside[1]) < 160,
+                "multiply(s=d=180) 应暗于 180,实际 {inside:?}"
+            );
+            let j = 4 * (2 * 64 + 2);
+            let outside = [buf[j], buf[j + 1], buf[j + 2], buf[j + 3]];
+            assert_eq!(outside, gray, "混合矩形外保持底色");
+        }
     }
 }

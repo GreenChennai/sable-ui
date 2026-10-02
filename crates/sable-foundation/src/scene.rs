@@ -41,6 +41,49 @@ pub struct GradientStop {
     pub color: Rgba8,
 }
 
+/// 节点混合模式(迭代计划 08 E5,Illustrator 图层面板同款)。
+///
+/// 一一对应 `peniko::BlendMode` 的 `Mix` 轴(16 种;`Compose` 轴 v0.1 恒为
+/// `SrcOver`,不进数据模型)。枚举值只做数据,映射到具体后端的
+/// `peniko::BlendMode` 在 sable-paint 完成(降级矩阵 E12:CPU 端
+/// vello_cpu 0.2 原生支持混合层,无 CPU 降级损失)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BlendMode {
+    /// 正常(默认;peniko `Mix::Normal`)
+    #[default]
+    Normal,
+    /// 正片叠底(peniko `Mix::Multiply`)
+    Multiply,
+    /// 滤色(peniko `Mix::Screen`)
+    Screen,
+    /// 叠加(peniko `Mix::Overlay`)
+    Overlay,
+    /// 变暗(peniko `Mix::Darken`)
+    Darken,
+    /// 变亮(peniko `Mix::Lighten`)
+    Lighten,
+    /// 颜色减淡(peniko `Mix::ColorDodge`)
+    ColorDodge,
+    /// 颜色加深(peniko `Mix::ColorBurn`)
+    ColorBurn,
+    /// 强光(peniko `Mix::HardLight`)
+    HardLight,
+    /// 柔光(peniko `Mix::SoftLight`)
+    SoftLight,
+    /// 差值(peniko `Mix::Difference`)
+    Difference,
+    /// 排除(peniko `Mix::Exclusion`)
+    Exclusion,
+    /// 色相(peniko `Mix::Hue`)
+    Hue,
+    /// 饱和度(peniko `Mix::Saturation`)
+    Saturation,
+    /// 颜色(peniko `Mix::Color`)
+    Color,
+    /// 明度(peniko `Mix::Luminosity`)
+    Luminosity,
+}
+
 /// 填充/描边用的绘制源。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Paint {
@@ -55,6 +98,58 @@ pub enum Paint {
         radius: f64,
         stops: Vec<GradientStop>,
     },
+    /// 锥形渐变(迭代计划 08 E9;Illustrator/CSS conic-gradient 同款)。
+    ///
+    /// 角度一律**弧度**,自正 X 轴起、Y 轴向下坐标系中顺时针测量——与
+    /// peniko 0.6 `SweepGradientPosition`(f32 弧度)的约定一致,渲染侧
+    /// 只做 f64→f32 一次性降位。`start_angle == end_angle` 无扫描区间,
+    /// 渲染侧表现为首色标纯色(不报错)。
+    ConicGradient {
+        center: [f64; 2],
+        start_angle: f64,
+        end_angle: f64,
+        stops: Vec<GradientStop>,
+    },
+}
+
+/// 网格渐变(迭代计划 08 E9 数据模型;渲染接入 = S4)。
+///
+/// 四角 Coons patch:四角位置 + 四角颜色,`eval` 做双线性颜色插值
+/// (Coons patch 的退化形式——位置场未参与插值,渲染侧 S4 再补完整
+/// Coons/WGSL 求值)。纯数据 + 纯函数,core 零依赖约束不破。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MeshGradient {
+    /// 四角位置,顺序固定:`[左下, 右下, 右上, 左上]`(参数域 (u,v) =
+    /// (0,0) → (1,0) → (1,1) → (0,1),逆时针)。
+    pub corners: [[f64; 2]; 4],
+    /// 四角颜色,与 [`MeshGradient::corners`] 一一对应。
+    pub corner_colors: [Rgba8; 4],
+    /// 渲染细分密度(条数;S4 渲染接入时使用,数据模型先行定义)。
+    pub subdivisions: u32,
+}
+
+impl MeshGradient {
+    /// 双线性(Coons patch 退化形)颜色插值:`(u, v) ∈ [0, 0]~[1, 1]`,
+    /// 越界值被钳制。四角精确: `(0,0)=corners[0]` 色、`(1,1)=corners[2]` 色。
+    ///
+    /// 每个通道独立线性插值后四舍五入回 u8(中途不预乘——角颜色是
+    /// 直观语义,预乘插值留给渲染侧 S4 按需选择)。
+    pub fn eval(&self, u: f64, v: f64) -> Rgba8 {
+        let u = u.clamp(0.0, 1.0);
+        let v = v.clamp(0.0, 1.0);
+        let c = &self.corner_colors;
+        let (w00, w10, w11, w01) = ((1.0 - u) * (1.0 - v), u * (1.0 - v), u * v, (1.0 - u) * v);
+        let mut out = [0u8; 4];
+        for ch in 0..4 {
+            // 系数和恒为 1,插值结果必落在 [0, 255],round 后 cast 无损语义
+            let value = f64::from(c[0][ch]) * w00
+                + f64::from(c[1][ch]) * w10
+                + f64::from(c[2][ch]) * w11
+                + f64::from(c[3][ch]) * w01;
+            out[ch] = value.round().clamp(0.0, 255.0) as u8;
+        }
+        out
+    }
 }
 
 /// 描边样式(颜色 + 线宽;线型/端帽 v0.1 不做)。
@@ -110,11 +205,15 @@ pub struct Node {
     pub locked: bool,
     /// 不透明度 0.0~1.0(渲染时与父链累乘)
     pub opacity: f64,
+    /// 混合模式(迭代计划 08 E5):`Normal` = 普通合成;其余模式在渲染时
+    /// 把本节点内容作为一个混合层与其下背景混合。serde default 兼容旧工程。
+    #[serde(default)]
+    pub blend_mode: BlendMode,
     pub content: NodeContent,
 }
 
 impl Node {
-    /// 用库约定默认值构造节点(可见、不锁定、opacity 1.0、单位变换)。
+    /// 用库约定默认值构造节点(可见、不锁定、opacity 1.0、单位变换、Normal 混合)。
     pub fn new(name: impl Into<String>, content: NodeContent) -> Self {
         Node {
             name: name.into(),
@@ -124,6 +223,7 @@ impl Node {
             visible: true,
             locked: false,
             opacity: 1.0,
+            blend_mode: BlendMode::Normal,
             content,
         }
     }
@@ -605,6 +705,7 @@ impl Scene {
             && na.visible == nb.visible
             && na.locked == nb.locked
             && na.opacity == nb.opacity
+            && na.blend_mode == nb.blend_mode
             && na.content == nb.content
             && na.children.len() == nb.children.len()
             && na
@@ -928,5 +1029,122 @@ mod tests {
         // slotmap serde 重建同一套 key:既有句柄反序列化后继续有效
         assert_eq!(back.node(path_id), scene.node(path_id));
         assert_eq!(back.roots, scene.roots);
+    }
+
+    #[test]
+    fn node_blend_mode_serializes_and_defaults_to_normal() {
+        let (mut scene, _root, a, _sub, _b, _c) = demo_scene();
+        scene.node_mut(a).expect("a 在").blend_mode = BlendMode::Multiply;
+
+        let json = serde_json::to_string(&scene).expect("序列化");
+        assert!(
+            json.contains("Multiply"),
+            "非默认混合模式必须出现在序列化产物里"
+        );
+        let back: Scene = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(back.node(a).expect("a 在").blend_mode, BlendMode::Multiply);
+
+        // 旧工程文件(无 blend_mode 字段)→ serde(default) 回落 Normal,不报错
+        let legacy = serde_json::to_string(&scene).expect("序列化带字段场景");
+        let stripped = strip_json_field(&legacy, "blend_mode");
+        let old: Scene = serde_json::from_str(&stripped).expect("旧版文件应可打开");
+        assert_eq!(
+            old.node(a).expect("a 在").blend_mode,
+            BlendMode::Normal,
+            "缺字段 → serde(default) 回落 Normal"
+        );
+    }
+
+    /// 从 JSON 文本里剥掉 `"字段名":<字符串值>,`(仅测试用;BlendMode 的
+    /// 序列化形态是字符串)。剥掉后若该字段是对象的最后一项,遗留的悬挂
+    /// 逗号一并移除。
+    fn strip_json_field(json: &str, field: &str) -> String {
+        let needle = format!("\"{field}\":");
+        let mut out = String::with_capacity(json.len());
+        let mut rest = json;
+        while let Some(pos) = rest.find(&needle) {
+            out.push_str(&rest[..pos]);
+            let after = &rest[pos + needle.len()..];
+            // 值是字符串(BlendMode 的 serde 形态):越过开引号到收引号
+            let skipped = if let Some(stripped) = after.strip_prefix('"') {
+                match stripped.find('"') {
+                    Some(end) => end + 2, // 收引号及其自身
+                    None => after.len(),
+                }
+            } else {
+                after.len()
+            };
+            rest = &after[skipped..];
+            // 剥掉本字段后,前后必剩一个多余逗号:rest 以 ',' 开头就吃 rest 侧;
+            // 否则本字段是末项,吃 out 侧悬挂逗号
+            if rest.starts_with(',') {
+                rest = &rest[1..];
+            } else if out.ends_with(',') {
+                out.pop();
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn conic_gradient_roundtrips_and_preserves_geometry() {
+        let (mut scene, _root, a, _sub, _b, _c) = demo_scene();
+        let paint = Paint::ConicGradient {
+            center: [32.0, 32.0],
+            start_angle: 0.0,
+            end_angle: std::f64::consts::TAU,
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: [255, 0, 0, 255],
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: [0, 0, 255, 255],
+                },
+            ],
+        };
+        scene.path_mut(a).expect("路径在").fill = Some(paint.clone());
+        let json = serde_json::to_string(&scene).expect("序列化");
+        let back: Scene = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(
+            back.path(a).expect("路径在").fill,
+            Some(paint),
+            "ConicGradient 必须无损往返"
+        );
+    }
+
+    #[test]
+    fn mesh_gradient_eval_is_exact_at_corners_and_symmetric_at_center() {
+        let mesh = MeshGradient {
+            corners: [[0.0, 0.0]; 4],
+            // 颜色按 u↔v 对调对称(c1==c3):中心平均与对调对称性断言才成立
+            corner_colors: [
+                [0, 0, 0, 255],
+                [255, 0, 0, 255],
+                [0, 255, 0, 255],
+                [255, 0, 0, 255],
+            ],
+            subdivisions: 4,
+        };
+        // 角纯色边界精确
+        assert_eq!(mesh.eval(0.0, 0.0), mesh.corner_colors[0]);
+        assert_eq!(mesh.eval(1.0, 0.0), mesh.corner_colors[1]);
+        assert_eq!(mesh.eval(1.0, 1.0), mesh.corner_colors[2]);
+        assert_eq!(mesh.eval(0.0, 1.0), mesh.corner_colors[3]);
+        // 中心 = 四角等权平均(双线性在 (0.5,0.5) 权重各 1/4);
+        // eval 的取整语义是 round(见其 doc),期望值同样 round 保持一致
+        let mut expected = [0u8; 4];
+        for ch in 0..4 {
+            let sum: u32 = mesh.corner_colors.iter().map(|c| u32::from(c[ch])).sum();
+            expected[ch] = (sum as f64 / 4.0).round() as u8;
+        }
+        assert_eq!(mesh.eval(0.5, 0.5), expected, "中心应为四角平均色");
+        // 对称性:u 与 v 对调保持一致(四个角在参数域对称布置)
+        assert_eq!(mesh.eval(0.25, 0.75), mesh.eval(0.75, 0.25));
+        // 越界钳制:(-1,2) 钳到 (0,1) → 左上 c3;(2,-1) 钳到 (1,0) → 右下 c1
+        assert_eq!(mesh.eval(-1.0, 2.0), mesh.corner_colors[3]);
+        assert_eq!(mesh.eval(2.0, -1.0), mesh.corner_colors[1]);
     }
 }

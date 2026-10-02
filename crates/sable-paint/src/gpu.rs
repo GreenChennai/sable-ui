@@ -26,8 +26,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use kurbo::{Affine, BezPath};
-use sable_foundation::scene::{Paint, StrokeStyle};
+use kurbo::{Affine, BezPath, Rect};
+use sable_foundation::scene::{BlendMode, Paint, StrokeStyle};
 use vello::wgpu;
 
 use crate::error::{PaintError, PaintResult};
@@ -268,5 +268,30 @@ impl PaintSink for VelloSink {
         let brush = style::to_brush(&style.paint);
         let stroke = style::to_stroke(style);
         self.scene.stroke(&stroke, transform, &brush, None, path);
+    }
+
+    /// 开混合层(迭代计划 08 E5):vello 0.10 的
+    /// `Scene::push_layer(clip_style, blend, alpha, transform, clip)` 实测签名
+    /// (vello 0.10 src/scene.rs,`impl Into<StyleRef>` 接受 `Fill`,`impl
+    /// Into<BlendMode>` 接受 `BlendMode` 本体)。
+    ///
+    /// 覆盖形状用**巨大矩形**(±1e6):混合层必须罩住节点可能出现的全部
+    /// 世界坐标(视口变换后仍远超任何屏幕),否则层会被裁出可见区;
+    /// alpha 传 1.0(不透明度由节点自身 opacity 在绘制侧另行处理)。
+    fn push_blend(&mut self, mode: BlendMode) {
+        const COVER_HALF: f64 = 1.0e6;
+        let cover = Rect::new(-COVER_HALF, -COVER_HALF, COVER_HALF, COVER_HALF);
+        self.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            style::to_vello_blend(mode),
+            1.0,
+            Affine::IDENTITY,
+            &cover,
+        );
+    }
+
+    /// 关闭最近一次开启的混合层。
+    fn pop_blend(&mut self) {
+        self.scene.pop_layer();
     }
 }

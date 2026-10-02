@@ -97,7 +97,9 @@ pub struct InspectorPanel {
 pub fn paint_solid_preview(paint: &Paint) -> Rgba8 {
     match paint {
         Paint::Solid(c) => *c,
-        Paint::LinearGradient { stops, .. } | Paint::RadialGradient { stops, .. } => stops
+        Paint::LinearGradient { stops, .. }
+        | Paint::RadialGradient { stops, .. }
+        | Paint::ConicGradient { stops, .. } => stops
             .first()
             .map(|s| s.color)
             .unwrap_or([255, 255, 255, 255]),

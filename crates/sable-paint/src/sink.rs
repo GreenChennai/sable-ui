@@ -7,7 +7,7 @@
 //! 坐标纪律:transform 与路径一律 kurbo(f64 世界坐标),f32 降级留在后端内部。
 
 use kurbo::{Affine, BezPath};
-use sable_foundation::scene::{Paint, StrokeStyle};
+use sable_foundation::scene::{BlendMode, Paint, StrokeStyle};
 
 /// 后端无关的绘制指令流。
 pub trait PaintSink {
@@ -40,6 +40,17 @@ pub trait PaintSink {
         let scaled = crate::style::with_opacity(paint, opacity);
         self.fill(&scaled, transform, path);
     }
+
+    /// 开启一个混合层(迭代计划 08 E5):此后到配对 [`PaintSink::pop_blend`]
+    /// 之间的绘制作为一个整体与已绘背景按 `mode` 混合。
+    ///
+    /// 默认实现是 **no-op 并按 Normal 合成**(E12 降级矩阵的 CPU 兜底语义:
+    /// 不支持混合层的后端把一切画成普通 src-over,不崩、不丢内容)。
+    /// push/pop 必须严格配对,由调用方(render 调度层)保证。
+    fn push_blend(&mut self, _mode: BlendMode) {}
+
+    /// 关闭最近一次 [`PaintSink::push_blend`] 开启的混合层。
+    fn pop_blend(&mut self) {}
 }
 
 #[cfg(test)]
@@ -57,9 +68,9 @@ mod tests {
     fn alphas(paint: &Paint) -> Vec<u8> {
         match paint {
             Paint::Solid(c) => vec![c[3]],
-            Paint::LinearGradient { stops, .. } | Paint::RadialGradient { stops, .. } => {
-                stops.iter().map(|s| s.color[3]).collect()
-            }
+            Paint::LinearGradient { stops, .. }
+            | Paint::RadialGradient { stops, .. }
+            | Paint::ConicGradient { stops, .. } => stops.iter().map(|s| s.color[3]).collect(),
         }
     }
 
