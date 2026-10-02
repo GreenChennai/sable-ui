@@ -4,8 +4,9 @@ use sable::gpui::{
     App, Context, Entity, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     ParentElement, Render, StatefulInteractiveElement as _, Styled, Window, div, px,
 };
+use sable::widgets::interact::now_ms;
 use sable::widgets::prelude::{SpacingTokens, h_flex, v_flex};
-use sable::widgets::theme::{ThemeMode, set_mode, theme};
+use sable::widgets::theme::{ThemeMode, advance_transition, set_mode_animated, theme};
 use sable::widgets::tokens::{FONT_SIZE_BODY, FONT_SIZE_HEADING};
 
 use crate::inputs::{ColorSection, GradientSection, NumberSection};
@@ -59,7 +60,14 @@ impl Focusable for StoryApp {
 }
 
 impl Render for StoryApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // V4.0 T5.2 主题过渡帧泵:有活动过渡(set_mode_animated 登记在 widgets
+        // 全局槽位)则推进一帧(set_global 插值态);返回真即继续请求动画帧,
+        // 静止零帧提交(分册六 §4.4)。必须先推进再读 theme(cx),本帧画的
+        // 就是本帧插值。
+        if advance_transition(cx, now_ms()) {
+            window.request_animation_frame();
+        }
         let colors = theme(cx).colors;
         let mode_label = if colors_mode(cx) == ThemeMode::Dark {
             "主题:深色(点击切浅色)"
@@ -95,7 +103,10 @@ impl Render for StoryApp {
                     } else {
                         ThemeMode::Dark
                     };
-                    set_mode(cx, next);
+                    // V4.0 T5.2:模式切换走过渡(reduced_motion 开启时内部
+                    // 直切并返回 None)。过渡登记在 widgets 全局槽位,由根视图
+                    // render 顶部的 advance_transition 帧泵逐帧推进。
+                    set_mode_animated(cx, next, now_ms());
                     cx.refresh_windows();
                 }),
             ));

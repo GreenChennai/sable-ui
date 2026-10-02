@@ -19,7 +19,8 @@
 //! 5. TimelineView(假 Timeline)+ CurvePreview;
 //! 6. 动画:HoverState / PulseState / 减弱动态开关 / Spring 对比条;
 //! 7. 效果:DropShadow/Glow/ColorMatrix 离屏渲染上屏;
-//! 8. token:5 级 ELEVATIONS 阴影卡 + 色板(深/浅切换)。
+//! 8. token:5 级 ELEVATIONS 阴影卡 + 色板(深/浅过渡切换 + inject
+//!    自定义 accent 注入演示)。
 
 mod app;
 mod inputs;

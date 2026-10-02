@@ -1,7 +1,8 @@
 //! 效果与 token 分组(任务 4.3 分组 7~8):
 //! - 效果页:DropShadow / Glow / ColorMatrix 离屏渲一个演示矩形,以 gpui
 //!   image 上屏;
-//! - token 页:5 级 ELEVATIONS 阴影卡(离屏)+ 色板(深/浅切换)。
+//! - token 页:5 级 ELEVATIONS 阴影卡(离屏)+ 色板(深/浅过渡切换
+//!   + theme::inject 自定义 accent 注入,V4.0 T5.2)。
 //!
 //! # 与效果系统的关系(偏差注明,见任务报告)
 //!
@@ -15,14 +16,16 @@ use std::sync::Arc;
 
 use sable::core::prelude::{Paint, Rgba8};
 use sable::gpui::{
-    App, AppContext as _, Bounds, Context, Corners, Entity, IntoElement, ParentElement, Pixels,
-    Render, RenderImage, StatefulInteractiveElement as _, Styled, Window, canvas, div, px,
+    App, AppContext as _, Bounds, Context, Corners, Entity, Hsla, IntoElement, ParentElement,
+    Pixels, Render, RenderImage, StatefulInteractiveElement as _, Styled, Window, canvas, div, px,
+    rgba,
 };
 use sable::kurbo::{Affine, Rect, Shape as _};
 use sable::paint::prelude::PaintSink as _;
 use sable::paint::prelude::{CpuRenderer, ShadowParams, render_shadow_rgba};
+use sable::widgets::interact::now_ms;
 use sable::widgets::prelude::{RadiusTokens, SpacingTokens, h_flex, v_flex};
-use sable::widgets::theme::{ThemeMode, theme};
+use sable::widgets::theme::{ThemeMode, inject, set_mode_animated, theme};
 use sable::widgets::tokens::{ColorTokens, ELEVATIONS, FONT_SIZE_CAPTION, rgba8_from_hsla};
 
 use crate::ui::{card, story_button};
@@ -125,10 +128,13 @@ fn demo_shape_rgba(color: Rgba8) -> Vec<u8> {
 
 // —— 效果分组视图 ——
 
+/// 效果瓦片缓存条目:(渲染时模式, 渲染时 accent, 三张瓦片)— 模式切换
+/// 或 inject 定制 accent 后重渲(颜色随 token;V4.0 T5.2 起缓存键含 accent)。
+type EffectTiles = (ThemeMode, Hsla, [Option<Arc<RenderImage>>; 3]);
+
 /// 效果分组:三张离屏渲染的演示瓦片。
 pub struct EffectsSection {
-    /// (渲染时的主题模式, 三张瓦片)— 主题切换后重渲(颜色随 token)。
-    rendered: Option<(ThemeMode, [Option<Arc<RenderImage>>; 3])>,
+    rendered: Option<EffectTiles>,
 }
 
 impl EffectsSection {
@@ -188,17 +194,22 @@ impl EffectsSection {
 impl Render for EffectsSection {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
+        let accent = colors.accent;
+        // 缓存键 = (模式, accent):模式切换与 inject 定制 accent 都触发重渲,
+        // 过渡帧泵逐帧改 accent 时瓦片随之逐帧重渲(演示的可见途径)。
         if self
             .rendered
             .as_ref()
-            .is_none_or(|(mode, _)| *mode != colors_mode(cx))
+            .is_none_or(|(mode, cached_accent, _)| {
+                *mode != colors_mode(cx) || *cached_accent != accent
+            })
         {
-            self.rendered = Some((colors_mode(cx), Self::render_tiles(&colors)));
+            self.rendered = Some((colors_mode(cx), accent, Self::render_tiles(&colors)));
         }
         let tiles = self
             .rendered
             .as_ref()
-            .map(|(_, tiles)| tiles.clone())
+            .map(|(_, _, tiles)| tiles.clone())
             .unwrap_or_default();
 
         let captions = ["DropShadow", "Glow", "ColorMatrix(亮度/饱和)"];
@@ -234,9 +245,16 @@ fn colors_mode(cx: &App) -> ThemeMode {
 
 // —— token 分组视图 ——
 
-/// token 分组:5 级海拔阴影卡 + 色板 + 深/浅切换。
+/// 注入演示的自定义 accent(品牌紫):`demo_purple_accent` 返回
+/// (accent, accent_muted) 一对。这是演示"用户调色板"数据(与色轮的
+/// 用户色同性质),不是组件样式色——组件仍只从 theme 全局态读色。
+fn demo_purple_accent() -> (Hsla, Hsla) {
+    (rgba(0x9B59FFFF).into(), rgba(0x9B59FF33).into())
+}
+
+/// token 分组:5 级海拔阴影卡 + 色板 + 深/浅切换 + 自定义 accent 注入。
 pub struct TokensSection {
-    /// (渲染时的主题模式, 五张阴影卡)。
+    /// (渲染时的主题模式, 五张阴影卡)。阴影卡无 accent 成分,键只需模式。
     rendered: Option<(ThemeMode, [Option<Arc<RenderImage>>; 5])>,
 }
 
@@ -366,27 +384,61 @@ impl Render for TokensSection {
         } else {
             "切换深色"
         };
-        let content = v_flex()
-            .gap(px(SpacingTokens::LG))
-            .child(elevation_row)
-            .child(palette)
-            .child(story_button(cx, "tokens-toggle", mode_label).on_click(
-                |_event, _window, cx| {
-                    let next = if theme(cx).mode == ThemeMode::Dark {
-                        ThemeMode::Light
-                    } else {
-                        ThemeMode::Dark
-                    };
-                    sable::widgets::theme::set_mode(cx, next);
-                    // 主题是全局态:整窗刷新让所有分区同帧换肤
-                    cx.refresh_windows();
-                },
-            ));
+        // 注入演示(V4.0 T5.2,计划 T3.1 验收):当前 accent 恰为演示紫 =
+        // 已注入(模式切换走预设会自然还原,按钮文案随之自愈,无状态可失同步)
+        let (purple_accent, _) = demo_purple_accent();
+        let injected_now = colors.accent == purple_accent;
+        let inject_label = if injected_now {
+            "还原默认 token"
+        } else {
+            "注入紫色 accent"
+        };
+        let content =
+            v_flex()
+                .gap(px(SpacingTokens::LG))
+                .child(elevation_row)
+                .child(palette)
+                .child(
+                    h_flex()
+                        .gap(px(SpacingTokens::SM))
+                        .child(story_button(cx, "tokens-toggle", mode_label).on_click(
+                            |_event, _window, cx| {
+                                let next = if theme(cx).mode == ThemeMode::Dark {
+                                    ThemeMode::Light
+                                } else {
+                                    ThemeMode::Dark
+                                };
+                                // V4.0 T5.2:同 app.rs——模式切换走 200ms 过渡
+                                // (reduced_motion 开启时内部直切),帧泵在根视图。
+                                set_mode_animated(cx, next, now_ms());
+                                // 主题是全局态:整窗刷新让所有分区同帧换肤
+                                cx.refresh_windows();
+                            },
+                        ))
+                        .child(story_button(cx, "tokens-inject", inject_label).on_click(
+                            cx.listener(|_, _, _, cx| {
+                                let mode = theme(cx).mode;
+                                let mut next = match mode {
+                                    ThemeMode::Dark => ColorTokens::dark(),
+                                    ThemeMode::Light => ColorTokens::light(),
+                                };
+                                let (purple, muted) = demo_purple_accent();
+                                if theme(cx).colors.accent != purple {
+                                    next.accent = purple;
+                                    next.accent_muted = muted;
+                                } // 已是演示紫:按原样注入预设套 = 还原
+                                // 注入即取消进行中的过渡(widgets 侧互斥语义),
+                                // 组件下一帧全量换肤
+                                inject(cx, next, mode);
+                                cx.refresh_windows();
+                            }),
+                        )),
+                );
 
         card(
             cx,
-            "token — 5 级海拔阴影 + 色板(深/浅)",
-            "ELEVATIONS e0(无影)→ e4(对话框),离屏 render_shadow_rgba 渲染;色板为 ColorTokens 全部 15 个语义色;切换按钮全局换肤。",
+            "token — 5 级海拔阴影 + 色板(深/浅 + 注入)",
+            "ELEVATIONS e0(无影)→ e4(对话框),离屏 render_shadow_rgba 渲染;色板为 ColorTokens 全部 15 个语义色;切换按钮走 200ms 过渡(reduced_motion 直切);注入按钮演示 theme::inject 自定义紫色 accent,再点还原。",
             content,
         )
     }

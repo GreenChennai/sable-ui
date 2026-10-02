@@ -17,7 +17,7 @@
 
 | 语义 | gpui 入口 | Sable 落点 |
 |---|---|---|
-| 名称(label) | 元素语义树节点的 label 字段 | `NumberField/ColorWell/PropertyRow/按钮` 的 `.with_label(...)` builder(本波新增接口) |
+| 名称(label) | 元素语义树节点的 label 字段 | `NumberField/ColorWell/PropertyRow/按钮` 的 `.with_label(...)` builder(v4.1 起,与真机读屏同批) |
 | 角色(role) | 语义节点 role(Button/TextField/…) | 组件类型映射:按钮→Button、NumberField 编辑态→TextField、LayerPanel 行→ListItem |
 | 焦点 | `FocusHandle`(已用:editor root/NumberField 编辑态) | 保持;Tab 顺序由 focus 顺序决定 |
 | 值变化播报 | 语义树更新(组件 notify 时自动) | SetFill/SetTransform 等 Command 执行后组件已 `cx.notify()` ✓ |
@@ -25,14 +25,19 @@
 
 ## 3. 组件接入进度
 
+> **V4.0 复盘修正(2026-10-02)**:本表曾把下列 6 个组件的 label 接口标为
+> "✅ V3.0";V4.0 review(R4)全仓 grep 实锤 `with_label`/accessible 语义
+> 接口在 sable-widgets 中**根本不存在**,属虚标。全部改回遗留项,接口面
+> 与读屏真机实测同批列 v4.1(见迭代计划 V4.0 §1 R4 / T5.3)。
+
 | 组件 | label 接口 | role | 读屏实测 |
 |---|---|---|---|
-| NumberField | ✅ V3.0 | TextField | ☐ 真机 |
-| ColorWell / ColorWheel | ✅ V3.0 | Button | ☐ |
-| PropertyRow / InspectorPanel | ✅ V3.0(透传子件) | Group | ☐ |
-| LayerPanel / LayerTreePanel | ✅ V3.0(ListItem 逐行) | List/ListItems | ☐ |
-| TimelineView | ✅ V3.0(播放头 Slider 语义) | Slider | ☐ |
-| EffectStackPanel | ✅ V3.0(逐效果行) | List/ListItems | ☐ |
+| NumberField | ☐ 遗留(v4.1 起) | TextField | ☐ 真机 |
+| ColorWell / ColorWheel | ☐ 遗留(v4.1 起) | Button | ☐ |
+| PropertyRow / InspectorPanel | ☐ 遗留(v4.1 起,透传子件) | Group | ☐ |
+| LayerPanel / LayerTreePanel | ☐ 遗留(v4.1 起,ListItem 逐行) | List/ListItems | ☐ |
+| TimelineView | ☐ 遗留(v4.1 起,播放头 Slider 语义) | Slider | ☐ |
+| EffectStackPanel | ☐ 遗留(v4.1 起,逐效果行) | List/ListItems | ☐ |
 | Dock 面板/工具栏 | 🟡 title 已有 | Pane/Button | ☐ |
 
 ## 4. 真机验收(release-checklist T 系列)
