@@ -76,6 +76,10 @@ gpui-component = "0.5.1"
 
 # —— 工程 ——
 tracing = "0.1"
+# fontique 的 Linux fontconfig backend 需 dlopen 模式以适配 yeslogic 6
+# (usvg→fontdb 拉入 yeslogic 6.0.1 dlopen-only;不开则 fontique 链式 API
+#  引用全部 unresolved——V3.0 CI 实测踩坑,docs/09)
+fontique = { version = "0.11.1", features = ["fontconfig-dlopen"] }
 
 # —— 脚本(sable-script,迭代计划 09 T4/G16)——
 # 1.26.1 = 2026-10 crates.io 最新。编译时长代价显著(全量编译 30s 级),

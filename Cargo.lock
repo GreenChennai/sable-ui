@@ -5750,6 +5750,7 @@ name = "sable-canvas"
 version = "3.0.0"
 dependencies = [
  "criterion",
+ "fontique",
  "gpui",
  "image",
  "kurbo 0.13.1",

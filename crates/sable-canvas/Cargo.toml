@@ -27,6 +27,8 @@ slotmap.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 parley.workspace = true
+# Linux fontconfig dlopen 模式(图级统一;见根 Cargo.toml 注释)
+fontique.workspace = true
 # 字形轮廓(真文本渲染,V3.0 T1;与 parley 同源版本,单一拷贝)
 skrifa.workspace = true
 tracing.workspace = true
