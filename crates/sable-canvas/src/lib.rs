@@ -16,7 +16,8 @@
 //! | [`hit_test`] | 点选/框选(extension trait `SceneHitTest`) | docs/02 §5 |
 //! | [`damage`] | 脏矩形 | docs/02 §7.1 |
 //! | [`lod`] | 细节层次(4px 阈值) | docs/02 §7.2 |
-//! | [`text`] | Parley 0.11 排版/测量(字形绘制 = M2) | docs/02 §6 |
+//! | [`text`] | Parley 0.11 排版/测量、TD-10 布局缓存 | docs/02 §6 |
+//! | [`text_glyphs`] | 画布真文本:字形轮廓 → PaintSink(V3.0 T1) | docs/02 §6 |
 //! | [`input`] | 滚轮缩放/平移、命中容差(纯函数) | docs/02 §8 |
 //! | [`tool`] | 工具状态机(Select/Pen/Hand;不引 gpui) | docs/03 §4.2、docs/04 §3 |
 //! | [`gpui_element`] | `SableCanvas` Entity(feature `gpui`+`cpu`) | docs/02 §4.2 |
@@ -44,6 +45,7 @@ pub mod input;
 pub mod lod;
 pub mod render;
 pub mod text;
+pub mod text_glyphs;
 pub mod tool;
 
 /// GPUI 胶水:需要 `gpui` feature 且至少一个渲染后端(当前 `cpu`)。
@@ -59,6 +61,9 @@ pub mod prelude {
     pub use crate::lod::{DetailLevel, detail_level, should_draw_detail};
     pub use crate::render::{OverlayTheme, RenderOpts, render_scene};
     pub use crate::text::TextPipeline;
+    pub use crate::text_glyphs::{
+        TextLayout, cache_stats, draw_text, layout_text, reset_text_cache,
+    };
     pub use crate::tool::{
         AnchorEditTool, CursorStyle, HandTool, Mods, PenTool, SelectTool, ToolBehavior, ToolCtx,
     };

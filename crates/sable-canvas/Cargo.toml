@@ -27,6 +27,8 @@ slotmap.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 parley.workspace = true
+# 字形轮廓(真文本渲染,V3.0 T1;与 parley 同源版本,单一拷贝)
+skrifa.workspace = true
 tracing.workspace = true
 gpui = { workspace = true, optional = true }
 image = { workspace = true, optional = true }

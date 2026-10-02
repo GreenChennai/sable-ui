@@ -2,6 +2,33 @@
 
 本库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [3.0.0] - 2026-10-02
+
+V3.0 迭代(docs/09-迭代计划V3.0.md):第二轮对标(Inkscape/Figma/Qt QTextDocument/
+Blender/Makepad)新维度差距 → 四主题落地。
+
+### Added
+- **画布真文本**(G13 P0,T1):parley 布局 + skrifa 字形轮廓 → `PaintSink` 路径绘制
+  (CPU/GPU 同代码);TD-10 布局缓存(命中/未命中计数);Text 节点参与渲染/LOD/透明度
+- **SVG 渐变完整映射**(G14 P0,T2):LinearGradient/RadialGradient 导入逐 stop 映射
+  (gradientTransform 折入、stop-opacity 合成);导出补 `<radialGradient>` 与
+  `stop-opacity`;Pattern 仍降级计数
+- **自动化脚本地基**(G16 P1,T4):新 crate `sable-script`(rhai 1.26 沙盒):
+  12 算子全走 Command 撤销栈(禁直改 Scene),Dynamic 手工 coerce(中文错误消息),
+  零 IO/panic 路径;7 测试含 10 矩形循环端到端
+- **主题定制 + 切换动画**(G15 P1,T3):`theme::inject` 自定义调色板注入;
+  `ThemeTransition` 纯函数状态机(15 token lerp_hsla 最短弧 + OutCubic,200ms)
+- **无障碍对接 notes**(G17 P1,T5.1):gpui AccessKit 暴露面 + 逐组件语义挂接清单
+  (docs/a11y-notes.md);读屏实测列真机遗留
+
+### Fixed
+- **redo 方向 id 治理缺口**(script 端到端实测揪出):重做 AddNode 换发新 id 时,
+  redo 栈后继命令(SetFill 等)持旧 id 静默失配 → trait 增 `apply_heal` 钩子,
+  History::redo 广播新映射;AddNode.revert 保留退役 id 供映射
+
+### Changed
+- 版本 3.0.0;workspace 新成员 sable-script
+
 ## [2.0.0] - 2026-10-02
 
 V2.0 迭代(docs/08-迭代计划V2.0.md):同类库对标(Qt/egui/Flutter/SwiftUI/ImGui/Konva)

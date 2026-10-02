@@ -1,0 +1,25 @@
+[package]
+name = "sable-script"
+description = "自动化脚本地基:Rhai 沙盒宿主,脚本算子全部经 Command 进 History,天然可撤销"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 迭代计划 09 T4(G16):feature 隔离,不进任何默认编译路径,门面接入(feature
+# 矩阵)由主会话合并时定——本 crate 的 Cargo.toml 不被 crates/sable 引用。
+[dependencies]
+sable-foundation.workspace = true
+# NodeId ↔ i64 互转需要 slotmap::KeyData(sable-foundation 未 re-export KeyData)
+slotmap.workspace = true
+# 矩形算子的 BezierPath 构造(与 foundation 场景数据同源)
+kurbo.workspace = true
+# Rhai 1.26.1(2026-10 crates.io 最新,工作区声明见根 Cargo.toml)
+rhai.workspace = true
+thiserror.workspace = true
+
+[features]
+# v0.1 无可选功能;保留空 default 段作为 feature 矩阵的挂接点
+default = []

@@ -1,9 +1,13 @@
-//! SVG 互通(V2.0 T1,docs/08):场景图 → SVG 字符串(导出,零额外依赖手写序列化)
-//! 与 SVG → 场景图(导入,usvg 0.48 解析)。
+//! SVG 互通(V2.0 T1 起,docs/08;V3.0 T2 渐变完整映射收尾):
+//! 场景图 → SVG 字符串(导出,零额外依赖手写序列化)与
+//! SVG → 场景图(导入,usvg 0.48 解析)。
 //!
-//! 范围(v2.0):路径/组/变换/纯色与线性渐变填充/描边宽度颜色/混合模式;
-//! Text/Image 导入时跳过并计数;usvg 渐变填充降级为首停纯色(报告计数);
-//! 效果(EffectSpec)不进 SVG(filter 映射 = v2.1,doc 记录)。
+//! 范围:路径/组/变换/纯色填充/描边宽度颜色/混合模式;线性与径向渐变
+//! 双向完整映射(几何/全部色标/stop 透明度;导入侧 gradientTransform
+//! 折入几何坐标);Conic 渐变导出降级为首停纯色(SVG 1.1 无锥形
+//! paint server,doc 保留说明);Text/Image 导入跳过并计数;`<pattern>`
+//! 导入降级中性灰计数;效果(EffectSpec)不进 SVG(filter 映射 =
+//! v2.1,doc 记录)。
 
 use crate::error::CoreResult;
 use crate::scene::{
@@ -26,7 +30,10 @@ pub struct ImportReport {
     pub skipped_text: usize,
     /// 跳过的 `<image>` 节点数。
     pub skipped_image: usize,
-    /// 降级为首停纯色的渐变填充数。
+    /// 降级为中性灰纯色的 `<pattern>` 填充数。
+    ///
+    /// v3.0 T2 起语义收窄:Linear/Radial 渐变已完整映射,不再计入;
+    /// 仅 Pattern 降级仍计数。
     pub simplified_gradients: usize,
 }
 
@@ -130,10 +137,7 @@ fn fill_attr(paint: &Paint, node_name: &str, defs: &mut String) -> String {
     match paint {
         Paint::Solid(c) => rgba_attr(*c),
         Paint::LinearGradient { start, end, stops } => {
-            let id = format!(
-                "g{}",
-                defs.len() + node_name.bytes().map(usize::from).sum::<usize>()
-            );
+            let id = grad_id(defs, node_name);
             defs.push_str(&format!(
                 "<linearGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">",
                 f(start[0]),
@@ -141,21 +145,62 @@ fn fill_attr(paint: &Paint, node_name: &str, defs: &mut String) -> String {
                 f(end[0]),
                 f(end[1])
             ));
-            for s in stops {
-                defs.push_str(&format!(
-                    "<stop offset=\"{}\" stop-color=\"{}\"/>",
-                    f(f64::from(s.offset)),
-                    rgba_attr(s.color)
-                ));
-            }
+            write_gradient_stops(defs, stops);
             defs.push_str("</linearGradient>");
             format!("url(#{id})")
         }
-        // 径向/锥形导出降级为首停纯色(doc 注明;完整映射 = v2.1)
-        Paint::RadialGradient { stops, .. } | Paint::ConicGradient { stops, .. } => stops
+        // 径向完整映射(v3.0 T2;与 linear 同款 userSpaceOnUse 模式)
+        Paint::RadialGradient {
+            center,
+            radius,
+            stops,
+        } => {
+            let id = grad_id(defs, node_name);
+            defs.push_str(&format!(
+                "<radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" cx=\"{}\" cy=\"{}\" r=\"{}\">",
+                f(center[0]),
+                f(center[1]),
+                f(*radius)
+            ));
+            write_gradient_stops(defs, stops);
+            defs.push_str("</radialGradient>");
+            format!("url(#{id})")
+        }
+        // 锥形导出降级为首停纯色:SVG 1.1 无锥形渐变元素(CSS
+        // conic-gradient 不是 SVG 1.1 的 paint server),完整表达需
+        // SVG 2/专有序列化,降级说明保留。
+        Paint::ConicGradient { stops, .. } => stops
             .first()
             .map(|s| rgba_attr(s.color))
             .unwrap_or_else(|| "none".into()),
+    }
+}
+
+/// 渐变 defs id(与 v2.0 同款:以 defs 已有长度 + 节点名派生,零状态)。
+fn grad_id(defs: &str, node_name: &str) -> String {
+    format!(
+        "g{}",
+        defs.len() + node_name.bytes().map(usize::from).sum::<usize>()
+    )
+}
+
+/// 渐变色标序列化:不透明 stop 只写 stop-color;半透明补 `stop-opacity`
+/// (v3.0 T2 补齐——v2.0 把 alpha 内嵌进 rgba(),导入端拿不到独立
+/// stop-opacity,且非 SVG 标准的 stop 颜色写法)。
+fn write_gradient_stops(defs: &mut String, stops: &[GradientStop]) {
+    for s in stops {
+        let c = s.color;
+        defs.push_str(&format!(
+            "<stop offset=\"{}\" stop-color=\"rgb({},{},{})\"",
+            f(f64::from(s.offset)),
+            c[0],
+            c[1],
+            c[2]
+        ));
+        if c[3] != 255 {
+            defs.push_str(&format!(" stop-opacity=\"{}\"", f(f64::from(c[3]) / 255.0)));
+        }
+        defs.push_str("/>");
     }
 }
 
@@ -231,7 +276,8 @@ fn f(v: f64) -> String {
 // 导入
 // ---------------------------------------------------------------------------
 
-/// SVG 字符串 → 场景(新 Scene;Text/Image 跳过计数;渐变降级首停纯色)。
+/// SVG 字符串 → 场景(新 Scene;Text/Image 跳过计数;`<pattern>` 降级中性灰计数;
+/// Linear/Radial 渐变完整映射)。
 pub fn import_svg(svg: &str) -> CoreResult<(Scene, ImportReport)> {
     import_svg_with_limit(svg, MAX_SVG_BYTES)
 }
@@ -318,30 +364,76 @@ fn node_name(id: &str) -> String {
 fn import_paint(paint: &usvg::Paint, opacity: f32, report: &mut ImportReport) -> Paint {
     match paint {
         usvg::Paint::Color(c) => Paint::Solid(color_to_rgba8(*c, opacity)),
-        // 渐变/图案降级为首停纯色(报告计数;完整映射 = v2.1)
-        other => {
+        // Linear/Radial 完整映射(v3.0 T2)。usvg 0.48 在解析收尾的
+        // `update_paint_servers` 已把全部 paint server 折算为
+        // userSpaceOnUse(objectBoundingBox 按目标形状 bbox 展开;
+        // units 不进 pub API,"for the caller they are always
+        // userSpaceOnUse"——usvg 源码 paint_server.rs),故坐标直读即
+        // 用户空间。gradientTransform 折入几何;spreadMethod 不进
+        // Paint 模型,按 pad 语义直读首尾色标。
+        usvg::Paint::LinearGradient(g) => {
+            let t = tiny_transform_to_affine(g.transform());
+            Paint::LinearGradient {
+                start: affine_point(t, f64::from(g.x1()), f64::from(g.y1())),
+                end: affine_point(t, f64::from(g.x2()), f64::from(g.y2())),
+                stops: import_stops(g.stops(), opacity),
+            }
+        }
+        usvg::Paint::RadialGradient(g) => {
+            let t = tiny_transform_to_affine(g.transform());
+            // 焦点 fx/fy/fr 不进模型(标准径向以圆心为准);非均匀
+            // gradientTransform 下半径按面积等效缩放(sqrt|det|)近似。
+            let c = t.as_coeffs();
+            let det = (c[0] * c[3] - c[1] * c[2]).abs();
+            Paint::RadialGradient {
+                center: affine_point(t, f64::from(g.cx()), f64::from(g.cy())),
+                radius: f64::from(g.r().get()) * det.sqrt(),
+                stops: import_stops(g.stops(), opacity),
+            }
+        }
+        // Pattern 仍降级:平铺内容需要 Image/嵌套子树表达(v2.0 起
+        // 不进 SVG 互通模型),降级为中性灰并计数;`simplified_gradients`
+        // 自 v3.0 起仅指 Pattern 降级。
+        usvg::Paint::Pattern(_) => {
             report.simplified_gradients += 1;
-            Paint::Solid(gradient_fallback(first_stop_rgba(other)))
+            Paint::Solid([128, 128, 128, 255])
         }
     }
 }
 
-fn first_stop_rgba(p: &usvg::Paint) -> Option<[f32; 4]> {
-    match p {
-        usvg::Paint::LinearGradient(g) => g.stops().first().map(|s| stop_rgba(s)),
-        usvg::Paint::RadialGradient(g) => g.stops().first().map(|s| stop_rgba(s)),
-        _ => None,
-    }
+/// tiny-skia Transform(usvg 节点/渐变变换)→ kurbo Affine
+/// (系数序与场景侧 `Affine::new` 一致)。
+fn tiny_transform_to_affine(t: tiny_skia_path::Transform) -> Affine {
+    Affine::new([
+        f64::from(t.sx),
+        f64::from(t.kx),
+        f64::from(t.ky),
+        f64::from(t.sy),
+        f64::from(t.tx),
+        f64::from(t.ty),
+    ])
 }
 
-fn stop_rgba(s: &usvg::Stop) -> [f32; 4] {
-    let c = s.color();
-    [
-        f32::from(c.red),
-        f32::from(c.green),
-        f32::from(c.blue),
-        s.opacity().get(),
-    ]
+fn affine_point(t: Affine, x: f64, y: f64) -> [f64; 2] {
+    let p = t * kurbo::Point::new(x, y);
+    [p.x, p.y]
+}
+
+/// usvg 色标 → 场景色标:Color(RGB)+ `stop-opacity`,再乘填充/描边级
+/// opacity(SVG 规范:paint opacity 作用于整个 paint,折入各 stop 的
+/// alpha,使透明度往返无损)。全部在非预乘直通域,无预乘往返损失。
+fn import_stops(stops: &[usvg::Stop], paint_opacity: f32) -> Vec<GradientStop> {
+    stops
+        .iter()
+        .map(|s| {
+            let c = s.color();
+            let a = (s.opacity().get() * paint_opacity).clamp(0.0, 1.0);
+            GradientStop {
+                offset: s.offset().get(),
+                color: [c.red, c.green, c.blue, (a * 255.0).round() as u8],
+            }
+        })
+        .collect()
 }
 
 /// usvg Color(RGB)+ 独立透明度 → 直通域 Rgba8。
@@ -353,18 +445,6 @@ fn color_to_rgba8(c: usvg::Color, opacity: f32) -> Rgba8 {
         f32::from(c.blue).round() as u8,
         (a * 255.0).round() as u8,
     ]
-}
-
-/// 预乘域 RGBA(f32 0..1)→ 直通 Rgba8(alpha=0 全透明)。
-fn gradient_fallback(rgba: Option<[f32; 4]>) -> Rgba8 {
-    let Some([r, g, b, a]) = rgba else {
-        return [128, 128, 128, 255];
-    };
-    if a <= 0.0 {
-        return [0, 0, 0, 0];
-    }
-    let un = |v: f32| ((v / a).clamp(0.0, 1.0) * 255.0).round() as u8;
-    [un(r), un(g), un(b), (a * 255.0).round() as u8]
 }
 
 fn tiny_to_kurbo(data: &tiny_skia_path::Path) -> BezPath {
@@ -418,14 +498,7 @@ fn tiny_to_kurbo(data: &tiny_skia_path::Path) -> BezPath {
 
 fn apply_transform(scene: &mut Scene, id: crate::scene::NodeId, t: tiny_skia_path::Transform) {
     if t != tiny_skia_path::Transform::identity() {
-        let affine = Affine::new([
-            f64::from(t.sx),
-            f64::from(t.kx),
-            f64::from(t.ky),
-            f64::from(t.sy),
-            f64::from(t.tx),
-            f64::from(t.ty),
-        ]);
+        let affine = tiny_transform_to_affine(t);
         if let Some(node) = scene.node_mut(id) {
             node.transform = affine;
         }
@@ -527,7 +600,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // 渐变路径降级为首停红也在集合里;精确断言矩形纯色无损保留
+        // v3.0 起渐变路径完整映射为 LinearGradient(不再降级首停红);
+        // 精确断言矩形纯色无损保留
         assert!(
             reds.contains(&Paint::Solid([200, 40, 40, 255])),
             "矩形纯色应无损保留,实际 {reds:?}"
@@ -552,6 +626,276 @@ mod tests {
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><text x=\"1\" y=\"2\">hi</text><rect width=\"4\" height=\"4\"/></svg>";
         let (_, report) = import_svg(svg).expect("含文本 SVG 可导入");
         assert!(report.nodes >= 1);
+    }
+
+    // —— V3.0 T2:SVG 渐变完整映射(docs/09 T2;docs/08 G14)——
+
+    /// 收集场景内全部路径填充(渐变断言用;与既有测试同款遍历)。
+    fn fills_of(scene: &Scene) -> Vec<Paint> {
+        scene
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| match &n.content {
+                NodeContent::Path(p) => p.fill.clone(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Linear + Radial 各一条的场景(几何值都取 3 位小数精确可表示点,
+    /// 保证导出→导入无舍入差)。
+    fn gradient_scene() -> Scene {
+        let mut scene = Scene::new();
+        let root = scene.add_node(None, "根", NodeContent::Group).expect("根");
+        scene
+            .add_node(
+                Some(root),
+                "线性",
+                NodeContent::Path(PathNode {
+                    path: rect(0.0, 0.0, 10.0, 10.0),
+                    fill: Some(Paint::LinearGradient {
+                        start: [0.0, 0.0],
+                        end: [10.0, 0.0],
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: [255, 0, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 0.5,
+                                color: [0, 255, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: [0, 0, 255, 255],
+                            },
+                        ],
+                    }),
+                    stroke: None,
+                }),
+            )
+            .expect("线性");
+        scene
+            .add_node(
+                Some(root),
+                "径向",
+                NodeContent::Path(PathNode {
+                    path: rect(10.0, 0.0, 20.0, 10.0),
+                    fill: Some(Paint::RadialGradient {
+                        center: [15.0, 5.0],
+                        radius: 6.0,
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.25,
+                                color: [255, 255, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 0.75,
+                                color: [255, 0, 255, 128],
+                            },
+                        ],
+                    }),
+                    stroke: None,
+                }),
+            )
+            .expect("径向");
+        scene
+    }
+
+    /// 渐变 roundtrip:场景(Linear+Radial)→ 导出 → 导入,两侧 Paint
+    /// 结构化相等(几何/stops/颜色/透明度逐项);Radial 导出含
+    /// `<radialGradient>` cx/cy/r。
+    #[test]
+    fn gradient_roundtrip_linear_radial_structural_equality() {
+        let exported = export_svg(&gradient_scene());
+        assert!(exported.contains("<radialGradient"), "径向导出补齐");
+        assert!(
+            exported.contains("cx=\"15\" cy=\"5\" r=\"6\""),
+            "radialGradient 几何属性,实际 {exported}"
+        );
+        let (imported, report) = import_svg(&exported).expect("导入");
+        assert_eq!(
+            report.simplified_gradients, 0,
+            "Linear/Radial 完整映射,不再计数"
+        );
+        let linear = Paint::LinearGradient {
+            start: [0.0, 0.0],
+            end: [10.0, 0.0],
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: [255, 0, 0, 255],
+                },
+                GradientStop {
+                    offset: 0.5,
+                    color: [0, 255, 0, 255],
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: [0, 0, 255, 255],
+                },
+            ],
+        };
+        let radial = Paint::RadialGradient {
+            center: [15.0, 5.0],
+            radius: 6.0,
+            stops: vec![
+                GradientStop {
+                    offset: 0.25,
+                    color: [255, 255, 0, 255],
+                },
+                GradientStop {
+                    offset: 0.75,
+                    color: [255, 0, 255, 128],
+                },
+            ],
+        };
+        let fills = fills_of(&imported);
+        assert!(fills.contains(&linear), "线性渐变逐项相等,实际 {fills:?}");
+        assert!(fills.contains(&radial), "径向渐变逐项相等,实际 {fills:?}");
+    }
+
+    /// stop-opacity:半透明 stop(alpha=128)导出为
+    /// `stop-color="rgb(..)"` + `stop-opacity="0.502"`,导入回 alpha 128
+    /// (255 的一半 ±1;本例 0.502*255 = 128.01 → 精确 128,无损)。
+    #[test]
+    fn stop_opacity_exported_and_alpha_roundtrips() {
+        let mut scene = Scene::new();
+        scene
+            .add_node(
+                None,
+                "半透明渐变",
+                NodeContent::Path(PathNode {
+                    path: rect(0.0, 0.0, 8.0, 8.0),
+                    fill: Some(Paint::LinearGradient {
+                        start: [0.0, 0.0],
+                        end: [8.0, 0.0],
+                        // 双 stop:usvg 解析收尾会把单 stop 渐变优化成纯色填充
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: [10, 20, 30, 128],
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: [10, 20, 30, 255],
+                            },
+                        ],
+                    }),
+                    stroke: None,
+                }),
+            )
+            .expect("节点");
+        let exported = export_svg(&scene);
+        assert!(
+            exported.contains("stop-color=\"rgb(10,20,30)\""),
+            "stop-color 不再内嵌 alpha,实际 {exported}"
+        );
+        assert!(
+            exported.contains("stop-opacity=\"0.502\""),
+            "半透明 stop 写独立 stop-opacity,实际 {exported}"
+        );
+        let (imported, _) = import_svg(&exported).expect("导入");
+        let expected = Paint::LinearGradient {
+            start: [0.0, 0.0],
+            end: [8.0, 0.0],
+            stops: vec![
+                GradientStop {
+                    offset: 0.0,
+                    color: [10, 20, 30, 128],
+                },
+                GradientStop {
+                    offset: 1.0,
+                    color: [10, 20, 30, 255],
+                },
+            ],
+        };
+        let fills = fills_of(&imported);
+        assert!(
+            fills.contains(&expected),
+            "alpha 128 往返无损,实际 {fills:?}"
+        );
+    }
+
+    /// simplified_gradients 语义收窄:Pattern 输入才计数,Linear/Radial
+    /// 渐变不再计数(Pattern 降级中性灰,渐变保留完整结构)。
+    #[test]
+    fn simplified_gradients_counts_only_pattern_fallbacks() {
+        let svg = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><defs>",
+            "<pattern id=\"p\" width=\"4\" height=\"4\" patternUnits=\"userSpaceOnUse\">",
+            "<rect width=\"4\" height=\"4\" fill=\"red\"/></pattern>",
+            "<linearGradient id=\"lg\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"4\" y2=\"0\">",
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>",
+            "<radialGradient id=\"rg\" gradientUnits=\"userSpaceOnUse\" cx=\"2\" cy=\"2\" r=\"2\">",
+            "<stop offset=\"0\" stop-color=\"green\"/><stop offset=\"1\" stop-color=\"yellow\"/></radialGradient>",
+            "</defs>",
+            "<rect width=\"4\" height=\"4\" fill=\"url(#p)\"/>",
+            "<rect x=\"10\" width=\"4\" height=\"4\" fill=\"url(#lg)\"/>",
+            "<rect x=\"20\" width=\"4\" height=\"4\" fill=\"url(#rg)\"/></svg>"
+        );
+        let (scene, report) = import_svg(svg).expect("导入");
+        assert_eq!(report.simplified_gradients, 1, "仅 Pattern 计数");
+        let fills = fills_of(&scene);
+        assert!(
+            fills
+                .iter()
+                .any(|f| matches!(f, Paint::Solid([128, 128, 128, 255]))),
+            "Pattern 降级中性灰,实际 {fills:?}"
+        );
+        assert!(
+            fills
+                .iter()
+                .any(|f| matches!(f, Paint::LinearGradient { .. })),
+            "Linear 完整映射,实际 {fills:?}"
+        );
+        assert!(
+            fills
+                .iter()
+                .any(|f| matches!(f, Paint::RadialGradient { .. })),
+            "Radial 完整映射,实际 {fills:?}"
+        );
+    }
+
+    /// Conic 导出降级说明保留:SVG 1.1 无锥形 paint server,不产生任何
+    /// 渐变元素,降级为首停纯色。
+    #[test]
+    fn conic_gradient_export_falls_back_to_first_stop() {
+        let mut scene = Scene::new();
+        scene
+            .add_node(
+                None,
+                "锥形",
+                NodeContent::Path(PathNode {
+                    path: rect(0.0, 0.0, 8.0, 8.0),
+                    fill: Some(Paint::ConicGradient {
+                        center: [4.0, 4.0],
+                        start_angle: 0.0,
+                        end_angle: std::f64::consts::TAU,
+                        stops: vec![
+                            GradientStop {
+                                offset: 0.0,
+                                color: [255, 0, 0, 255],
+                            },
+                            GradientStop {
+                                offset: 1.0,
+                                color: [0, 0, 255, 255],
+                            },
+                        ],
+                    }),
+                    stroke: None,
+                }),
+            )
+            .expect("节点");
+        let exported = export_svg(&scene);
+        assert!(
+            !exported.contains("Gradient"),
+            "SVG 1.1 无锥形,不产生渐变元素,实际 {exported}"
+        );
+        assert!(
+            exported.contains("fill=\"rgb(255,0,0)\""),
+            "降级为首停纯色,实际 {exported}"
+        );
     }
 
     // —— V2.0 T3:解析器模糊友好化(docs/08 §3 T3;分册六 §1.3)——

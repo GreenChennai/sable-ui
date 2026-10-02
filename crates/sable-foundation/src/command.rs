@@ -37,6 +37,14 @@ pub trait Command: Send + 'static {
     /// 正向执行。目标不存在时静默跳过(LIFO 约定下不应发生;发生即场景漂移异常)。
     fn apply(&mut self, scene: &mut Scene);
 
+    /// 重做方向的 id 治理钩子:重做 AddNode 会换发新 id,必须把新映射
+    /// 广播给 redo 栈里的后继命令(否则后继 SetFill 等静默失配)。
+    /// 默认无映射;仅 AddNode 覆写。
+    fn apply_heal(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        self.apply(scene);
+        None
+    }
+
     /// 逆向执行(撤销)。恢复子树的命令返回 old→new 重映射表,其余返回 `None`。
     fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
         let _ = scene;
@@ -184,7 +192,12 @@ impl History {
     /// 重做一步(按撤销的逆序逐条重放)。
     pub fn redo(&mut self, scene: &mut Scene) {
         if let Some(mut cmd) = self.redo.pop() {
-            cmd.apply(scene);
+            if let Some(map) = cmd.apply_heal(scene) {
+                // 新 id 广播给 redo 栈内后继命令(undo 方向的治愈镜像)
+                for entry in self.redo.iter_mut() {
+                    entry.remap_ids(&map);
+                }
+            }
             self.undo.push(cmd);
         }
     }
@@ -321,8 +334,19 @@ impl Command for AddNode {
         }
     }
 
+    fn apply_heal(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        let before = self.id;
+        self.apply(scene);
+        match (before, self.id) {
+            (Some(old), Some(new)) if old != new => Some(IdRemap::from([(old, new)])),
+            _ => None,
+        }
+    }
+
     fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
-        if let Some(id) = self.id.take() {
+        // 保留 self.id(不 take):退役 key 经 slotmap 版本号永不再解析,留存
+        // 它是 redo 方向 apply_heal 的 old→new 映射来源(script redo 实测踩坑)
+        if let Some(id) = self.id {
             let _ = scene.remove_subtree(id);
         }
         None

@@ -22,12 +22,15 @@
 //! `viewport × 节点世界变换`(f64 仿射),f32 降级只发生在后端内部。
 
 use kurbo::{Affine, Point, Rect, Shape};
-use sable_foundation::scene::{BlendMode, NodeContent, NodeId, Paint, Rgba8, Scene, StrokeStyle};
+use sable_foundation::scene::{
+    BlendMode, NodeContent, NodeId, Paint, Rgba8, Scene, StrokeStyle, TextNode,
+};
 use sable_foundation::viewport::Viewport;
 use sable_paint::sink::PaintSink;
 
 use crate::grid;
 use crate::lod::{self, DetailLevel};
+use crate::text_glyphs;
 
 /// 选中包围盒的屏幕线宽(px,docs/02 §4.2:任意缩放下 1.5px)。
 pub const SELECTION_STROKE_PX: f64 = 1.5;
@@ -100,11 +103,19 @@ pub fn visible_world_rect(viewport: &Viewport, screen_size: (f64, f64)) -> Rect 
 ///
 /// # 混合模式(迭代计划 08 E5)
 ///
-/// 节点 `blend_mode != Normal` 时,该节点的 fill+stroke 被包进一次
-/// `push_blend`/`pop_blend`(**逐节点**一个混合层,与 Illustrator 图层面板
-/// 语义一致):节点内容作为整体与其下的已绘背景混合。网格与选中框/控制柄
-/// 等**覆盖层在混合循环之外,不受任何节点混合模式影响**。push/pop 严格
-/// 配对由本函数结构保证(push 之后的所有分支都汇合到同一个 pop)。
+/// 节点 `blend_mode != Normal` 时,该节点的全部内容(fill+stroke/文本字形)
+/// 被包进一次 `push_blend`/`pop_blend`(**逐节点**一个混合层,与 Illustrator
+/// 图层面板语义一致):节点内容作为整体与其下的已绘背景混合。网格与选中框/
+/// 控制柄等**覆盖层在混合循环之外,不受任何节点混合模式影响**。push/pop
+/// 严格配对由本函数结构保证(push 之后的所有分支都汇合到同一个 pop)。
+///
+/// # 文本节点(V3.0 T1)
+///
+/// `NodeContent::Text` 参与渲染:布局走 [`crate::text_glyphs`] 的 TD-10
+/// 缓存(键 = 文本 + 字号,颜色不入键),字形以轮廓路径填充;LOD 语义与
+/// Path 一致(Point 跳过 / Silhouette 包围盒色块 / Full 真字形);节点
+/// 不透明度折入字形颜色 alpha。命中测试的 Text 分支(hit_test)继续用
+/// 世界包围盒粗估,不在本函数范围。
 pub fn render_scene(
     scene: &Scene,
     viewport: &Viewport,
@@ -139,42 +150,56 @@ pub fn render_scene(
             }
         }
 
-        let NodeContent::Path(path_node) = &node.content else {
-            // Text/Image 的真实绘制 = M2(vello draw_glyphs / 资产管线);
-            // Group 无直接内容。
-            continue;
-        };
-
         // 传给 sink 的变换 = 视口 × 节点世界变换(f64,docs/02 §4.2 的 `total`)
         let total = vp * world_xform;
 
-        // 混合层先开:E5 要求 fill 与 stroke 作为一个整体参与混合;
-        // 之后的分支全部汇合到循环尾的 pop_blend,配对由结构保证。
+        // 混合层先开:E5 要求节点内容(fill/stroke/文本字形)作为一个整体
+        // 参与混合;之后的分支全部汇合到循环尾的 pop_blend,配对由结构保证。
         let blended = node.blend_mode != BlendMode::Normal;
         if blended {
             sink.push_blend(node.blend_mode);
         }
 
-        // LOD(docs/02 §7.2):以包围盒短边为特征尺寸
+        // LOD(docs/02 §7.2):以包围盒短边为特征尺寸(Text/Path 同一判定)
         let feature_size = world_bbox.width().min(world_bbox.height());
-        match lod::detail_level(feature_size, viewport.zoom) {
-            DetailLevel::Point => {} // 屏幕上不足 1px:不画(仅弹掉混合层)
-            DetailLevel::Silhouette => {
-                // 降级为包围盒色块:保留体量感,跳过描边等细节
-                if let Some(fill) = &path_node.fill {
+        match &node.content {
+            NodeContent::Path(path_node) => {
+                match lod::detail_level(feature_size, viewport.zoom) {
+                    DetailLevel::Point => {} // 屏幕上不足 1px:不画(仅弹掉混合层)
+                    DetailLevel::Silhouette => {
+                        // 降级为包围盒色块:保留体量感,跳过描边等细节
+                        if let Some(fill) = &path_node.fill {
+                            let silhouette = world_bbox.to_path(0.1);
+                            sink.fill_with_opacity(fill, node.opacity, total, &silhouette);
+                        }
+                    }
+                    DetailLevel::Full => {
+                        if let Some(fill) = &path_node.fill {
+                            sink.fill_with_opacity(fill, node.opacity, total, &path_node.path);
+                        }
+                        // 世界线宽原样传入:随视图缩放(模块 doc "对原文的修正")
+                        if let Some(stroke) = &path_node.stroke {
+                            sink.stroke(stroke, total, &path_node.path);
+                        }
+                    }
+                }
+            }
+            // 画布真文本(V3.0 T1):布局(TD-10 缓存)→ 字形轮廓填充。
+            // Silhouette 与 Path 同语义降级为包围盒色块(字形在 1–4px 下
+            // 不可读,色块保体量感);Point 完全跳过。
+            NodeContent::Text(text_node) => match lod::detail_level(feature_size, viewport.zoom) {
+                DetailLevel::Point => {}
+                DetailLevel::Silhouette => {
                     let silhouette = world_bbox.to_path(0.1);
-                    sink.fill_with_opacity(fill, node.opacity, total, &silhouette);
+                    let fill = Paint::Solid(text_node.color);
+                    sink.fill_with_opacity(&fill, node.opacity, total, &silhouette);
                 }
-            }
-            DetailLevel::Full => {
-                if let Some(fill) = &path_node.fill {
-                    sink.fill_with_opacity(fill, node.opacity, total, &path_node.path);
+                DetailLevel::Full => {
+                    draw_text_node(sink, text_node, total, node.opacity);
                 }
-                // 世界线宽原样传入:随视图缩放(模块 doc "对原文的修正")
-                if let Some(stroke) = &path_node.stroke {
-                    sink.stroke(stroke, total, &path_node.path);
-                }
-            }
+            },
+            // Image(资产管线 = M2)与 Group(无直接内容)不产生绘制
+            NodeContent::Image(_) | NodeContent::Group => {}
         }
 
         if blended {
@@ -204,6 +229,38 @@ pub fn render_scene(
     if let Some(bbox) = selection_union {
         draw_handles(sink, vp, bbox, viewport.zoom, &opts.overlay);
     }
+}
+
+/// 渲染一个文本节点(V3.0 T1):布局(TD-10 缓存)→ 字形轮廓填充。
+///
+/// 空文本短路为零绘制;节点不透明度折入字形颜色 alpha(字形走
+/// `sink.fill` 直通,不经 `fill_with_opacity`)。
+fn draw_text_node(sink: &mut dyn PaintSink, text_node: &TextNode, total: Affine, opacity: f64) {
+    if text_node.text.is_empty() {
+        return; // 契约:空文本零覆盖(parley 空串会排出带行高的空行)
+    }
+    let layout = text_glyphs::layout_text(&text_node.text, text_node.font_size, text_node.color);
+    let color = with_opacity(text_node.color, opacity);
+    let mut cache_hits: u64 = 0;
+    let mut cache_misses: u64 = 0;
+    text_glyphs::draw_text(
+        sink,
+        &layout,
+        total,
+        color,
+        &mut cache_hits,
+        &mut cache_misses,
+    );
+}
+
+/// 节点不透明度折入纯色 alpha(`opacity < 1.0` 时乘 alpha 通道)。
+fn with_opacity(color: Rgba8, opacity: f64) -> Rgba8 {
+    let mut color = color;
+    if opacity < 1.0 {
+        let alpha = f64::from(color[3]) * opacity.clamp(0.0, 1.0);
+        color[3] = alpha.round() as u8;
+    }
+    color
 }
 
 /// 在包围盒四角 + 四边中点画 8 向控制柄(6px/zoom 方块,docs/02 §9)。
@@ -431,6 +488,63 @@ mod tests {
             let buf = renderer.finish();
             assert_eq!(pixel(&buf, 32, 32), WHITE, "画布全白:对象在视口外被剔除");
         }
+
+        /// 文本场景 → CpuRenderer 96×96:真字形轮廓产生非零暗色像素覆盖
+        /// (V3.0 T1 验收:非占位框,黑字白底按红通道计数)。
+        #[test]
+        fn text_scene_rasterizes_nonzero_coverage() {
+            let mut scene = Scene::new();
+            scene
+                .add_node(
+                    None,
+                    "标题",
+                    NodeContent::Text(TextNode {
+                        text: "你好 Aa 123".to_string(),
+                        font_size: 24.0,
+                        color: [0, 0, 0, 255],
+                    }),
+                )
+                .expect("文本节点");
+
+            crate::text_glyphs::reset_text_cache();
+            let mut renderer = CpuRenderer::new(96, 96, WHITE);
+            let opts = RenderOpts {
+                screen_size: (96.0, 96.0),
+                ..RenderOpts::default()
+            };
+            render_scene(&scene, &viewport_at_origin(1.0), renderer.sink(), &opts);
+            let buf = renderer.finish();
+
+            let ink = buf.chunks_exact(4).filter(|p| p[0] < 128).count();
+            assert!(ink > 0, "文本必须产生非零像素覆盖(真字形轮廓),实际 0");
+        }
+
+        /// 空文本:零覆盖(整幅保持底色)。
+        #[test]
+        fn empty_text_scene_rasterizes_zero_coverage() {
+            let mut scene = Scene::new();
+            scene
+                .add_node(
+                    None,
+                    "空文本",
+                    NodeContent::Text(TextNode {
+                        text: String::new(),
+                        font_size: 24.0,
+                        color: [0, 0, 0, 255],
+                    }),
+                )
+                .expect("空文本节点");
+
+            let mut renderer = CpuRenderer::new(96, 96, WHITE);
+            let opts = RenderOpts {
+                screen_size: (96.0, 96.0),
+                ..RenderOpts::default()
+            };
+            render_scene(&scene, &viewport_at_origin(1.0), renderer.sink(), &opts);
+            let buf = renderer.finish();
+            let ink = buf.chunks_exact(4).filter(|p| p[0] < 128).count();
+            assert_eq!(ink, 0, "空文本必须零覆盖");
+        }
     }
 
     // —— 剔除/覆盖层/LOD(RecordingSink,不依赖后端)——
@@ -576,6 +690,137 @@ mod tests {
         let mut sink = RecordingSink::new();
         render_scene(&scene, &viewport_at_origin(1.0), &mut sink, &opts);
         assert_eq!(sink.fills.len(), 1);
+    }
+
+    // —— 文本节点(V3.0 T1:渲染接入 / TD-10 缓存 / LOD / 不透明度)——
+
+    fn text_node_content(text: &str, font_size: f64, color: Rgba8) -> NodeContent {
+        NodeContent::Text(TextNode {
+            text: text.to_string(),
+            font_size,
+            color,
+        })
+    }
+
+    /// 同键两次 render_scene:第二次必须命中 TD-10 布局缓存(misses == 1),
+    /// 且两次绘制的字形 fill 数一致。
+    #[test]
+    fn same_text_key_second_render_hits_layout_cache() {
+        crate::text_glyphs::reset_text_cache();
+        let mut scene = Scene::new();
+        scene
+            .add_node(None, "文本", text_node_content("cache me", 20.0, red()))
+            .expect("文本节点");
+
+        let mut first = RecordingSink::new();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut first,
+            &RenderOpts::default(),
+        );
+        assert!(!first.fills.is_empty(), "首次渲染必须画出字形");
+
+        let mut second = RecordingSink::new();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut second,
+            &RenderOpts::default(),
+        );
+
+        assert_eq!(
+            second.fills.len(),
+            first.fills.len(),
+            "命中缓存的渲染必须画出同样多的字形 fill"
+        );
+        let (hits, misses) = text_glyphs::cache_stats();
+        assert_eq!(misses, 1, "同键两次 render_scene 只允许一次重排");
+        assert!(hits >= 1, "第二次渲染必须命中布局缓存");
+    }
+
+    /// 文本 LOD 与 Path 同语义:Silhouette = 单个包围盒色块(节点色),
+    /// Point = 不画,Full = 真字形(≥1 次 fill)。
+    #[test]
+    fn text_lod_degrades_and_skips_like_paths() {
+        let mut scene = Scene::new();
+        // 粗估 bbox:0.6em×3 字符 × 1.2em = 18×12 → 特征尺寸 12
+        scene
+            .add_node(None, "文本", text_node_content("lod", 10.0, red()))
+            .expect("文本节点");
+        let opts = RenderOpts {
+            screen_size: (64.0, 64.0),
+            ..RenderOpts::default()
+        };
+
+        // zoom=0.3:屏幕 3.6px → Silhouette
+        let mut sink = RecordingSink::new();
+        render_scene(&scene, &viewport_at_origin(0.3), &mut sink, &opts);
+        assert_eq!(sink.fills.len(), 1, "Silhouette 降级为单个包围盒色块");
+        let (color, _, _) = sink.fills[0];
+        assert_eq!(color, red(), "Silhouette 色块取文本节点色");
+
+        // zoom=0.05:屏幕 0.6px → Point
+        let mut sink = RecordingSink::new();
+        render_scene(&scene, &viewport_at_origin(0.05), &mut sink, &opts);
+        assert_eq!(sink.fills.len(), 0, "屏幕不足 1px 不画");
+
+        // zoom=1:屏幕 12px → Full
+        let mut sink = RecordingSink::new();
+        render_scene(&scene, &viewport_at_origin(1.0), &mut sink, &opts);
+        assert!(!sink.fills.is_empty(), "Full 级必须画真字形");
+    }
+
+    /// 节点不透明度折入字形颜色 alpha(opacity 0.5 → alpha ≈ 128)。
+    #[test]
+    fn text_node_opacity_scales_color_alpha() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(
+                None,
+                "半透明文本",
+                text_node_content("op", 20.0, [255, 0, 0, 255]),
+            )
+            .expect("文本节点");
+        scene.node_mut(id).expect("在").opacity = 0.5;
+
+        let mut sink = RecordingSink::new();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert!(!sink.fills.is_empty(), "半透明文本仍须绘制");
+        for (color, _, _) in &sink.fills {
+            assert_eq!(color[0], 255, "红通道保持");
+            assert_eq!(color[3], 128, "alpha 应为 255×0.5=128,实际 {color:?}");
+        }
+    }
+
+    /// 空文本节点:零绘制调用(渲染层短路,不进布局缓存)。
+    #[test]
+    fn empty_text_node_emits_no_draw_calls() {
+        crate::text_glyphs::reset_text_cache();
+        let (before_hits, before_misses) = text_glyphs::cache_stats();
+        let mut scene = Scene::new();
+        scene
+            .add_node(None, "空文本", text_node_content("", 20.0, red()))
+            .expect("空文本节点");
+
+        let mut sink = RecordingSink::new();
+        render_scene(
+            &scene,
+            &viewport_at_origin(1.0),
+            &mut sink,
+            &RenderOpts::default(),
+        );
+        assert_eq!(sink.fills.len(), 0, "空文本零绘制");
+        assert_eq!(
+            text_glyphs::cache_stats(),
+            (before_hits, before_misses),
+            "空文本不进布局缓存"
+        );
     }
 
     #[test]

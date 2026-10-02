@@ -7,6 +7,7 @@ members = [
     "crates/sable-widgets",
     "crates/sable-dock",
     "crates/sable-video",
+    "crates/sable-script",
     "crates/sable",
     "examples/vector_editor",
     "examples/video_editor",
@@ -14,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0"
+version = "3.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -54,6 +55,9 @@ vello   = "0.10.0"
 parley  = "0.11.1"
 # CPU 兜底渲染(分册六 §6.4 降级链第 4 级;feature "cpu" 门控)
 vello_cpu = "0.2.0"
+# 字形轮廓读取(V3.0 T1 画布真文本):parley 自身同版本依赖(已在依赖树),
+# 用于把 fontique 字体数据的 glyf/CFF 轮廓转成 kurbo::BezPath
+skrifa = { version = "0.44.0", default-features = false }
 # GPU 抽象(仅 sable-paint 的 "gpu" feature 引入,版本必须与 vello 对齐)
 # 2026-10-02 S0 勘误(07 报告 P0-B):vello 0.10 锁 wgpu 29.0.3,workspace 必须对齐 29,
 # 否则双 wgpu 共存 → vello::Renderer::new 类型不匹配。sable-paint 已改为直接使用
@@ -72,6 +76,12 @@ gpui-component = "0.5.1"
 
 # —— 工程 ——
 tracing = "0.1"
+
+# —— 脚本(sable-script,迭代计划 09 T4/G16)——
+# 1.26.1 = 2026-10 crates.io 最新。编译时长代价显著(全量编译 30s 级),
+# 只进 sable-script、不进任何默认编译路径;feature 最小化:仅 default
+# (std + ahash/runtime-rng),不开 serde/internals/decimal 等扩展面。
+rhai = "1.26.1"
 
 # —— dev ——
 proptest = "1"
