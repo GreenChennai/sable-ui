@@ -34,6 +34,7 @@ use sable_paint::sink::PaintSink;
 
 use crate::grid;
 use crate::lod::{self, DetailLevel};
+use crate::text::node_world_bbox_measured;
 use crate::text_glyphs;
 
 /// 选中包围盒的屏幕线宽(px,docs/02 §4.2:任意缩放下 1.5px)。
@@ -118,13 +119,15 @@ pub fn visible_world_rect(viewport: &Viewport, screen_size: (f64, f64)) -> Rect 
 /// 控制柄等**覆盖层在混合循环之外,不受任何节点混合模式影响**。push/pop
 /// 严格配对由本函数结构保证(push 之后的所有分支都汇合到同一个 pop)。
 ///
-/// # 文本节点(V3.0 T1)
+/// # 文本节点(V3.0 T1;bbox 实测化 V4.0 T6.1)
 ///
 /// `NodeContent::Text` 参与渲染:布局走 [`crate::text_glyphs`] 的 TD-10
 /// 缓存(键 = 文本 + 字号,颜色不入键),字形以轮廓路径填充;LOD 语义与
 /// Path 一致(Point 跳过 / Silhouette 包围盒色块 / Full 真字形);节点
-/// 不透明度折入字形颜色 alpha。命中测试的 Text 分支(hit_test)继续用
-/// 世界包围盒粗估,不在本函数范围。
+/// 不透明度折入字形颜色 alpha。剔除/LOD 特征尺寸/Silhouette 色块/选中框
+/// 对 Text 一律用 [`crate::text::node_world_bbox_measured`] 的**实测布局
+/// 尺寸**包围盒(命中测试同口径)——foundation 的 0.6em/字符粗估对 CJK
+/// 偏窄 ~40% 的口径不再进入渲染路径。
 ///
 /// # 节点效果栈(G20,V4.0 T2)
 ///
@@ -166,8 +169,9 @@ pub fn render_scene(
         let Some(node) = scene.node(id) else {
             continue;
         };
-        // 组自身无内容(子节点是 render_list 的独立条目);内容包围盒缺失同理
-        let Some(world_bbox) = scene.node_world_bbox(id) else {
+        // 组自身无内容(子节点是 render_list 的独立条目);内容包围盒缺失同理。
+        // Text 用实测布局尺寸的包围盒(V4.0 T6.1),其余与 foundation 口径一致
+        let Some(world_bbox) = node_world_bbox_measured(scene, id) else {
             continue;
         };
 
@@ -266,7 +270,8 @@ pub fn render_scene(
     }
     let mut selection_union: Option<Rect> = None;
     for &id in &opts.selection {
-        let Some(bbox) = scene.node_world_bbox(id) else {
+        // 选中框 hug 真实内容:Text 用实测布局尺寸(V4.0 T6.1)
+        let Some(bbox) = node_world_bbox_measured(scene, id) else {
             continue;
         };
         selection_union = Some(match selection_union {
@@ -982,11 +987,11 @@ mod tests {
     }
 
     /// 文本 LOD 与 Path 同语义:Silhouette = 单个包围盒色块(节点色),
-    /// Point = 不画,Full = 真字形(≥1 次 fill)。
+    /// Point = 不画,Full = 真字形(≥1 次 fill)。特征尺寸取**实测**包围盒
+    /// 短边("lod" @10px ≈ 13×12,短边 = 行高),LOD 阈值结论与粗估时代一致。
     #[test]
     fn text_lod_degrades_and_skips_like_paths() {
         let mut scene = Scene::new();
-        // 粗估 bbox:0.6em×3 字符 × 1.2em = 18×12 → 特征尺寸 12
         scene
             .add_node(None, "文本", text_node_content("lod", 10.0, red()))
             .expect("文本节点");

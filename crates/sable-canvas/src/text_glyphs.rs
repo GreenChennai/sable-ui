@@ -26,9 +26,11 @@
 //! # TD-10 布局缓存
 //!
 //! 缓存本体在 [`crate::text::TextPipeline`](键 `(text, font_size bits)`,颜色
-//! 不入键);本模块用 thread_local 管线提供任务书约定的无状态入口
-//! [`layout_text`],统计面 [`cache_stats`] / [`reset_text_cache`]。每个测试
-//! 线程各自一份管线,互不串扰。
+//! 不入键;V4.0 T6.2 起条目上限 256 + LRU 淘汰,T6.3 起字号键控前钳制);
+//! 本模块用 thread_local 管线提供任务书约定的无状态入口 [`layout_text`]、
+//! 实测尺寸入口 [`measured_text_size`](T6.1,场景级消费者见
+//! [`crate::text::node_world_bbox_measured`]),统计面 [`cache_stats`] /
+//! [`reset_text_cache`]。每个测试线程各自一份管线,互不串扰。
 //!
 //! # 来源与许可
 //!
@@ -79,7 +81,8 @@ thread_local! {
 
 /// 排版一段文本(TD-10 缓存入口,任务书约定的无状态形态)。
 ///
-/// - 缓存键 = `(text, font_size)`,命中时不重排;颜色不入键;
+/// - 缓存键 = `(text, font_size)`,命中时不重排;颜色不入键;字号键控前经
+///   [`crate::text::normalize_font_size`] 钳制(T6.3:NaN/≤0 不产生独立键);
 /// - 空文本短路为零尺寸布局(parley 对空串会排出带行高的空行,与
 ///   "空文本零覆盖"契约不符),不进缓存;
 /// - `color` 记录进 [`TextLayout::color`](见上,不入键)。
@@ -96,6 +99,19 @@ pub fn layout_text(text: &str, font_size: f64, color: Rgba8) -> TextLayout {
     let mut layout = PIPELINE.with(|cell| cell.borrow_mut().cached_layout(text, font_size));
     layout.color = color;
     layout
+}
+
+/// 实测文本布局尺寸 `(宽, 高)`(V4.0 T6.1):本线程管线的
+/// [`crate::text::TextPipeline::measured_text_size`]。
+///
+/// 与 [`layout_text`] 同源同缓存(命中零重排);空文本 `(0.0, 0.0)`,不进
+/// 缓存。命中测试/渲染的 Text 包围盒以本函数的实测口径替代 foundation 的
+/// 0.6em/字符粗估。
+pub fn measured_text_size(text: &str, font_size: f64) -> (f64, f64) {
+    if text.is_empty() {
+        return (0.0, 0.0);
+    }
+    PIPELINE.with(|cell| cell.borrow_mut().measured_text_size(text, font_size))
 }
 
 /// TD-10 缓存统计:`(命中次数, 未命中次数)`(本线程排版管线的累计值)。
@@ -178,6 +194,10 @@ fn fill_glyph_run(
 }
 
 /// 无 hint 绘制参数(空变体坐标;const 切片避免逐 run 分配)。
+///
+/// 不变量(T6.3):`font_size` 来自 parley 布局 run,而布局入口已钳制过
+/// 非有限/≤0 字号(text.rs `normalize_font_size`),故 `Size::new` 不会吃进
+/// NaN——不要绕过布局管线直接以外部字号调用本函数。
 fn unhinted_settings(font_size: f32) -> DrawSettings<'static> {
     const NO_COORDS: [NormalizedCoord; 0] = [];
     DrawSettings::unhinted(Size::new(font_size), LocationRef::new(&NO_COORDS))
@@ -353,5 +373,38 @@ mod tests {
         assert_eq!((hits, misses), (1, 0), "命中布局的绘制计一次命中");
         let (global_hits, global_misses) = cache_stats();
         assert!(global_hits >= 1 && global_misses >= 1, "全局统计应同步累计");
+    }
+
+    /// V4.0 T6.3:NaN 字号在布局入口被钳制——测出有限正尺寸(渲染层因此
+    /// 不会把 NaN 送进字形轮廓的 `Size::new`)。
+    #[test]
+    fn layout_text_non_finite_font_size_clamps_to_finite_layout() {
+        reset_text_cache();
+        let clamped = layout_text("边界", f64::NAN, black());
+        assert!(
+            clamped.width.is_finite() && clamped.width > 0.0,
+            "NaN 字号钳制后宽度必须有限且 > 0,实际 {}",
+            clamped.width
+        );
+        assert!(clamped.height.is_finite() && clamped.height > 0.0);
+        // 与显式 fallback 字号同键:再次获取必命中(NaN 不产生独立缓存键)
+        let fallback = layout_text("边界", crate::text::FALLBACK_FONT_SIZE, black());
+        assert!(fallback.from_cache, "NaN 不得生成独立缓存键");
+        assert_eq!(
+            (clamped.width, clamped.height),
+            (fallback.width, fallback.height)
+        );
+    }
+
+    /// V4.0 T6.1:实测尺寸入口与 layout_text 同源一致;空文本 (0,0) 不进缓存。
+    #[test]
+    fn measured_text_size_matches_layout_text() {
+        reset_text_cache();
+        let (w, h) = measured_text_size("实测你好", 20.0);
+        assert!(w > 0.0 && h > 0.0);
+        let layout = layout_text("实测你好", 20.0, black());
+        assert!(layout.from_cache, "实测必须走 TD-10 缓存");
+        assert_eq!((w, h), (layout.width, layout.height));
+        assert_eq!(measured_text_size("", 20.0), (0.0, 0.0), "空文本 (0,0)");
     }
 }

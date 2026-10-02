@@ -169,6 +169,11 @@ pub struct PathNode {
 }
 
 /// 文本节点数据(布局/塑形缓存归 canvas/text 管线,这里只存数据)。
+///
+/// 字号纪律(V4.0 T6.3):纯数据层不做拒收(无合适错误变体且 error 枚举
+/// 归属 error.rs);非有限/≤0 的 `font_size` 由 canvas 布局入口钳制到合法值
+/// (`sable_canvas::text::normalize_font_size`)并记计数,NaN 绝不进入缓存键
+/// 与字形轮廓。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextNode {
     pub text: String,
@@ -557,6 +562,12 @@ impl Scene {
 
     /// 节点内容包围盒 × 世界变换;Group = 各子节点世界包围盒的并集
     /// (空组返回 None)。Text 用 0.6em 字宽 × 1.2em 行高粗估,不引 parley。
+    ///
+    /// V4.0 T6.1(canvas 层实测化):本粗估只是纯数据层的零依赖回退口径——
+    /// CJK 实际 ≈1.0em/字,粗估系统性偏窄 ~40%。依赖方向不允许 parley 下沉
+    /// foundation,故 canvas 的渲染/命中/选中/脏矩形一律改用
+    /// `sable_canvas::text::node_world_bbox_measured`(实测布局尺寸覆盖
+    /// Text 分支,其余口径与本函数一致)。
     pub fn node_world_bbox(&self, id: NodeId) -> Option<Rect> {
         let node = self.nodes.get(id)?;
         let world = self.world_transform(id)?;
@@ -692,7 +703,9 @@ impl Scene {
         match &node.content {
             NodeContent::Path(p) => Some(p.path.bounding_box()),
             NodeContent::Text(t) => {
-                // 粗估:0.6em 字宽 × 1.2em 行高(精确布局归 text 管线)
+                // 粗估:0.6em 字宽 × 1.2em 行高(V4.0 T6.1:canvas 侧以实测
+                // 布局尺寸替代,这里保持零依赖回退;字号病态时本口径不拒收,
+                // 行为层钳制见 canvas/text 的 normalize_font_size)
                 let chars = t.text.chars().count();
                 let width = 0.6 * t.font_size * chars as f64;
                 let height = 1.2 * t.font_size;

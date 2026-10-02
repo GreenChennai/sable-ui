@@ -23,6 +23,8 @@ use kurbo::{
 };
 use sable_foundation::scene::{NodeContent, NodeId, Scene};
 
+use crate::text::node_world_bbox_measured;
+
 /// `Scene` 的命中测试能力(foreign trait 模式:`use sable_canvas::hit_test::SceneHitTest;` 后,
 /// `scene.hit_test(..)` / `scene.select_in_rect(..)` 直接可用)。
 pub trait SceneHitTest {
@@ -61,17 +63,24 @@ impl SceneHitTest for Scene {
                     });
                     in_fill || near_stroke
                 }
-                // Text/Image 用世界包围盒外扩容差(docs/02 §5 的 bbox inflate;
-                // 世界 bbox 已含节点变换,与 scene 的粗估口径一致)
-                NodeContent::Text(_) | NodeContent::Image(_) => {
-                    self.node_world_bbox(id).is_some_and(|bbox| {
-                        let grown = bbox.inflate(tolerance, tolerance);
-                        grown.x0 <= world_pt.x
-                            && world_pt.x <= grown.x1
-                            && grown.y0 <= world_pt.y
-                            && world_pt.y <= grown.y1
-                    })
-                }
+                // 世界包围盒外扩容差(docs/02 §5 的 bbox inflate;世界 bbox 已含
+                // 节点变换)。V4.0 T6.1:Text 用实测布局尺寸的包围盒——0.6em/
+                // 字符粗估对 CJK(实际 ≈1.0em/字)系统性偏窄 ~40%,右半边点
+                // 不中(review R6);Image 本就是精确数据矩形,维持原路。
+                NodeContent::Text(_) => node_world_bbox_measured(self, id).is_some_and(|bbox| {
+                    let grown = bbox.inflate(tolerance, tolerance);
+                    grown.x0 <= world_pt.x
+                        && world_pt.x <= grown.x1
+                        && grown.y0 <= world_pt.y
+                        && world_pt.y <= grown.y1
+                }),
+                NodeContent::Image(_) => self.node_world_bbox(id).is_some_and(|bbox| {
+                    let grown = bbox.inflate(tolerance, tolerance);
+                    grown.x0 <= world_pt.x
+                        && world_pt.x <= grown.x1
+                        && grown.y0 <= world_pt.y
+                        && world_pt.y <= grown.y1
+                }),
                 // 组本身不响应,靠子节点(子节点在逆序中先于组被测试)
                 NodeContent::Group => false,
             };
@@ -87,7 +96,8 @@ impl SceneHitTest for Scene {
             .into_iter()
             .filter(|(id, _)| self.node(*id).is_some_and(|node| !node.locked))
             .filter(|(id, _)| {
-                self.node_world_bbox(*id).is_some_and(|bbox| {
+                // Text 用实测包围盒(T6.1),其余与 foundation 口径一致
+                node_world_bbox_measured(self, *id).is_some_and(|bbox| {
                     bbox.x0 < rect.x1 && rect.x0 < bbox.x1 && bbox.y0 < rect.y1 && rect.y0 < bbox.y1
                 })
             })
@@ -517,8 +527,10 @@ mod tests {
         assert_eq!(hits, vec![bottom, top], "保持渲染列表的底→顶序");
     }
 
+    /// Text 按**实测布局尺寸**的包围盒命中(V4.0 T6.1):内部点、右缘容差内
+    /// 命中;右缘容差外不命中。断言以实测宽高为基准,不依赖任何粗估常数。
     #[test]
-    fn text_hits_by_inflated_bbox() {
+    fn text_hits_by_measured_bbox() {
         let mut scene = Scene::new();
         let id = scene
             .add_node(
@@ -531,11 +543,91 @@ mod tests {
                 }),
             )
             .expect("文本");
-        // 粗估 bbox:0.6em 字宽 × 1.2em 行高;"北京 2026" 7 字符 → 0.6*10*7=42 宽 × 12 高
-        assert_eq!(scene.hit_test(Point::new(10.0, 6.0), 0.5), Some(id));
-        // bbox 外但容差内
-        assert_eq!(scene.hit_test(Point::new(42.0 + 0.4, 6.0), 0.5), Some(id));
-        assert_eq!(scene.hit_test(Point::new(60.0, 6.0), 0.5), None);
+        let (w, h) = crate::text_glyphs::measured_text_size("北京 2026", 10.0);
+        assert!(w > 0.0 && h > 0.0);
+        assert_eq!(
+            scene.hit_test(Point::new(w / 2.0, h / 2.0), 0.5),
+            Some(id),
+            "实测范围内部命中"
+        );
+        assert_eq!(
+            scene.hit_test(Point::new(w + 0.4, h / 2.0), 0.5),
+            Some(id),
+            "右缘外但容差(0.5)内命中"
+        );
+        assert_eq!(
+            scene.hit_test(Point::new(w + 2.0, h / 2.0), 0.5),
+            None,
+            "右缘外超过容差不命中"
+        );
+    }
+
+    /// R6 回归(V4.0 T6.1):0.6em/字符粗估对 CJK(实际 ≈1.0em/字)偏窄
+    /// ~40%,右半边点不中。旧粗估右缘**之外**、实测范围**之内**的点必须
+    /// 命中——这是旧 bug 的直接回归断言。
+    #[test]
+    fn cjk_text_hits_beyond_old_coarse_estimate() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(
+                None,
+                "CJK",
+                NodeContent::Text(sable_foundation::scene::TextNode {
+                    text: "你好".into(),
+                    font_size: 20.0,
+                    color: [0, 0, 0, 255],
+                }),
+            )
+            .expect("文本");
+        let (w, h) = crate::text_glyphs::measured_text_size("你好", 20.0);
+        let coarse_width = 0.6 * 20.0 * 2.0; // 旧粗估右缘 = 24(0.6em × 2 字)
+        assert!(
+            w > coarse_width + 10.0,
+            "CJK 实测宽 {w} 应显著大于旧粗估 {coarse_width}(≈1em/字 vs 0.6em/字)"
+        );
+        // 旧粗估之外、实测之内的点:旧实现点不中,现在必须命中
+        let probe_x = (coarse_width + w) / 2.0;
+        assert!(
+            probe_x > coarse_width + 0.5,
+            "探针点必须在旧粗估 + 容差之外,probe={probe_x}"
+        );
+        assert_eq!(
+            scene.hit_test(Point::new(probe_x, h / 2.0), 0.5),
+            Some(id),
+            "旧粗估右缘外的实际字形范围必须可点中"
+        );
+        // 粗估范围内依旧命中(不回归)
+        assert_eq!(scene.hit_test(Point::new(10.0, h / 2.0), 0.5), Some(id));
+        // 实测范围外(容差外)不命中
+        assert_eq!(scene.hit_test(Point::new(w + 2.0, h / 2.0), 0.5), None);
+    }
+
+    /// 框选含文本:实测包围盒(而非粗估)决定入选范围——框住 CJK 右半边
+    /// (旧粗估之外)也必须选中。
+    #[test]
+    fn select_in_rect_uses_measured_text_bbox() {
+        let mut scene = Scene::new();
+        let id = scene
+            .add_node(
+                None,
+                "CJK",
+                NodeContent::Text(sable_foundation::scene::TextNode {
+                    text: "你好".into(),
+                    font_size: 20.0,
+                    color: [0, 0, 0, 255],
+                }),
+            )
+            .expect("文本");
+        let (w, h) = crate::text_glyphs::measured_text_size("你好", 20.0);
+        let coarse_width = 0.6 * 20.0 * 2.0; // 24
+        // 只框住右半边(coarse..w):粗估口径会漏选,实测口径必须命中
+        let hits = scene.select_in_rect(kurbo::Rect::new(
+            (coarse_width + w) / 2.0,
+            0.0,
+            w + 100.0,
+            h,
+        ));
+        assert!(hits.contains(&id), "文本右半边必须可框选(实测 bbox)");
     }
 
     // —— 锚点几何辅助(docs/04 §3) ——

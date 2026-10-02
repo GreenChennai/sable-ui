@@ -54,6 +54,7 @@ use crate::hit_test::{
     AnchorPoint, SceneHitTest, SubPath, first_subpath, hit_anchor, nearest_on_subpath,
 };
 use crate::input::screen_tolerance;
+use crate::text::node_world_bbox_measured;
 
 /// 工具的一次事件所能触达的全部可变状态(framework-free 的接缝)。
 pub struct ToolCtx<'a> {
@@ -358,10 +359,13 @@ impl SelectTool {
 }
 
 /// 选中集的世界包围盒并集;全为空(空组)时返回 None。
+///
+/// Text 用实测布局尺寸的包围盒(V4.0 T6.1):0.6em/字符粗估对 CJK 偏窄
+/// ~40%,控制柄/缩放锚点会整体偏左。
 fn selection_union(scene: &Scene, selection: &[NodeId]) -> Option<Rect> {
     let mut acc: Option<Rect> = None;
     for &id in selection {
-        let bbox = scene.node_world_bbox(id)?;
+        let bbox = node_world_bbox_measured(scene, id)?;
         acc = Some(match acc {
             Some(a) => a.union(bbox),
             None => bbox,
@@ -564,14 +568,17 @@ impl SelectTool {
 
 /// 对一组 (节点, 初始变换) 统一应用变换函数:exec SetTransform 并记账脏区。
 /// 执行单个 SetTransform 并标记新旧包围盒脏区(Move/Scale 共用的最小步)。
+///
+/// 脏区按实测包围盒标记(V4.0 T6.1):Text 渲染已换实测口径,脏矩形若仍用
+/// 0.6em 粗估,移出后会在旧位置留下未清除的字形残影。
 fn exec_transform(ctx: &mut ToolCtx, id: NodeId, old: Affine, new: Affine) {
-    let old_bbox = ctx.scene.node_world_bbox(id);
+    let old_bbox = node_world_bbox_measured(ctx.scene, id);
     ctx.history
         .exec(SetTransform { id, old, new }.boxed(), ctx.scene);
     if let Some(b) = old_bbox {
         ctx.damage.mark(b);
     }
-    if let Some(b) = ctx.scene.node_world_bbox(id) {
+    if let Some(b) = node_world_bbox_measured(ctx.scene, id) {
         ctx.damage.mark(b);
     }
 }

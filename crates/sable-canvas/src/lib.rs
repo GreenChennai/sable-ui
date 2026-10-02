@@ -60,9 +60,9 @@ pub mod prelude {
     pub use crate::input::{on_scroll, screen_tolerance};
     pub use crate::lod::{DetailLevel, detail_level, should_draw_detail};
     pub use crate::render::{OverlayTheme, RenderOpts, render_scene};
-    pub use crate::text::TextPipeline;
+    pub use crate::text::{TextPipeline, node_world_bbox_measured};
     pub use crate::text_glyphs::{
-        TextLayout, cache_stats, draw_text, layout_text, reset_text_cache,
+        TextLayout, cache_stats, draw_text, layout_text, measured_text_size, reset_text_cache,
     };
     pub use crate::tool::{
         AnchorEditTool, CursorStyle, HandTool, Mods, PenTool, SelectTool, ToolBehavior, ToolCtx,
