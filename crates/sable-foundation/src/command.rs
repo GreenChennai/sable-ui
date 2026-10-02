@@ -39,7 +39,8 @@ pub trait Command: Send + 'static {
 
     /// 重做方向的 id 治理钩子:重做 AddNode 会换发新 id,必须把新映射
     /// 广播给 redo 栈里的后继命令(否则后继 SetFill 等静默失配)。
-    /// 默认无映射;仅 AddNode 覆写。
+    /// 默认无映射;AddNode 覆写;BatchCommand 聚合批内映射并穿越到
+    /// 批内后继命令(V4.0 T1,与 [`Command::revert`] 的传播对称)。
     fn apply_heal(&mut self, scene: &mut Scene) -> Option<IdRemap> {
         self.apply(scene);
         None
@@ -94,6 +95,33 @@ impl Command for BatchCommand {
         for cmd in &mut self.0 {
             cmd.apply(scene);
         }
+    }
+
+    fn apply_heal(&mut self, scene: &mut Scene) -> Option<IdRemap> {
+        // 正向重放;某步产生 id 重映射时,先喂给尚未 apply 的后继命令
+        // (V4.0 T1:与下方 revert 的逆序回喂完全对称——否则事务内
+        // AddNode 重做换发新 id 后,批内 SetFill 等依赖命令静默失配)
+        let mut total = IdRemap::new();
+        let mut any = false;
+        for i in 0..self.0.len() {
+            if let Some(m) = self.0[i].apply_heal(scene) {
+                any = true;
+                for cmd in self.0[i + 1..].iter_mut() {
+                    cmd.remap_ids(&m);
+                }
+                // 累积总映射:已累积的值穿过本次映射,再并入本次的新键
+                // (与 revert 中 total/merged 的写法一致)
+                let mut merged: IdRemap = total
+                    .into_iter()
+                    .map(|(k, v)| (k, m.get(&v).copied().unwrap_or(v)))
+                    .collect();
+                for (k, v) in m {
+                    merged.entry(k).or_insert(v);
+                }
+                total = merged;
+            }
+        }
+        if any { Some(total) } else { None }
     }
 
     fn revert(&mut self, scene: &mut Scene) -> Option<IdRemap> {
@@ -1242,6 +1270,16 @@ mod tests {
         })
     }
 
+    /// 按名字取节点 id(测试辅助;测试场景内名字唯一)。
+    fn find_by_name(scene: &Scene, name: &str) -> NodeId {
+        scene
+            .nodes
+            .iter()
+            .find(|(_, n)| n.name == name)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("节点 {name} 不存在"))
+    }
+
     /// 根组 → (矩形A, 子组 → 矩形B),外加根级矩形C
     fn demo_scene() -> (Scene, NodeId, NodeId, NodeId, NodeId, NodeId) {
         let mut scene = Scene::new();
@@ -1536,6 +1574,176 @@ mod tests {
         history.begin_transaction();
         history.end_transaction();
         assert_eq!(history.undo_len(), 1);
+    }
+
+    #[test]
+    fn transaction_redo_preserves_dependent_fill() {
+        // V4.0 T1 回归(修前必失败):事务内 AddNode 重做时换发新 id,
+        // 批内依赖它的 SetFill 必须借映射治愈,fill 不得静默丢失。
+        let (mut scene, root, _a, _sub, _b, _c) = demo_scene();
+        let snapshot = scene.clone();
+        let mut history = History::new();
+        let new_fill = Paint::Solid([250, 120, 40, 255]);
+
+        history.begin_transaction();
+        history.exec(
+            AddNode::new(
+                Some(root),
+                None,
+                Node::new("事务新矩形", rect_content(0.0, 0.0, 4.0, 4.0)),
+            )
+            .boxed(),
+            &mut scene,
+        );
+        let added = find_by_name(&scene, "事务新矩形");
+        let old_fill = scene.path(added).and_then(|p| p.fill.clone());
+        history.exec(
+            SetFill {
+                id: added,
+                old: old_fill,
+                new: Some(new_fill.clone()),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.end_transaction();
+        assert_eq!(history.undo_len(), 1, "事务合为一步撤销");
+
+        history.undo(&mut scene);
+        history.redo(&mut scene);
+
+        let redone = find_by_name(&scene, "事务新矩形");
+        assert_ne!(redone, added, "slotmap 重做换发新 id(治愈的前提)");
+        assert_eq!(
+            scene.path(redone).and_then(|p| p.fill.clone()),
+            Some(new_fill),
+            "redo 后批内 SetFill 借新 id 生效,fill 不丢"
+        );
+
+        // 再撤销一轮:undo 路径零改动,完整还原
+        history.undo(&mut scene);
+        assert_eq!(scene, snapshot);
+    }
+
+    #[test]
+    fn transaction_redo_heals_redo_stack_successors() {
+        // 事务 redo 返回的映射必须被 History::redo 广播给 redo 栈上的
+        // 后继顶层命令(undo 方向 remap_all 的镜像)。
+        let (mut scene, root, _a, _sub, _b, _c) = demo_scene();
+        let mut history = History::new();
+        let fill = Paint::Solid([12, 34, 56, 78]);
+
+        history.begin_transaction();
+        history.exec(
+            AddNode::new(
+                Some(root),
+                None,
+                Node::new("后继目标", rect_content(1.0, 1.0, 5.0, 5.0)),
+            )
+            .boxed(),
+            &mut scene,
+        );
+        let added = find_by_name(&scene, "后继目标");
+        history.end_transaction();
+
+        // 事务之后的顶层 SetFill:undo 后躺在 redo 栈里,持有新增节点的当前 id
+        let old_fill = scene.path(added).and_then(|p| p.fill.clone());
+        history.exec(
+            SetFill {
+                id: added,
+                old: old_fill,
+                new: Some(fill.clone()),
+            }
+            .boxed(),
+            &mut scene,
+        );
+
+        history.undo(&mut scene); // SetFill → redo 栈
+        history.undo(&mut scene); // 事务 → redo 栈
+        history.redo(&mut scene); // 事务重做:AddNode 换发 id,须治愈 redo 栈
+        history.redo(&mut scene); // SetFill 借映射后的新 id 生效
+
+        let healed = find_by_name(&scene, "后继目标");
+        assert_eq!(
+            scene.path(healed).and_then(|p| p.fill.clone()),
+            Some(fill),
+            "redo 栈后继命令被批返回的映射治愈"
+        );
+    }
+
+    #[test]
+    fn nested_batch_redo_threads_mapping_across_levels() {
+        // 三层穿越:History redo → 外层批 → 内层批(批内 AddNode)→ 映射
+        // 逐层回喂批内后继命令并聚合返回(对称 revert 的 total/merged 累积)。
+        let (mut scene, root, _a, _sub, _b, _c) = demo_scene();
+        let snapshot = scene.clone();
+        let mut history = History::new();
+        let deep_fill = Paint::Solid([99, 11, 22, 33]);
+
+        history.begin_transaction(); // 外层批
+        history.exec(
+            AddNode::new(Some(root), None, Node::new("外层新增", NodeContent::Group)).boxed(),
+            &mut scene,
+        );
+        let parent = find_by_name(&scene, "外层新增");
+        // 内层批:批内 AddNode(父节点为外层新增)
+        history.exec(
+            BatchCommand(vec![
+                AddNode::new(
+                    Some(parent),
+                    None,
+                    Node::new("内层新增", rect_content(2.0, 2.0, 6.0, 6.0)),
+                )
+                .boxed(),
+            ])
+            .boxed(),
+            &mut scene,
+        );
+        let child = find_by_name(&scene, "内层新增");
+        let child_fill = scene.path(child).and_then(|p| p.fill.clone());
+        // 依赖内层新增的两条命令:redo 时都要穿越内层映射
+        history.exec(
+            SetFill {
+                id: child,
+                old: child_fill,
+                new: Some(deep_fill.clone()),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetName {
+                id: child,
+                old: "内层新增".into(),
+                new: "内层改名".into(),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.end_transaction();
+        assert_eq!(history.undo_len(), 1, "嵌套批仍是一步撤销");
+
+        history.undo(&mut scene);
+        assert_eq!(scene, snapshot, "嵌套批撤销完整还原");
+        history.redo(&mut scene);
+
+        let new_parent = find_by_name(&scene, "外层新增");
+        let new_child = find_by_name(&scene, "内层改名");
+        assert_eq!(
+            scene.node(new_child).expect("子节点在").parent,
+            Some(new_parent),
+            "内层 AddNode 的 parent 被外层映射治愈"
+        );
+        assert_eq!(
+            scene.path(new_child).and_then(|p| p.fill.clone()),
+            Some(deep_fill),
+            "内层映射穿越到批内后继 SetFill"
+        );
+        assert_eq!(
+            scene.node(new_child).expect("子节点在").name,
+            "内层改名",
+            "内层映射穿越到批内后继 SetName"
+        );
     }
 
     #[test]
@@ -2425,6 +2633,105 @@ mod tests {
                 history.undo(&mut scene);
             }
             prop_assert_eq!(scene, snapshot, "任意命令序列全部撤销后必须回到初始快照");
+        }
+    }
+
+    // —— proptest:随机事务序列(V4.0 T1.2,redo 方向 id 治理)——
+    //
+    // 专用算子集:随机把 AddNode + 依赖命令(SetFill/SetName/RemoveNode)
+    // 包裹进若干事务,验证 undo 全撤销 → redo 全重做 → 再全撤销三态一致。
+
+    #[derive(Debug, Clone)]
+    enum TxOp {
+        AddNode,
+        SetFill(usize, [u8; 4]),
+        SetName(usize, u16),
+        Remove(usize),
+    }
+
+    fn tx_op() -> impl Strategy<Value = TxOp> {
+        prop_oneof![
+            3 => Just(TxOp::AddNode),
+            3 => (0usize..8, any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
+                .prop_map(|(i, r, g, b, a)| TxOp::SetFill(i, [r, g, b, a])),
+            2 => (0usize..8, 0u16..1000).prop_map(|(i, n)| TxOp::SetName(i, n)),
+            2 => (0usize..8).prop_map(TxOp::Remove),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn random_transaction_sequence_undo_redo_restores_state(
+            txs in proptest::collection::vec(proptest::collection::vec(tx_op(), 1..6), 1..8),
+        ) {
+            let (mut scene, _root, a0, _sub, b0, _c) = demo_scene();
+            let initial = scene.clone();
+            let mut history = History::new();
+            let mut registry: Vec<NodeId> = vec![a0, b0];
+            registry.extend(scene.iter_roots());
+
+            for tx in &txs {
+                history.begin_transaction();
+                for op in tx {
+                    match *op {
+                        TxOp::AddNode => {
+                            history.exec(
+                                AddNode::new(None, None, Node::new("事务新增", NodeContent::Group))
+                                    .boxed(),
+                                &mut scene,
+                            );
+                            if let Some(&id) = scene.roots.last() {
+                                registry.push(id);
+                            }
+                        }
+                        TxOp::SetFill(i, rgba) => {
+                            if let Some(id) = pick(&scene, &registry, i) {
+                                let old = scene.path(id).and_then(|p| p.fill.clone());
+                                history.exec(
+                                    SetFill { id, old, new: Some(Paint::Solid(rgba)) }.boxed(),
+                                    &mut scene,
+                                );
+                            }
+                        }
+                        TxOp::SetName(i, n) => {
+                            if let Some(id) = pick(&scene, &registry, i) {
+                                let old = scene.node(id).expect("存活").name.clone();
+                                history.exec(
+                                    SetName { id, old, new: format!("节点{n}") }.boxed(),
+                                    &mut scene,
+                                );
+                            }
+                        }
+                        TxOp::Remove(i) => {
+                            if let Some(id) = pick(&scene, &registry, i) {
+                                history.exec(RemoveNode::new(id).boxed(), &mut scene);
+                            }
+                        }
+                    }
+                }
+                history.end_transaction();
+            }
+
+            let executed = scene.clone();
+            while history.can_undo() {
+                history.undo(&mut scene);
+            }
+            // prop_assert_eq! 按值消费参数,多次断言处须 clone
+            prop_assert_eq!(scene.clone(), initial.clone(), "随机事务序列全部撤销后回到初始快照");
+            while history.can_redo() {
+                history.redo(&mut scene);
+            }
+            prop_assert_eq!(
+                scene.clone(),
+                executed,
+                "全部重做后与首次执行终态一致(redo 方向 id 治理)"
+            );
+            while history.can_undo() {
+                history.undo(&mut scene);
+            }
+            prop_assert_eq!(scene, initial, "重做态再撤销仍回到初始快照");
         }
     }
 }
