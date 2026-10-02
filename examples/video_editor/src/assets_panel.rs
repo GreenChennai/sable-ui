@@ -5,7 +5,7 @@ use gpui::{
     App, AppContext as _, Entity, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, div, px,
 };
-use lumina::gpui;
+use sable::gpui;
 
 use crate::palette::Palette;
 

@@ -5,16 +5,16 @@
 //! (不进撤销栈),此后的一切修改走 [`TimelineProject::exec`]。
 
 use gpui::AppContext as _;
-use lumina::gpui;
-use lumina::gpui::{App, Context, Entity};
-use lumina::video::command::{TimelineCommand, TimelineHistory};
-use lumina::video::model::{AssetRef, Timeline, TrackKind};
+use sable::gpui;
+use sable::gpui::{App, Context, Entity};
+use sable::video::command::{TimelineCommand, TimelineHistory};
+use sable::video::model::{AssetRef, Timeline, TrackKind};
 
 /// 时间轴工程(权威编辑态)。
 pub struct TimelineProject {
     /// 时间轴(Entity 形态:时间轴视图契约要 `Entity<Timeline>`)。
     pub timeline: Entity<Timeline>,
-    /// 时间轴撤销栈(lumina_video 自有体系;ClipId 永不复用,无需 id 治愈)。
+    /// 时间轴撤销栈(sable_video 自有体系;ClipId 永不复用,无需 id 治愈)。
     pub history: TimelineHistory,
 }
 

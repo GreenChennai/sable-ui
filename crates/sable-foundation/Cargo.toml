@@ -1,0 +1,24 @@
+[package]
+name = "sable-foundation"
+description = "L0 基础层:视口变换、场景图(纯数据)、命令系统(撤销重做)、原子写持久化——零 UI 框架依赖"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# 分册六 §2.1:core 只许依赖 kurbo/serde/slotmap + 工程 crate,出现 gpui/egui/wgpu 依赖视为架构事故。
+# peniko 原在白名单内,但 core 的类型设计(Paint 枚举)用不到,已移除——不为用而用。
+[dependencies]
+kurbo.workspace = true
+slotmap.workspace = true
+serde.workspace = true
+# .sable 工程文件 MessagePack 编解码(分册五 §5.1;src/project.rs,serde 家族序列化面)
+rmp-serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# 分册六 §1.2 铁律验收:Scene 序列化→反序列化 == 原值
+serde_json = "1"

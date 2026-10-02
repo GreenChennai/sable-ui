@@ -1,6 +1,6 @@
 //! 图层面板宿主:widgets `LayerPanel` 挂进 dock 左侧。
 //!
-//! widgets 真实签名(2026-10 以 crates/lumina-widgets/src/layer_panel.rs
+//! widgets 真实签名(2026-10 以 crates/sable-widgets/src/layer_panel.rs
 //! 为准):`LayerPanel::new(Entity<Scene>)`(无 cx)+ 消费式 builder
 //! `.on_select(Fn(NodeId, bool, &mut App))` / `.on_toggle_visible(Fn(NodeId,
 //! &mut App))` / `.on_move_up/.on_move_down(Fn(NodeId, &mut App))`;
@@ -13,10 +13,10 @@
 use gpui::{
     App, AppContext as _, Entity, IntoElement, ParentElement as _, Render, Styled as _, div,
 };
-use lumina::core::command::{Command as _, Reparent, SetVisibility};
-use lumina::core::scene::NodeId;
-use lumina::gpui;
-use lumina::widgets::layer_panel::LayerPanel;
+use sable::core::command::{Command as _, Reparent, SetVisibility};
+use sable::core::scene::NodeId;
+use sable::gpui;
+use sable::widgets::layer_panel::LayerPanel;
 
 use crate::document::Document;
 
@@ -40,7 +40,7 @@ impl LayerHost {
                 .on_select(move |id, shift, cx| {
                     doc_select.update(cx, |d, _| {
                         d.selection =
-                            lumina::widgets::layer_panel::apply_select(&d.selection, id, shift);
+                            sable::widgets::layer_panel::apply_select(&d.selection, id, shift);
                     });
                 })
                 .on_toggle_visible(move |id, cx| {

@@ -1,11 +1,11 @@
 //! 初始场景:程序化放 2 个矩形 + 1 个手写圆角路径(BezPath),颜色取自
-//! lumina-widgets 主题。
+//! sable-widgets 主题。
 //!
 //! 初始内容是"打开文档"语义(见 document.rs 模块文档第 1 条):直接构建,
 //! 不产生 Command、不进撤销栈;此后的一切修改必须走 `Document::exec`。
 
-use lumina::kurbo::BezPath;
-use lumina::core::scene::{NodeContent, Paint, PathNode, Rgba8, Scene};
+use sable::core::scene::{NodeContent, Paint, PathNode, Rgba8, Scene};
+use sable::kurbo::BezPath;
 
 use crate::palette::Palette;
 

@@ -1,15 +1,15 @@
 //! 宿主组装:窗口 + Root + DockArea(左素材占位/中预览监视器/下时间轴)。
 //!
 //! 三段式预设覆盖不到底部 dock,构建后追加 `set_bottom_dock(DockItem,
-//! size, open, ..)`(gpui-component 0.5.1 API;tab 组经 lumina-dock
+//! size, open, ..)`(gpui-component 0.5.1 API;tab 组经 sable-dock
 //! `tab_group(panels, &WeakEntity<DockArea>, ..)` 描述)。
 
-use lumina::dock::{LuminaPanel, WorkspacePresets};
-use lumina::gpui::{
+use sable::dock::{SablePanel, WorkspacePresets};
+use sable::gpui::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, Styled as _, Window, div, px,
 };
-use lumina::gpui_component::dock::DockArea;
+use sable::gpui_component::dock::DockArea;
 
 use crate::assets_panel::AssetsPanel;
 use crate::palette::Palette;
@@ -37,13 +37,13 @@ pub fn build_video_editor(window: &mut Window, cx: &mut App) -> Entity<VideoApp>
     let monitor = cx.new(|cx| PreviewMonitor::new(timeline, cx));
 
     // 3. 三段式(左素材 / 中预览;右 dock 留空)
-    let left = vec![LuminaPanel::create("素材", AssetsPanel::new(cx).into(), cx)];
-    let center = LuminaPanel::create("预览", monitor.clone().into(), cx);
+    let left = vec![SablePanel::create("素材", AssetsPanel::new(cx).into(), cx)];
+    let center = SablePanel::create("预览", monitor.clone().into(), cx);
     let dock =
-        WorkspacePresets::build_workspace("lumina-video-editor", left, center, vec![], window, cx);
+        WorkspacePresets::build_workspace("sable-video-editor", left, center, vec![], window, cx);
 
     // 4. 底部时间轴 dock(0.5.1:set_bottom_dock 直接收 size/open)
-    let timeline_panel = LuminaPanel::create(
+    let timeline_panel = SablePanel::create(
         "时间轴",
         TimelineHost::new(&project, &monitor, cx).into(),
         cx,
@@ -51,7 +51,7 @@ pub fn build_video_editor(window: &mut Window, cx: &mut App) -> Entity<VideoApp>
     dock.update(cx, |area, cx| {
         let dock_area = cx.entity().downgrade();
         area.set_bottom_dock(
-            lumina::dock::tab_group(vec![timeline_panel], &dock_area, window, cx),
+            sable::dock::tab_group(vec![timeline_panel], &dock_area, window, cx),
             Some(px(220.)),
             true,
             window,

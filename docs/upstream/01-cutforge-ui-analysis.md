@@ -1,7 +1,7 @@
-# 01 · CutForge 上游 UI 分析(内核能力 → 桌面壳需求 → Lumina 接入)
+# 01 · CutForge 上游 UI 分析(内核能力 → 桌面壳需求 → Sable 接入)
 
 > 分析基线:2026-10-02,`D:\Github\cutforge` 工作区快照。
-> 结论先行:**CutForge 是"一个内核,多个壳"的视频剪辑软件,当前唯一真实 UI 是 Web 壳(apps/web,无构建 ESM);桌面壳 apps/desktop 仅为占位 README,因 GPUI 0.2.2 生态不成熟被 ADR 降级为观察项——这正是 Lumina 要补的位置。**
+> 结论先行:**CutForge 是"一个内核,多个壳"的视频剪辑软件,当前唯一真实 UI 是 Web 壳(apps/web,无构建 ESM);桌面壳 apps/desktop 仅为占位 README,因 GPUI 0.2.2 生态不成熟被 ADR 降级为观察项——这正是 Sable 要补的位置。**
 
 ---
 
@@ -78,38 +78,38 @@
 - 预定形态:wasm 内核 + Web 壳先交付多端;桌面壳待 **GPUI 0.3+ 或上游 crates 落地后复评**,"以 `cutforge-wasm` 同源投影接入 GPUI"。
 - **恢复为阻断门禁(M5-4)的条件:GPUI 稳定版 + apps/desktop 二进制 + Windows 冒烟(开窗 + 加载工程 + 渲染时间线)。**
 
-## 5. 未来 apps/desktop 的 UI 需求 → Lumina 能力映射
+## 5. 未来 apps/desktop 的 UI 需求 → Sable 能力映射
 
-按"Lumina 只做前端层,内核/数据语义仍归 cutforge"的分工:
+按"Sable 只做前端层,内核/数据语义仍归 cutforge"的分工:
 
-| CutForge 桌面壳需求(源自 Web 壳实证) | 需要的 Lumina 能力 | 归属 crate |
+| CutForge 桌面壳需求(源自 Web 壳实证) | 需要的 Sable 能力 | 归属 crate |
 |---|---|---|
-| 三栏 + 底部时间线的 NLE 工作台;面板坞/Tab 分组;布局持久化(cutforge 已有 `migrate_layout` 工具与 workspace 布局概念) | Dock 布局、面板 Tab、布局序列化 | **lumina-dock**(gpui-component DockArea) |
-| 多轨时间轴:轨头(可见/锁/静音/独奏/隐藏/高度/颜色)、clip 块拖拽/trim 四件套/分割/波纹删、标尺+播放头、磁吸、1k clip 虚拟化 | 时间轴模型(轨道/clip/关键帧/吸附/播放时钟)+ 时间轴视图组件 | **lumina-video** + **lumina-widgets**(timeline 组件) |
-| 检查器:ui-fields.json 驱动的九组字段(数值 scrubby/表达式/色板/下拉/曲线) | NumberField/ColorField/SectionHeader/属性检查器 | **lumina-widgets** |
-| 关键帧曲线/变速曲线编辑器(kf-editor/curve) | 曲线编辑器组件 + kurbo 曲线求值 | lumina-widgets + **lumina-paint**(kurbo) |
-| 预览播放器:Web 用 video 标签段级预览 + render_frame 精确单帧;桌面需把帧(PNG/JPEG/解码帧)上屏、播放时钟驱动 | 画布视图/视口变换/纹理上屏;播放时钟在 lumina-video | **lumina-canvas** + lumina-video(render/解码仍走 cutforge-render) |
-| 示波器/波形/缩略图绘制(scope_data/media_peaks 已给 JSON 数据) | 自绘图形原语(vello)| **lumina-paint** + widgets 容器 |
-| 撤销/重做 UI(历史面板回跳 N 笔)、命令面板、45 条可重绑定快捷键、菜单/对话框/toast | Command/History(undo 合并会话)、命令面板、keymap | **lumina-core**(Command/History)+ lumina-dock |
-| 深色达文西风、色值单一定义点、AA 对比度 | 设计 token 体系 | lumina-widgets(tokens.rs) |
-| "壳不持真相":一切编辑经命令通道产生 Op | Lumina 的 Command 系统只管 **UI 层**命令(视图态),文档语义命令直通 cutforge Engine | lumina-core 与 cutforge-core 的边界(见 §6) |
+| 三栏 + 底部时间线的 NLE 工作台;面板坞/Tab 分组;布局持久化(cutforge 已有 `migrate_layout` 工具与 workspace 布局概念) | Dock 布局、面板 Tab、布局序列化 | **sable-dock**(gpui-component DockArea) |
+| 多轨时间轴:轨头(可见/锁/静音/独奏/隐藏/高度/颜色)、clip 块拖拽/trim 四件套/分割/波纹删、标尺+播放头、磁吸、1k clip 虚拟化 | 时间轴模型(轨道/clip/关键帧/吸附/播放时钟)+ 时间轴视图组件 | **sable-video** + **sable-widgets**(timeline 组件) |
+| 检查器:ui-fields.json 驱动的九组字段(数值 scrubby/表达式/色板/下拉/曲线) | NumberField/ColorField/SectionHeader/属性检查器 | **sable-widgets** |
+| 关键帧曲线/变速曲线编辑器(kf-editor/curve) | 曲线编辑器组件 + kurbo 曲线求值 | sable-widgets + **sable-paint**(kurbo) |
+| 预览播放器:Web 用 video 标签段级预览 + render_frame 精确单帧;桌面需把帧(PNG/JPEG/解码帧)上屏、播放时钟驱动 | 画布视图/视口变换/纹理上屏;播放时钟在 sable-video | **sable-canvas** + sable-video(render/解码仍走 cutforge-render) |
+| 示波器/波形/缩略图绘制(scope_data/media_peaks 已给 JSON 数据) | 自绘图形原语(vello)| **sable-paint** + widgets 容器 |
+| 撤销/重做 UI(历史面板回跳 N 笔)、命令面板、45 条可重绑定快捷键、菜单/对话框/toast | Command/History(undo 合并会话)、命令面板、keymap | **sable-foundation**(Command/History)+ sable-dock |
+| 深色达文西风、色值单一定义点、AA 对比度 | 设计 token 体系 | sable-widgets(tokens.rs) |
+| "壳不持真相":一切编辑经命令通道产生 Op | Sable 的 Command 系统只管 **UI 层**命令(视图态),文档语义命令直通 cutforge Engine | sable-foundation 与 cutforge-core 的边界(见 §6) |
 
 ## 6. 接入顺序建议
 
-**原则:桌面壳 = Lumina 前端 + cutforge 内核,经同一条命令通道说话;先远后近(先 HTTP 后进程内),先只读后可写。**
+**原则:桌面壳 = Sable 前端 + cutforge 内核,经同一条命令通道说话;先远后近(先 HTTP 后进程内),先只读后可写。**
 
-- **P0 骨架(lumina-dock 可用性验证)**:GPUI 窗口 + DockArea 三栏布局;HTTP 客户端连 `cutforge-cli serve`(Bearer token);`forge_open`/`/rpc` 查询投影 → 只读时间轴渲染(轨道行 + clip 块 + 播放头)。对应 cutforge 恢复门禁的三步冒烟:开窗 ✓ / 加载工程 ✓ / 渲染时间线 ✓。
-- **P1 时间轴可写(lumina-video 对齐)**:拖拽/trim/分割映射为 `ClipMove/ClipTrim/ClipSplit` 等命令经 `/rpc` 提交,SSE 收 Op 回流更新投影;磁吸/吸附由 lumina-video 提供,提交前本地预演、被拒(InvariantViolation)即回弹——与 Web 壳 ghost 手势同规格。
-- **P2 检查器与库面板(lumina-widgets 组件验收场)**:`GET /ui-fields` 动态生成检查器分组;NumField scrubby+表达式、ColorField 对接 grade 组;`GET /catalogs` 驱动转场/特效/动效库面板。
+- **P0 骨架(sable-dock 可用性验证)**:GPUI 窗口 + DockArea 三栏布局;HTTP 客户端连 `cutforge-cli serve`(Bearer token);`forge_open`/`/rpc` 查询投影 → 只读时间轴渲染(轨道行 + clip 块 + 播放头)。对应 cutforge 恢复门禁的三步冒烟:开窗 ✓ / 加载工程 ✓ / 渲染时间线 ✓。
+- **P1 时间轴可写(sable-video 对齐)**:拖拽/trim/分割映射为 `ClipMove/ClipTrim/ClipSplit` 等命令经 `/rpc` 提交,SSE 收 Op 回流更新投影;磁吸/吸附由 sable-video 提供,提交前本地预演、被拒(InvariantViolation)即回弹——与 Web 壳 ghost 手势同规格。
+- **P2 检查器与库面板(sable-widgets 组件验收场)**:`GET /ui-fields` 动态生成检查器分组;NumField scrubby+表达式、ColorField 对接 grade 组;`GET /catalogs` 驱动转场/特效/动效库面板。
 - **P3 预览闭环**:「精确预览」走 `render_frame`(PNG→GPUI 纹理,注意 100ms 量化=预览最高 ~10fps,适合单帧);连续播放预览按段级 source 预览(Web 壳同款)或后续接解码帧流(M6 渲染后端阶段再评估)。
 - **P4 专业面板**:波形(media_peaks)/缩略图(media_thumbnail)/示波器(scope_data)绘制;历史面板接 OpLog 查询;差异/冲突/标注面板。
 - **P5 进程内化(可选)**:桌面壳从 HTTP 改为进程内链接 cutforge-core/io(或内嵌 cutforge-mcp dispatch),消除序列化延迟;此步才考虑 workspace 锁的 UI 呈现(只读打开 vs 排他)。
 
 ## 7. 风险清单
 
-1. **许可交叉(最高优先)**:CutForge 原创部分为 ARL-1.0,`CORE-FILES` 所列 36 个核心文件**修改须回传开源**。Lumina(MIT OR Apache-2.0)若复制/改写这些文件的代码进入 lumina-* crate,会被传染。**纪律:Lumina 库侧零复制,只经 /rpc、Command JSON 契约、schema 消费 CutForge;apps/desktop 作为"壳"按 ARL-1.0 第 1.3 条属可闭源侧,但建议独立目录/仓库,不混入 lumina-* 源码。** 证据:`README.md:185-193`、`CORE-FILES`。
+1. **许可交叉(最高优先)**:CutForge 原创部分为 ARL-1.0,`CORE-FILES` 所列 36 个核心文件**修改须回传开源**。Sable(MIT OR Apache-2.0)若复制/改写这些文件的代码进入 sable-* crate,会被传染。**纪律:Sable 库侧零复制,只经 /rpc、Command JSON 契约、schema 消费 CutForge;apps/desktop 作为"壳"按 ARL-1.0 第 1.3 条属可闭源侧,但建议独立目录/仓库,不混入 sable-* 源码。** 证据:`README.md:185-193`、`CORE-FILES`。
 2. **壳语义漂移**:Web 壳有 check-shell-purity 门禁看住;桌面壳是第二个壳,若在 UI 侧手写时间线语义(吸附计算、重叠判定)就会产生第二真相。必须复用内核投影+命令,UI 侧只留"手势→命令"翻译。证据:`cutforge-wasm/lib.rs:5-8`(壳不持有真相)、README.md:107(R1 持久化禁令)。
-3. **GPUI 成熟度**:CutForge 桌面壳正是因 GPUI 0.2.2 不成熟而降级(apps/desktop/README.md:5-8);Lumina 押注同一技术栈(gpui 0.2.2 + gpui-component 0.7.0),该风险由 Lumina 主动承接,CutForge 的恢复条件(GPUI 稳定版)即 Lumina 的交付门槛。
+3. **GPUI 成熟度**:CutForge 桌面壳正是因 GPUI 0.2.2 不成熟而降级(apps/desktop/README.md:5-8);Sable 押注同一技术栈(gpui 0.2.2 + gpui-component 0.7.0),该风险由 Sable 主动承接,CutForge 的恢复条件(GPUI 稳定版)即 Sable 的交付门槛。
 4. **预览帧率**:render_frame 以 100ms 量化(frame.rs:15),连续高帧率预览不能依赖它;桌面端播放预览需要段级原始素材预览(画质代理,无转场/特效)或未来解码帧流——Web 壳同样如此(README.md:92),桌面端并不更差,但预期要管理。
-5. **双命令体系映射**:CutForge 45 条可重绑定快捷键 + 命令注册表(README.md:58)与 lumina-dock(gpui-component)的 keymap/动作体系是两套表;接入时要决定 keymap 单源放哪(建议:cutforge 命令 ID 为单源,Lumina keymap 只做绑定层)。
+5. **双命令体系映射**:CutForge 45 条可重绑定快捷键 + 命令注册表(README.md:58)与 sable-dock(gpui-component)的 keymap/动作体系是两套表;接入时要决定 keymap 单源放哪(建议:cutforge 命令 ID 为单源,Sable keymap 只做绑定层)。
 6. **ffmpeg 外部依赖**:渲染/探测全部依赖 ffmpeg/ffprobe 子进程(cutforge-render/lib.rs:4-5);桌面壳分发需捆绑或检测 ffmpeg——`cutforge-cli doctor` 已给出就绪自检范式(cutforge-cli/src/doctor.rs),桌面壳应复用而非重造。

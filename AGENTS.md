@@ -24,13 +24,13 @@ cargo build --release
 ## 2. Workspace 地图
 
 ```
-crates/lumina-core     L0 视口/命令系统/颜色/原子写   —— 零 UI 依赖,CI 单独 --no-default-features 编译
-crates/lumina-paint    L2 画笔/渐变/后端选择/GpuGuard
-crates/lumina-canvas   L3 场景图/命中测试/网格/脏矩形/LOD
-crates/lumina-widgets  L5 token/主题/动画/专用组件
-crates/lumina-dock     L4 Dock 工作台(gpui-component)
-crates/lumina-video    时间轴模型/吸附/播放时钟
-crates/lumina          门面(feature 矩阵)
+crates/sable-foundation     L0 视口/命令系统/颜色/原子写   —— 零 UI 依赖,CI 单独 --no-default-features 编译
+crates/sable-paint    L2 画笔/渐变/后端选择/GpuGuard
+crates/sable-canvas   L3 场景图/命中测试/网格/脏矩形/LOD
+crates/sable-widgets  L5 token/主题/动画/专用组件
+crates/sable-dock     L4 Dock 工作台(gpui-component)
+crates/sable-video    时间轴模型/吸附/播放时钟
+crates/sable          门面(feature 矩阵)
 examples/vector_editor 迷你 Illustrator
 examples/video_editor  迷你剪映
 docs/00..06            项目手册(活文档,代码进 main 必须同步更新对应章节)
@@ -44,7 +44,7 @@ docs/00..06            项目手册(活文档,代码进 main 必须同步更新�
 2. `#![deny(unsafe_code)]` 全 workspace,无豁免(v0.1 不接 ffmpeg 原生绑定)。
 3. 库层错误一律 `thiserror` 枚举,禁止 `unwrap`/`Box<dyn Error>` 出现在 pub API;内部可用 `expect` 但必须带原因字符串。
 4. 组件内**禁止硬编码颜色/魔法数字**,一切走 `tokens.rs` 设计 token(间距 4px 网格,圆角 4/6/8/12)。**控件高度体系(docs/upstream/02 实证裁决)**:22/26/32 三档是**下限**,实际控件高度 = max(档位值, 文本实际行高 + 2×垂直 padding)——VellumBench 实测固定行高会压 CJK 文字,必须按内容派生。
-5. lumina-* 内禁止业务名词("剪映/贴纸/CutForge"),业务词留在应用层。
+5. sable-* 内禁止业务名词("剪映/贴纸/CutForge"),业务词留在应用层。
 6. 世界坐标一律 f64,交给 GPU 前一刻才降 f32 且原点归位。
 7. 新 pub API 同步更新 docs/ 对应分册;从参考库移植的代码在文件头注释标注来源仓库与许可证。
 

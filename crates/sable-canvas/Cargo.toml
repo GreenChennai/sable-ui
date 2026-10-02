@@ -1,0 +1,36 @@
+[package]
+name = "sable-canvas"
+description = "L3 画布内核:场景图(slotmap)、无限画布、命中测试、网格、脏矩形、LOD、文本管线"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["cpu"]
+gpu = ["sable-paint/gpu"]
+cpu = ["sable-paint/cpu"]
+# gpui Element 胶水(画布嵌入 Dock 面板;分册二 §4.2)
+gpui = ["dep:gpui"]
+# GPUI 上屏的裸帧构造(gpui 0.2.2 RenderImage::new 只吃 image crate 的
+# animation::Frame;任务豁免项:image 以 optional 引入,无 PNG 编码步骤)
+png = ["dep:image"]
+
+[dependencies]
+sable-foundation.workspace = true
+sable-paint.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+slotmap.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+parley.workspace = true
+tracing.workspace = true
+gpui = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+
+[dev-dependencies]
+image.workspace = true
+proptest.workspace = true

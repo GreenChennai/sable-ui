@@ -2,7 +2,7 @@
 //!
 //! # 架构说明(M0 的镜像策略,务必读)
 //!
-//! 上游 [`lumina::canvas::gpui_element::LuminaCanvas`] 自持 `scene: Scene`
+//! 上游 [`sable::canvas::gpui_element::SableCanvas`] 自持 `scene: Scene`
 //! 与 `history: History` 字段(工具状态机直接写它们),无法借出给外部
 //! Document。M0 的统一策略(全部集中在宿主 `EditorApp::reconcile`,见
 //! `app.rs`):
@@ -19,10 +19,10 @@
 //! 3. 选中集以画布工具持有的为镜像,Document 只存副本供面板读。
 
 use gpui::AppContext as _;
-use lumina::core::command::{Command, History};
-use lumina::core::scene::{NodeId, Scene};
-use lumina::gpui;
-use lumina::gpui::Entity;
+use sable::core::command::{Command, History};
+use sable::core::scene::{NodeId, Scene};
+use sable::gpui;
+use sable::gpui::Entity;
 
 /// 矢量文档(权威编辑态)。
 pub struct Document {

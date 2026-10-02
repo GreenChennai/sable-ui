@@ -9,8 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-lumina = { path = "../../crates/lumina" }
+sable = { path = "../../crates/sable" }
 # 契约允许的追加依赖(报告已注明):RenderImage 裸帧构造(gpui 0.2.2 的
-# RenderImage::new 只吃 image crate 的 animation::Frame,与 lumina-canvas
+# RenderImage::new 只吃 image crate 的 animation::Frame,与 sable-canvas
 # "png" feature 的豁免同因),示例的 PreviewMonitor 合成帧上屏必需。
 image.workspace = true

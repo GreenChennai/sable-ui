@@ -8,6 +8,6 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# 只依赖门面:BezPath/Affine 走 lumina::kurbo 直通(07 报告 P2-2,门面已 re-export)
+# 只依赖门面:BezPath/Affine 走 sable::kurbo 直通(07 报告 P2-2,门面已 re-export)
 [dependencies]
-lumina = { path = "../../crates/lumina" }
+sable = { path = "../../crates/sable" }

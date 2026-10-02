@@ -7,17 +7,17 @@
 //! 公共形态(`cx.open_window` → 业务视图 → `gpui_component::Root` 包根),
 //! API 均以 gpui 0.2.2 / gpui-component 0.7.0 本地源码核实为准。
 
-use lumina::canvas::gpui_element::{CanvasTool, LuminaCanvas};
-use lumina::canvas::tool::{HandTool, PenTool, SelectTool};
-use lumina::dock::{LuminaPanel, WorkspacePresets};
-use lumina::gpui;
-use lumina::gpui::InteractiveElement as _;
-use lumina::gpui::{
+use sable::canvas::gpui_element::{CanvasTool, SableCanvas};
+use sable::canvas::tool::{HandTool, PenTool, SelectTool};
+use sable::dock::{SablePanel, WorkspacePresets};
+use sable::gpui;
+use sable::gpui::InteractiveElement as _;
+use sable::gpui::{
     App, AppContext as _, ClickEvent, Context, Div, Entity, FocusHandle, Focusable, IntoElement,
     KeyBinding, ParentElement as _, Render, Styled as _, Window, actions, div, px,
 };
-use lumina::gpui_component::button::Button;
-use lumina::gpui_component::dock::DockArea;
+use sable::gpui_component::button::Button;
+use sable::gpui_component::dock::DockArea;
 
 use crate::document::Document;
 use crate::inspector::InspectorHost;
@@ -42,7 +42,7 @@ pub fn bind_keys(cx: &mut App) {
 pub fn window_options() -> gpui::WindowOptions {
     gpui::WindowOptions {
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some("Lumina · 迷你 Illustrator(M0)".into()),
+            title: Some("Sable · 迷你 Illustrator(M0)".into()),
             ..Default::default()
         }),
         ..Default::default()
@@ -63,26 +63,26 @@ pub fn build_editor(window: &mut Window, cx: &mut App) -> Entity<EditorApp> {
 
     // 2. 画布(场景镜像自 doc;底色走主题)
     let canvas = cx.new(|cx| {
-        let mut canvas = LuminaCanvas::new(cx);
+        let mut canvas = SableCanvas::new(cx);
         canvas.scene = doc.read(cx).scene.read(cx).clone();
         canvas.base_color = palette.canvas_bg;
         canvas
     });
 
     // 3. 三段式 DockArea:左图层 / 中画布 / 右属性
-    let left = vec![LuminaPanel::create(
+    let left = vec![SablePanel::create(
         "图层",
         LayerHost::new(&doc, cx).into(),
         cx,
     )];
-    let center = LuminaPanel::create("画布", canvas.clone().into(), cx);
-    let right = vec![LuminaPanel::create(
+    let center = SablePanel::create("画布", canvas.clone().into(), cx);
+    let right = vec![SablePanel::create(
         "属性",
         InspectorHost::new(doc.clone(), cx).into(),
         cx,
     )];
     let dock =
-        WorkspacePresets::build_workspace("lumina-vector-editor", left, center, right, window, cx);
+        WorkspacePresets::build_workspace("sable-vector-editor", left, center, right, window, cx);
 
     // 4. 宿主视图(焦点先行,键位动作才有派发路径)
     let focus = cx.focus_handle();
@@ -93,17 +93,17 @@ pub fn build_editor(window: &mut Window, cx: &mut App) -> Entity<EditorApp> {
 /// 宿主视图(挂进 `gpui_component::Root` 的业务根)。
 pub struct EditorApp {
     doc: Entity<Document>,
-    canvas: Entity<LuminaCanvas>,
+    canvas: Entity<SableCanvas>,
     dock: Entity<DockArea>,
     focus: FocusHandle,
     /// 镜像策略的差异基准:上次与画布对齐时的场景快照。
-    doc_mirror: lumina::core::scene::Scene,
+    doc_mirror: sable::core::scene::Scene,
 }
 
 impl EditorApp {
     fn new(
         doc: Entity<Document>,
-        canvas: Entity<LuminaCanvas>,
+        canvas: Entity<SableCanvas>,
         dock: Entity<DockArea>,
         focus: FocusHandle,
         cx: &mut Context<Self>,

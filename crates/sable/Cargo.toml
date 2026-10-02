@@ -1,0 +1,42 @@
+[package]
+name = "sable"
+description = "Sable UI 门面:按场景点菜的组合入口(完整套件/只要核心/服务器端 CPU 渲染…)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# feature 矩阵照搬分册六 §2.2,典型用法:
+#   完整设计软件            sable = "0.1"
+#   CLI 只要命令系统        sable = { default-features = false, features = ["core"] }
+#   服务器 SVG→PNG(无 GPU) sable = { default-features = false, features = ["core", "cpu-render"] }
+#   小工具要画布不要视频     sable = { default-features = false, features = ["canvas"] }
+[features]
+default = ["full"]
+full = ["canvas", "widgets", "dock", "video"]
+# —— 单点场景 ——
+core = ["dep:sable-foundation"]
+canvas = ["core", "dep:sable-canvas", "sable-canvas/gpui", "sable-canvas/png"]
+widgets = ["canvas", "dep:sable-widgets"]
+dock = ["widgets", "dep:sable-dock"]
+video = ["canvas", "dep:sable-video"]
+# —— 渲染后端三选一(分册六 §6;运行期 SABLE_GPU_BACKEND 可覆盖)——
+backend-vulkan = ["sable-paint/backend-vulkan"]
+backend-dx12 = ["sable-paint/backend-dx12"]
+backend-auto = ["sable-paint/backend-auto"]
+# —— CPU 兜底(无 GPU 环境/服务器渲染)——
+cpu-render = ["sable-paint/cpu"]
+
+[dependencies]
+sable-paint.workspace = true
+# 几何/样式基础类型直通 re-export(07 报告 P2-2):用户画第一条 BezPath 必然要
+# kurbo,不该让用户自己猜版本对齐。版本恒与内部各 crate 对齐(同一 workspace 表)。
+kurbo.workspace = true
+peniko.workspace = true
+sable-foundation = { workspace = true, optional = true }
+sable-canvas = { workspace = true, optional = true }
+sable-widgets = { workspace = true, optional = true }
+sable-dock = { workspace = true, optional = true }
+sable-video = { workspace = true, optional = true }

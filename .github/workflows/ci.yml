@@ -25,8 +25,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
-      - name: lumina-core 零 UI 依赖纪律(分册六 §2.4)
-        run: cargo check -p lumina-core --no-default-features
+      - name: sable-foundation 零 UI 依赖纪律(分册六 §2.4)
+        run: cargo check -p sable-foundation --no-default-features
       - name: test
         run: cargo test --workspace
       - name: build (release)
@@ -41,18 +41,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: GPU 路径(backend-vulkan/dx12/auto 共用 gpu feature)
-        run: cargo check -p lumina-paint --features gpu
+        run: cargo check -p sable-paint --features gpu
       - name: 全 feature
         run: cargo check --workspace --all-features
       - name: 最小 feature(core-only 场景,分册六 §2.3)
-        run: cargo check -p lumina --no-default-features --features core
+        run: cargo check -p sable --no-default-features --features core
       - name: cpu-render 场景(服务器渲染)
-        run: cargo check -p lumina --no-default-features --features core,cpu-render
+        run: cargo check -p sable --no-default-features --features core,cpu-render
       - name: wgpu 单版本对齐纪律(07 报告 P0-B;gpu feature 下才进依赖图)
         run: |
-          N=$(cargo tree -p lumina-paint --features gpu -i wgpu | grep -c "wgpu v")
+          N=$(cargo tree -p sable-paint --features gpu -i wgpu | grep -c "wgpu v")
           echo "wgpu 版本数: $N"
-          [ "$N" = "1" ] || { cargo tree -p lumina-paint --features gpu -i wgpu; exit 1; }
+          [ "$N" = "1" ] || { cargo tree -p sable-paint --features gpu -i wgpu; exit 1; }
 
   # ubuntu 上跑 gpui 窗口示例需要系统库;只编译不运行
   linux-deps:

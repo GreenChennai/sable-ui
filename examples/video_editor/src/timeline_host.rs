@@ -1,6 +1,6 @@
 //! 时间轴宿主:widgets `TimelineView` 挂进底部 dock。
 //!
-//! widgets 真实签名(2026-10 以 crates/lumina-widgets/src/timeline_view.rs
+//! widgets 真实签名(2026-10 以 crates/sable-widgets/src/timeline_view.rs
 //! 为准):`TimelineView::new(Entity<Timeline>)`(无 cx)+ 消费式 builder
 //! `.on_seek(Fn(u64, &mut App))` / `.on_move_clip(Fn(ClipId, u64, &mut App))`
 //! / `.on_select_clip(Fn(ClipId, &mut App))`;播放头红线经
@@ -10,11 +10,11 @@
 use gpui::{
     App, AppContext as _, Entity, IntoElement, ParentElement as _, Render, Styled as _, div,
 };
-use lumina::gpui;
-use lumina::gpui::WeakEntity;
-use lumina::video::command::MoveClip;
-use lumina::video::model::ClipId;
-use lumina::widgets::timeline_view::TimelineView;
+use sable::gpui;
+use sable::gpui::WeakEntity;
+use sable::video::command::MoveClip;
+use sable::video::model::ClipId;
+use sable::widgets::timeline_view::TimelineView;
 
 use crate::player_view::PreviewMonitor;
 use crate::project::TimelineProject;

@@ -11,19 +11,19 @@ mod player_view;
 mod project;
 mod timeline_host;
 
-use lumina::gpui;
-use lumina::gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
-use lumina::gpui_component::Root;
+use sable::gpui;
+use sable::gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use sable::gpui_component::Root;
 
 fn main() {
     gpui::Application::new().run(|cx: &mut App| {
-        lumina::dock::init(cx);
+        sable::dock::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(lumina::gpui::TitlebarOptions {
-                title: Some("Lumina · 迷你剪映(M0)".into()),
+            titlebar: Some(sable::gpui::TitlebarOptions {
+                title: Some("Sable · 迷你剪映(M0)".into()),
                 ..Default::default()
             }),
             ..Default::default()

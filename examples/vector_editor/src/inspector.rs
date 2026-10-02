@@ -4,7 +4,7 @@
 //! 每帧按 Document 当前选中集**重建** `Vec<SectionSpec>` 喂给 widgets 的
 //! `InspectorPanel`——随选中集动态切换区块,分册四 §2。
 //!
-//! widgets 真实签名(2026-10 以 crates/lumina-widgets/src/inspector.rs 为准):
+//! widgets 真实签名(2026-10 以 crates/sable-widgets/src/inspector.rs 为准):
 //! `SectionSpec::new(title, rows)`;`RowSpec::Number { label, binding:
 //! Binding<f64>, range, step, unit }` / `RowSpec::Color { label, binding:
 //! Binding<Paint> }` / `RowSpec::Info { label, text: String }`;值的双向
@@ -16,12 +16,12 @@ use gpui::{
     App, AppContext as _, Component, Entity, IntoElement, ParentElement as _, Render, Styled as _,
     div,
 };
-use lumina::kurbo::Affine;
-use lumina::core::command::{SetFill, SetTransform};
-use lumina::core::scene::{NodeId, Paint};
-use lumina::gpui;
-use lumina::widgets::binding::Binding;
-use lumina::widgets::inspector::{InspectorPanel, RowSpec, SectionSpec};
+use sable::core::command::{SetFill, SetTransform};
+use sable::core::scene::{NodeId, Paint};
+use sable::gpui;
+use sable::kurbo::Affine;
+use sable::widgets::binding::Binding;
+use sable::widgets::inspector::{InspectorPanel, RowSpec, SectionSpec};
 
 use crate::document::Document;
 use crate::palette::{Palette, hsla_to_rgba8};

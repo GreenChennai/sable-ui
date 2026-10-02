@@ -3,11 +3,11 @@
 //!
 //! # 上屏路径
 //!
-//! 与 lumina-canvas `gpui_element` 同款 `canvas()` + `Window::paint_image`
+//! 与 sable-canvas `gpui_element` 同款 `canvas()` + `Window::paint_image`
 //! 读回兜底路径(gpui 0.2.2 已核实);帧构造走
 //! `image::RgbaImage → image::Frame → RenderImage::new`
 //! (gpui 0.2.2 的 RenderImage::new 只吃 image crate 裸帧,与
-//! lumina-canvas "png" feature 的豁免同因,示例 Cargo.toml 已加 image)。
+//! sable-canvas "png" feature 的豁免同因,示例 Cargo.toml 已加 image)。
 //!
 //! # 播放泵(docs/03 §7)
 //!
@@ -23,13 +23,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use lumina::gpui::{
+use sable::gpui::{
     App, Bounds, ClickEvent, Context, Corners, Entity, IntoElement, ParentElement as _, Pixels,
     Render, RenderImage, Styled as _, Window, canvas, div, px,
 };
-use lumina::video::frame::{Frame, FrameSource, SyntheticSource};
-use lumina::video::model::Timeline;
-use lumina::video::prelude::Player;
+use sable::video::frame::{Frame, FrameSource, SyntheticSource};
+use sable::video::model::Timeline;
+use sable::video::prelude::Player;
 
 use crate::palette::Palette;
 
@@ -130,7 +130,7 @@ impl PreviewMonitor {
 /// `Frame`(RGBA8 直通 alpha)→ gpui `RenderImage`。
 ///
 /// 合成源 alpha 恒 255,直通与预乘同值,无需转换(vello_cpu 路径才需
-/// 预乘语义,见 lumina-canvas gpui_element)。
+/// 预乘语义,见 sable-canvas gpui_element)。
 fn frame_to_render_image(frame: &Frame) -> Option<Arc<RenderImage>> {
     let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.data.clone())?;
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
@@ -172,7 +172,7 @@ impl Render for PreviewMonitor {
                         move |_bounds: Bounds<Pixels>, _window: &mut Window, _cx: &mut App| (),
                         move |bounds: Bounds<Pixels>, _: (), window: &mut Window, _cx: &mut App| {
                             if let Some(image) = &image {
-                                // 与 lumina-canvas gpui_element 同款上屏调用
+                                // 与 sable-canvas gpui_element 同款上屏调用
                                 let _ = window.paint_image(
                                     bounds,
                                     Corners::all(px(0.)),
@@ -196,7 +196,7 @@ impl Render for PreviewMonitor {
                     .h(px(40.))
                     .bg(palette.surface_1)
                     .child(
-                        lumina::gpui_component::button::Button::new("play-toggle")
+                        sable::gpui_component::button::Button::new("play-toggle")
                             .label(play_label)
                             .compact()
                             .on_click(cx.listener(|monitor, _: &ClickEvent, _, cx| {
