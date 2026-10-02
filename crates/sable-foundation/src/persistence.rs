@@ -14,7 +14,7 @@ use std::time::SystemTime;
 /// 语义,可直接覆盖已存在的目标文件;POSIX 上为原子替换。临时文件与目标同目录,
 /// 不存在跨卷问题。
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("lumi.tmp");
+    let tmp = tmp_path_for(path);
     let write_result = (|| {
         {
             let mut f = fs::File::create(&tmp)?;
@@ -28,6 +28,17 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     write_result
+}
+
+/// 原子写临时文件路径:与目标同目录 + pid 后缀。固定名在并发写同一目标时
+/// (自动保存 × 手动保存、双窗口同工程)会共享冲突或交错内容,进程级唯一名
+/// 消除该窗口(V4.0 T7,review R8)。
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let stem = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sable-atomic".to_string());
+    path.with_file_name(format!("{stem}.{}.tmp", std::process::id()))
 }
 
 /// 自动保存目录:`%APPDATA%/{app}/autosave`(Windows);Unix 用
@@ -128,6 +139,17 @@ mod tests {
         dir
     }
 
+    /// 目录里没有任何 *.tmp 残留(临时名含 pid 后缀,不硬编码具体名)
+    fn assert_no_tmp_residue(dir: &Path) {
+        let residue: Vec<PathBuf> = fs::read_dir(dir)
+            .expect("读目录")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "tmp"))
+            .collect();
+        assert!(residue.is_empty(), "不应残留临时文件: {residue:?}");
+    }
+
     #[test]
     fn atomic_write_creates_file_with_exact_content() {
         let dir = temp_dir("write");
@@ -135,8 +157,7 @@ mod tests {
         atomic_write(&path, b"hello sable").expect("首次写入");
         assert_eq!(fs::read(&path).expect("读回"), b"hello sable");
         // 落盘后不留 .tmp 残留
-        let tmp = path.with_extension("lumi.tmp");
-        assert!(!tmp.exists(), "rename 成功后临时文件应消失");
+        assert_no_tmp_residue(&dir);
     }
 
     #[test]
@@ -159,7 +180,27 @@ mod tests {
         let result = atomic_write(&bad, b"boom");
         assert!(result.is_err(), "写目录路径应失败");
         assert_eq!(fs::read(&path).expect("原文件仍在"), b"good");
-        assert!(!dir.join("sub.sable.tmp").exists(), "失败后无 .tmp 残留");
+        assert_no_tmp_residue(&dir);
+    }
+
+    #[test]
+    fn atomic_write_tmp_name_is_pid_unique_per_target() {
+        let dir = temp_dir("pid-unique");
+        let path = dir.join("doc.sable");
+        // 两次写同一目标:临时名固定时会在并发场景共享冲突,pid 后缀保证
+        // 同进程内路径确定、跨进程不撞(结构断言,不真开双进程)
+        assert_eq!(
+            tmp_path_for(&path),
+            tmp_path_for(&path),
+            "同进程同目标临时名确定"
+        );
+        assert_ne!(
+            tmp_path_for(&path),
+            tmp_path_for(&dir.join("other.sable")),
+            "不同目标临时名不同"
+        );
+        atomic_write(&path, b"pid").expect("写入");
+        assert_no_tmp_residue(&dir);
     }
 
     #[test]

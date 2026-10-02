@@ -30,7 +30,7 @@ pub enum CoreError {
     Io(#[from] std::io::Error),
 
     /// `.sable` 文件头魔数不符(不是本应用的工程文件)。
-    #[error(".sable 魔数不符:文件头不是 b\"LUMI\"")]
+    #[error(".sable 魔数不符:文件头不是 b\"SABL\"")]
     InvalidMagic,
 
     /// `.sable` 文件版本比当前程序新(更高版本程序写出的文件)。

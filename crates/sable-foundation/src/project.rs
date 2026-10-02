@@ -270,9 +270,16 @@ mod tests {
 
         let bytes = save_project(&path, &scene, &history).expect("保存");
         assert!(bytes > HEADER_LEN, "写入应含头部与数据体");
+        // 原子写不残留临时文件(临时名含 pid,按扩展名扫描)
+        let tmp_residue: Vec<PathBuf> = fs::read_dir(&dir)
+            .expect("读目录")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "tmp"))
+            .collect();
         assert!(
-            !path.with_extension("lumi.tmp").exists(),
-            "原子写不残留临时文件"
+            tmp_residue.is_empty(),
+            "原子写不残留临时文件: {tmp_residue:?}"
         );
 
         let data = load_project(&path).expect("读回");

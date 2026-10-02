@@ -53,6 +53,10 @@ cargo run -p vector_editor    # 迷你 Illustrator 示例
 cargo run -p video_editor     # 迷你剪映示例
 ```
 
+> 示例是**库能力演示**而非成品应用:vector_editor 的画布工具编辑暂不接文档撤销栈
+> (v4.1 接线);video_editor 目前演示时间轴数据模型。边界详见 CHANGELOG 与
+> [docs/10](docs/10-迭代计划V4.0.md)。
+
 ## 上游计划(本库的存在理由)
 
 | 上游项目 | 现状 | Sable 接管方式 |
@@ -89,16 +93,22 @@ video editing, on Windows first.
   (design tokens, animated components), `sable-dock` (workspace), `sable` (facade).
 - **Highlights**: every document mutation is an undoable command (property-tested),
   a GSAP-style animation timeline with spring physics, a per-node effect stack
-  (blend modes / shadows / glow / color matrices, CPU verified + GPU pipeline ready),
-  `.sable` project format with history that survives save/load, and golden-image
-  render regression tests.
-- **Status**: v1.0. MSRV 1.85 (Rust 2024). Windows first; wgpu backends keep Linux in reach.
+  (blend modes / shadows / glow / color matrices — rendered through the CPU scene
+  pipeline since v4.0; GPU effect passes remain on the roadmap),
+  canvas text with measured layout metrics, an automated Rhai script sandbox
+  (operation-capped, fully undoable), SVG import/export with gradient & text
+  handling, `.sable` project format with history that survives save/load, and
+  golden-image render regression tests.
+- **Status**: v4.0. MSRV 1.85 (Rust 2024). Windows first; wgpu backends keep Linux in reach.
+- **Examples are demos, not finished apps**: `vector_editor`'s canvas-tool edits
+  bypass the document undo stack for now (wiring lands in v4.1), and
+  `video_editor` demonstrates the timeline data model rather than a usable editor.
 - **Handbook**: [docs/00-总纲.md](docs/00-总纲.md) (Chinese, 8 volumes). See
   [CHANGELOG.md](CHANGELOG.md) and [docs/release-checklist.md](docs/release-checklist.md).
 
 ```toml
 [dependencies]
-sable = { version = "1.0" }                      # full suite
+sable = { version = "4.0" }                      # full suite
 # CLI / headless: sable = { default-features = false, features = ["core"] }
 # server-side render: features = ["core", "cpu-render"]
 ```

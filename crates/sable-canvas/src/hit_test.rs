@@ -57,9 +57,21 @@ impl SceneHitTest for Scene {
                 NodeContent::Path(p) => {
                     // 1. 填充命中:点在路径内(仅有填充时)
                     let in_fill = p.fill.is_some() && p.path.contains(local);
-                    // 2. 描边命中:点到路径距离 <= 线宽/2 + 容差
+                    // 2. 描边命中:点到路径距离 <= 线宽/2 + 容差。
+                    //    tolerance 是世界口径(screen_tolerance = 4px/zoom),
+                    //    distance_to_path 在节点局部坐标比较——节点含缩放 k 时
+                    //    局部容差应除以 k,否则放大节点命中域偏大、缩小偏小
+                    //    (V4.0 T7,review R8)。非均匀缩放取面积等效 |det|^½
+                    //    (与 SVG 径向渐变导入同一近似纪律)。
                     let near_stroke = p.stroke.as_ref().is_some_and(|s| {
-                        distance_to_path(&p.path, local) <= s.width / 2.0 + tolerance
+                        let c = xform.as_coeffs();
+                        let k = (c[0] * c[3] - c[1] * c[2]).abs().sqrt();
+                        let local_tol = if k > f64::EPSILON {
+                            tolerance / k
+                        } else {
+                            tolerance
+                        };
+                        distance_to_path(&p.path, local) <= s.width / 2.0 + local_tol
                     });
                     in_fill || near_stroke
                 }
@@ -382,6 +394,38 @@ mod tests {
         assert_eq!(scene.hit_test(Point::new(10.0, 0.3), 0.5), Some(id));
         // 距离 3 > 0.5 + 0.5 → 不中
         assert_eq!(scene.hit_test(Point::new(5.0, 3.0), 0.5), None);
+    }
+
+    #[test]
+    fn stroke_tolerance_scales_with_node_transform() {
+        // 局部线段 (0,0)-(100,0)、线宽 2,节点放大 2 倍:世界视觉半宽 = 2,
+        // 世界容差 4 → 世界纵向 5 处应在命中域内(3 <= 4),8 处不在(6 > 4)。
+        // 旧实现把世界容差直接丢进局部坐标(未除 k),放大节点命中域虚大一倍:
+        // 世界 8 处(局部 4 <= 1 + 4)会误命中(V4.0 T7 回归)。
+        let mut scene = Scene::new();
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((100.0, 0.0));
+        let id = scene
+            .add_node(
+                None,
+                "放大线段",
+                NodeContent::Path(PathNode {
+                    path,
+                    fill: None,
+                    stroke: Some(StrokeStyle {
+                        paint: Paint::Solid([0, 0, 0, 255]),
+                        width: 2.0,
+                    }),
+                }),
+            )
+            .expect("线段");
+        scene.node_mut(id).expect("节点").transform = kurbo::Affine::scale(2.0);
+
+        // 视觉描边缘(世界 y=2)外 3:3 <= 4 → 命中
+        assert_eq!(scene.hit_test(Point::new(50.0, 5.0), 4.0), Some(id));
+        // 视觉描边缘外 6:6 > 4 → 不中(旧实现此处误命中)
+        assert_eq!(scene.hit_test(Point::new(50.0, 8.0), 4.0), None);
     }
 
     #[test]

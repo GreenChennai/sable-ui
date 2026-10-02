@@ -2,6 +2,52 @@
 
 本库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [4.0.0] - 2026-10-02
+
+V4.0 迭代(docs/10-迭代计划V4.0.md):V3.0 复盘 review(3 路并行代码核查)实锤
+"库层有、接线无"的八项声称差距(R1-R8)→ 本轮全部收口,**声称即现实**。
+
+### Added
+- **效果栈接入场景渲染**(G20 P0,T2):`render_scene` 真实消费 `node.effects`——
+  EffectSurface 离屏 → `apply_effects_rgba` → `draw_rgba` 回贴,包裹在 push_blend
+  层内(效果先于混合);Off 档/空栈/不支持回贴的 sink 走与 v3.0 字面相同的直绘路径
+  (输出逐位一致);`VelloCpuSink` 补 `draw_rgba` 真实现;golden 第 6 基线
+  `effects_shadow`(旧 5 张 sha1 逐位不变)。此前效果管线只有自测调用(review R1)
+- **SVG 文本互通**(G22 P0,T3,收口 V3.0 T1.3):导入 `usvg Text::flattened()` 轮廓化
+  (并修复真正静默丢因:默认 fontdb 空库致文本连解析树都进不了,补 load_system_fonts);
+  导出 Text→`<text>`(XML 转义;纯平移拆 x/y)+ `export_svg_with_report`。
+  此前文本双向静默丢(review R3)
+- **主题接线**(G23 P1,T5):`theme::set_mode_animated`(reduced_motion 直切/过渡两路)+
+  `advance_transition` 帧泵(落定零帧提交)+ `inject` 取消活动过渡;story 两处瞬切
+  换过渡帧泵 + 紫 accent 注入/还原演示。此前 `ThemeTransition`/`inject` 是零调用死代码
+  (review R5)
+- **脚本沙盒资源限制**(G25 P1,T4):默认 `set_max_operations`(10^6,`while true{}`
+  确定性报 `ScriptError::Limit` 不挂死宿主);坐标 coerce 后 `is_finite` 拒收;
+  id 编码 u64↔i64 位型无损(高位 key 不再被负数守卫误拒)
+- **文本精度与缓存治理**(G24 P1,T6):Text bbox 弃 0.6em/字符粗估改实测布局尺寸
+  (CJK ≈1.0em/字),命中/框选/剔除/LOD/选中框/脏矩形全链路换实测口径;TD-10 布局
+  缓存 256 条 LRU + evictions 计数;字号非有限/≤0 双入口钳制(NaN 不进缓存键)
+
+### Fixed
+- **事务 redo id 治理缺口**(G21 P0,T1):`BatchCommand` 覆写 `apply_heal` 与 revert
+  对称——修复 `begin_transaction→AddNode→SetFill(新id)→undo→redo` 后 SetFill 静默
+  失配(CHANGELOG 3.0 该修复的事务变体,review R2);随机事务序列 proptest 覆盖
+  undo+redo 双向
+- SVG spreadMethod reflect/repeat 降级不再静默(计入 `simplified_spreads`);导出
+  渐变 defs id 改计数器单调派生(消除 `g{len+Σ字节}` 可碰撞)(G26,T3)
+- a11y-notes §3 六组件虚标 "✅ V3.0" 改回 ☐ 遗留(v4.1 起)——`.with_label` 在
+  widgets 中不存在(review R4)
+- InvalidMagic 错误消息 `b"LUMI"` → `b"SABL"`(1.0 更名遗留)
+- `atomic_write` 临时名含 pid(并发写同一目标不再共享冲突;原名残留 `.lumi`)
+- 描边命中容差世界/局部坐标口径:节点缩放 k 时局部容差除 k(放大节点命中域不再虚大)
+- 根 Cargo.toml 版本策略注释 gpui-component 0.7.0 → 0.5.1(以 Cargo.lock 为准;
+  门面/dock 的 0.5.1 文档本就正确)
+
+### Changed
+- 文档诚实化:README Status v1.0→v4.0、效果栈措辞按实况(GPU 效果 pass 明示未做)、
+  示例定位标注为"库能力演示"(vector_editor 画布撤销断裂、video_editor 数据模型演示
+  均如实披露);docs/05 里程碑状态列冻结声明(以 CHANGELOG + 08/09/10 迭代计划为准)
+
 ## [3.0.0] - 2026-10-02
 
 V3.0 迭代(docs/09-迭代计划V3.0.md):第二轮对标(Inkscape/Figma/Qt QTextDocument/

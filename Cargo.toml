@@ -15,14 +15,14 @@ members = [
 ]
 
 [workspace.package]
-version = "3.0.0"
+version = "4.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/GreenChennai/sable-ui"
 authors = ["GreenChennai"]
 
-# 版本策略(2026-10 锁定):kurbo 0.13 / peniko 0.6 / parley 0.11 / vello 0.10 / gpui 0.2.2 / gpui-component 0.7.0
+# 版本策略(2026-10 锁定):kurbo 0.13 / peniko 0.6 / parley 0.11 / vello 0.10 / gpui 0.2.2 / gpui-component 0.5.1
 # 手册对应:docs/02(渲染/画布)、docs/03(框架层)、docs/04(组件)、docs/06(feature 矩阵)
 # 升级走"升级窗口"单独分支(分册六 TD-01),不在日常迭代中顺手升级。
 
