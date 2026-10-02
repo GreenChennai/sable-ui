@@ -175,3 +175,97 @@ mod tests {
         assert!(all.iter().all(|h| h.a > 0.99), "画布语义色不透明");
     }
 }
+
+// ---------------------------------------------------------------------------
+// V3.0 T3:主题定制注入 + 全 token 过渡(纯函数状态机,帧泵在应用层)
+// ---------------------------------------------------------------------------
+
+/// 注入自定义调色板(第三方主题入口,V3.0 T3.1):替换全局 token 色彩,
+/// 组件下一帧生效。组件读色走全局态,故注入即全量换肤。
+pub fn inject(cx: &mut App, colors: crate::tokens::ColorTokens, mode: ThemeMode) {
+    let next = match mode {
+        ThemeMode::Dark => SableTheme::dark(),
+        ThemeMode::Light => SableTheme::light(),
+    };
+    let mut themed = next;
+    themed.colors = colors;
+    cx.set_global(themed);
+}
+
+/// 主题过渡状态机(V3.0 T3.2,纯函数;对应分册六 §4.3 #14):
+/// `tokens_at(now)` 对全部色彩 token 做 lerp_hsla 最短弧插值。
+/// 帧泵由应用层驱动:过渡期间每帧 `set_global(过渡态)` + `cx.notify()`。
+pub struct ThemeTransition {
+    from: crate::tokens::ColorTokens,
+    to: crate::tokens::ColorTokens,
+    started_ms: f64,
+    duration_ms: f64,
+}
+
+impl ThemeTransition {
+    pub fn new(
+        from: crate::tokens::ColorTokens,
+        to: crate::tokens::ColorTokens,
+        now_ms: f64,
+        duration_ms: f64,
+    ) -> Self {
+        Self {
+            from,
+            to,
+            started_ms: now_ms,
+            duration_ms: duration_ms.max(1.0),
+        }
+    }
+
+    /// 过渡进度 0..=1(已结束为 1.0)。
+    pub fn progress_at(&self, now_ms: f64) -> f64 {
+        ((now_ms - self.started_ms) / self.duration_ms).clamp(0.0, 1.0)
+    }
+
+    pub fn is_running(&self, now_ms: f64) -> bool {
+        now_ms < self.started_ms + self.duration_ms
+    }
+
+    /// 该时刻的全量 token(OutCubic 缓动 + lerp_hsla 最短弧)。
+    pub fn tokens_at(&self, now_ms: f64) -> crate::tokens::ColorTokens {
+        let t = crate::anim::Easing::OutCubic.apply(self.progress_at(now_ms));
+        let (a, b) = (&self.from, &self.to);
+        let l = |x: gpui::Hsla, y: gpui::Hsla| crate::anim::lerp_hsla(x, y, t);
+        crate::tokens::ColorTokens {
+            surface_0: l(a.surface_0, b.surface_0),
+            surface_1: l(a.surface_1, b.surface_1),
+            surface_2: l(a.surface_2, b.surface_2),
+            surface_3: l(a.surface_3, b.surface_3),
+            surface_4: l(a.surface_4, b.surface_4),
+            border_subtle: l(a.border_subtle, b.border_subtle),
+            border_strong: l(a.border_strong, b.border_strong),
+            text_primary: l(a.text_primary, b.text_primary),
+            text_secondary: l(a.text_secondary, b.text_secondary),
+            text_disabled: l(a.text_disabled, b.text_disabled),
+            accent: l(a.accent, b.accent),
+            accent_muted: l(a.accent_muted, b.accent_muted),
+            danger: l(a.danger, b.danger),
+            warning: l(a.warning, b.warning),
+            success: l(a.success, b.success),
+        }
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+    #[test]
+    fn theme_transition_interpolates_monotonically() {
+        let from = crate::tokens::ColorTokens::dark();
+        let to = crate::tokens::ColorTokens::light();
+        let tr = ThemeTransition::new(from, to, 0.0, 200.0);
+        assert!(!tr.is_running(200.0));
+        let mid = tr.tokens_at(100.0);
+        assert!(mid.surface_0.l > from.surface_0.l, "dark→light 中途应变亮");
+        assert!(mid.surface_0.l < to.surface_0.l);
+        assert_eq!(tr.tokens_at(250.0).surface_0, to.surface_0, "结束精确到位");
+    }
+
+    // 注:reduced_motion 全局开关有并行测试竞态窗口(flip/interact 同款已知),
+    // 主题过渡的应用层直切语义由文档约束,不在并行测试中触碰全局开关。
+}
