@@ -19,6 +19,8 @@
 //! | [`color`] | `color` + `theme` |
 //! | [`gradient_editor`] | `color` + `binding` + `theme` |
 //! | [`layer_panel`] | `layer-panel` + `theme` |
+//! | [`layer_tree`] | `layer-panel` + `theme`(V2.0 T2,与 layer_panel 同 feature)|
+//! | [`effect_stack`] | `inspector` + `theme`(V2.0 T4,效果栈面板)|
 //! | [`inspector`] | `inspector` + `color` + `theme`(number-field/binding 由 Cargo 特性依赖保证)|
 //! | [`timeline_view`] | `timeline` + `theme` |
 //! | [`curve_editor`] | `curve-editor` + `theme` |
@@ -46,6 +48,10 @@ pub mod binding;
 pub mod color;
 #[cfg(all(feature = "curve-editor", feature = "theme"))]
 pub mod curve_editor;
+/// 效果栈面板(V2.0 T4;inspector 特性链带来 number-field→anim,interact 的
+/// hover_tint 随之可用,同 property_row 的门控口径)。
+#[cfg(all(feature = "inspector", feature = "theme"))]
+pub mod effect_stack;
 #[cfg(feature = "anim")]
 pub mod flip;
 #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
@@ -56,6 +62,9 @@ pub mod inspector;
 pub mod interact;
 #[cfg(all(feature = "layer-panel", feature = "theme"))]
 pub mod layer_panel;
+/// 树形图层面板(V2.0 T2)。
+#[cfg(all(feature = "layer-panel", feature = "theme"))]
+pub mod layer_tree;
 #[cfg(all(feature = "number-field", feature = "theme"))]
 pub mod number_field;
 #[cfg(all(feature = "inspector", feature = "theme"))]
@@ -80,6 +89,11 @@ pub mod prelude {
     pub use crate::color::{ColorWell, ColorWheel};
     #[cfg(all(feature = "curve-editor", feature = "theme"))]
     pub use crate::curve_editor::CurvePreview;
+    #[cfg(all(feature = "inspector", feature = "theme"))]
+    pub use crate::effect_stack::{
+        EffectStackCallbacks, EffectStackPanel, EffectStackSpec, add_presets, demo_entries,
+        effect_label, effect_stack_panel, row_move_enabled,
+    };
     #[cfg(feature = "anim")]
     pub use crate::flip::FlipTracker;
     #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
@@ -93,6 +107,8 @@ pub mod prelude {
     };
     #[cfg(all(feature = "layer-panel", feature = "theme"))]
     pub use crate::layer_panel::LayerPanel;
+    #[cfg(all(feature = "layer-panel", feature = "theme"))]
+    pub use crate::layer_tree::LayerTreePanel;
     #[cfg(all(feature = "number-field", feature = "theme"))]
     pub use crate::number_field::NumberField;
     #[cfg(all(feature = "inspector", feature = "theme"))]

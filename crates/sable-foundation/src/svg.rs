@@ -553,4 +553,83 @@ mod tests {
         let (_, report) = import_svg(svg).expect("含文本 SVG 可导入");
         assert!(report.nodes >= 1);
     }
+
+    // —— V2.0 T3:解析器模糊友好化(docs/08 §3 T3;分册六 §1.3)——
+    //
+    // proptest 冒烟:随机/乱构输入只允许 Ok/Err,绝不 panic(防线次序:
+    // 大小上限 → usvg 解析 Result → 导入深度上限 → .sable 魔数/版本/反序列化)。
+    // .sable 侧的 load_project 以路径为注入点,经临时文件投喂(本文件因
+    // 写冲突封锁只在此追加,project.rs 未动);CI 以 `prop_sv` 前缀过滤运行。
+
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use proptest::prelude::*;
+
+    use crate::project::{SABLE_MAGIC, SABLE_VERSION, load_project};
+
+    /// 每个用例独占的临时文件路径(进程 id + 自增计数,零随机零 sleep,
+    /// 与 project.rs tests 的 temp_dir 同款纪律)。
+    fn fuzz_temp_path(tag: &str) -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "sable-foundation-svg-fuzz-{serial}-{tag}-{}",
+            std::process::id()
+        ))
+    }
+
+    /// 随机字节串(0..4096 任意 u8)→ String:非法 UTF-8 走替换字符,
+    /// 与"用户把二进制文件拖进导入框"同型。
+    fn any_svg_text() -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<u8>(), 0..4096)
+            .prop_map(|v| String::from_utf8_lossy(&v).into_owned())
+    }
+
+    /// `.sable` 模糊输入:纯随机字节(大多死在头部校验),或
+    /// "合法 SABL 头 + 随机体"(深入 MessagePack 反序列化面)。
+    fn any_project_file() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![
+            proptest::collection::vec(any::<u8>(), 0..512),
+            proptest::collection::vec(any::<u8>(), 0..512).prop_map(|body| {
+                let mut bytes = Vec::with_capacity(SABLE_MAGIC.len() + 4 + body.len());
+                bytes.extend_from_slice(SABLE_MAGIC);
+                bytes.extend_from_slice(&SABLE_VERSION.to_le_bytes());
+                bytes.extend_from_slice(&body);
+                bytes
+            }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// 随机字节串喂导入:永不 panic,只 Ok/Err(命中大小上限或 usvg 解析错误皆合法)。
+        #[test]
+        fn prop_sv_random_bytes_never_panic(input in any_svg_text()) {
+            let _ = import_svg_with_limit(&input, 4096);
+        }
+
+        /// 合法导出串随机截断(0..len,回退到 UTF-8 边界):永不 panic。
+        #[test]
+        fn prop_sv_truncated_export_never_panic(cut in 0usize..1024) {
+            let exported = export_svg(&demo_scene());
+            let mut end = cut.min(exported.len());
+            while end > 0 && !exported.is_char_boundary(end) {
+                end -= 1;
+            }
+            let _ = import_svg_with_limit(&exported[..end], 4096);
+        }
+
+        /// 随机字节喂 `.sable` 读路径(魔数/版本/反序列化三层防御):
+        /// 永不 panic,只 Ok/Err;panic 即 proptest 判负。
+        #[test]
+        fn prop_sv_project_file_never_panic(bytes in any_project_file()) {
+            let path = fuzz_temp_path("project");
+            std::fs::write(&path, &bytes).expect("写模糊输入临时文件");
+            // Ok/Err 皆合法;断言本体 = "不 panic"
+            let _ = load_project(&path);
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }

@@ -50,6 +50,8 @@ jobs:
         run: cargo check -p sable --no-default-features --features core,cpu-render
       - name: SVG 互通测试(V2.0 T1)
         run: cargo test -p sable-foundation --features svg svg::
+      - name: 解析器模糊冒烟(proptest 随机输入永不 panic)
+        run: cargo test -p sable-foundation --features svg prop_sv
       - name: wgpu 单版本对齐纪律(07 报告 P0-B;gpu feature 下才进依赖图)
         run: |
           N=$(cargo tree -p sable-paint --features gpu -i wgpu | grep -c "wgpu v")

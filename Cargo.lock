@@ -5701,7 +5701,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sable"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "kurbo 0.13.1",
  "peniko",
@@ -5715,7 +5715,7 @@ dependencies = [
 
 [[package]]
 name = "sable-canvas"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "criterion",
  "gpui",
@@ -5734,7 +5734,7 @@ dependencies = [
 
 [[package]]
 name = "sable-dock"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -5749,7 +5749,7 @@ dependencies = [
 
 [[package]]
 name = "sable-foundation"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "criterion",
  "kurbo 0.13.1",
@@ -5764,7 +5764,7 @@ dependencies = [
 
 [[package]]
 name = "sable-paint"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "kurbo 0.13.1",
  "peniko",
@@ -5777,7 +5777,7 @@ dependencies = [
 
 [[package]]
 name = "sable-video"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "kurbo 0.13.1",
  "proptest",
@@ -5790,7 +5790,7 @@ dependencies = [
 
 [[package]]
 name = "sable-widgets"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -6277,7 +6277,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "story"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "image",
  "sable",
@@ -7317,7 +7317,7 @@ dependencies = [
 
 [[package]]
 name = "vector_editor"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "sable",
 ]
@@ -7404,7 +7404,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video_editor"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "image",
  "sable",

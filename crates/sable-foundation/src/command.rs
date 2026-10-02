@@ -219,6 +219,55 @@ impl History {
         self.undo.len()
     }
 
+    /// 当前撤销光标:已生效(执行且未撤销)的命令步数——对标 Qt
+    /// `QUndoStack::index`(V2.0 T6,docs/08 §3)。
+    ///
+    /// `exec`(事务合一步、merge 合一步)、`undo`、`redo` 全部经由撤销栈
+    /// 维护它:光标恒等于撤销栈长度,不设独立字段即无失同步风险。与
+    /// [`History::undo_len`] 同值并存是语义分工——后者面向自动保存的
+    /// "深度计量",本 API 面向"回到第 i 步"的光标定位,供历史面板与
+    /// 分支语义([`History::truncate_to`]/[`History::truncate_after`])取用。
+    pub fn cursor(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// 批量回退/前进到指定光标 `cursor`,返回**实际到达**的光标值
+    /// (对标 Qt `QUndoStack::setIndex`)。
+    ///
+    /// 光标 `i` 的语义:前 `i` 步已生效——`truncate_to(i)` 后的场景状态与
+    /// "执行完第 i 步"完全一致(roundtrip 测试逐光标断言)。可达区间为
+    /// `0..=cursor() + redo 深度`(完整历史);越界**不 panic**,钳制到
+    /// 可达范围并把到达值返回给调用方(历史面板据此高亮真实位置)。
+    ///
+    /// 实现复用既有 [`History::undo`]/[`History::redo`] 逐步走位(不重复
+    /// 命令逻辑,id 重映射广播等行为与单步操作完全一致)。
+    pub fn truncate_to(&mut self, cursor: usize, scene: &mut Scene) -> usize {
+        let target = cursor.min(self.undo.len() + self.redo.len());
+        while self.undo.len() > target {
+            self.undo(scene);
+        }
+        while self.undo.len() < target {
+            self.redo(scene);
+        }
+        self.undo.len()
+    }
+
+    /// 截断:丢弃光标 `cursor` 之后的全部历史(撤销栈尾部 + 整个 redo 栈),
+    /// `cursor` 即新分支起点("回到这里另起一支")。
+    ///
+    /// 截断后旧 redo 永久不可达,后续 `exec` 在 `cursor` 上叠加新命令。
+    /// G8 协作基座关联(docs/08 §2 差距矩阵):分支 = 各端自同一光标截断
+    /// 后各自追加变更流,本 API 是该语义的最小地基(CRDT 本体不进 v2.0)。
+    ///
+    /// `cursor` 超过当前光标时只清 redo、不动撤销栈(钳制不 panic,与
+    /// [`History::truncate_to`] 纪律一致);事务中(in-flight)的命令不在
+    /// 光标时间线上,`end_transaction` 后作为新分支的一步入栈。
+    pub fn truncate_after(&mut self, cursor: usize) {
+        // Vec::truncate 自带钳制(超长无操作),无需自查越界
+        self.undo.truncate(cursor);
+        self.redo.clear();
+    }
+
     /// 清空全部历史(如"打开新文档")。
     pub fn clear(&mut self) {
         self.undo.clear();
@@ -1573,6 +1622,270 @@ mod tests {
         history.clear();
         assert!(!history.can_undo() && !history.can_redo());
         assert_eq!(history.undo_len(), 0);
+    }
+
+    // —— 撤销光标(V2.0 T6,docs/08 §3;对标 Qt QUndoStack::index)——
+
+    /// 对 4 个不同节点各执行一条 SetTransform(类型/节点互异,绝不 merge,
+    /// 正好 4 步;属性命令不改动结构,快照逐字节可比)。
+    fn exec_four_transforms(history: &mut History, scene: &mut Scene, ids: [NodeId; 4]) {
+        for (i, &id) in ids.iter().enumerate() {
+            history.exec(
+                SetTransform {
+                    id,
+                    old: Affine::IDENTITY,
+                    new: Affine::translate((i as f64 + 1.0, 0.0)),
+                }
+                .boxed(),
+                scene,
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_tracks_exec_undo_redo_transaction_and_merge() {
+        let (mut scene, root, a, _sub, b, c) = demo_scene();
+        let mut history = History::new();
+        assert_eq!(history.cursor(), 0, "新栈光标在 0");
+
+        exec_four_transforms(&mut history, &mut scene, [a, b, c, root]);
+        assert_eq!(history.cursor(), 4);
+        assert_eq!(history.undo_len(), 4);
+
+        // merge 合步:同节点连续 SetFill 合并,光标只前进 1
+        let a_fill = scene.path(a).and_then(|p| p.fill.clone());
+        history.exec(
+            SetFill {
+                id: a,
+                old: a_fill,
+                new: Some(Paint::Solid([1, 2, 3, 4])),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetFill {
+                id: a,
+                old: Some(Paint::Solid([1, 2, 3, 4])),
+                new: Some(Paint::Solid([5, 6, 7, 8])),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(history.cursor(), 5, "两条 SetFill 合并成一步,光标 4→5");
+
+        // 事务 = 一步
+        history.begin_transaction();
+        history.exec(
+            SetVisibility {
+                id: c,
+                old: true,
+                new: false,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.exec(
+            SetOpacity {
+                id: root,
+                old: 1.0,
+                new: 0.5,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        history.end_transaction();
+        assert_eq!(history.cursor(), 6, "事务整体算一步,光标 5→6");
+
+        // undo/redo 精确走位
+        history.undo(&mut scene);
+        assert_eq!(history.cursor(), 5);
+        history.undo(&mut scene);
+        assert_eq!(history.cursor(), 4);
+        history.redo(&mut scene);
+        assert_eq!(history.cursor(), 5);
+    }
+
+    #[test]
+    fn truncate_to_roundtrip_matches_step_snapshot() {
+        let (mut scene, root, a, _sub, b, c) = demo_scene();
+        let mut history = History::new();
+        // 光标 0 = 初始态;每执行一步存一份快照
+        let mut snapshots = vec![scene.clone()];
+        for (i, id) in [a, b, c, root].into_iter().enumerate() {
+            history.exec(
+                SetTransform {
+                    id,
+                    old: Affine::IDENTITY,
+                    new: Affine::translate((i as f64 + 1.0, 0.0)),
+                }
+                .boxed(),
+                &mut scene,
+            );
+            snapshots.push(scene.clone());
+        }
+        assert_eq!(history.cursor(), 4);
+
+        // 逐光标断言:truncate_to(i) 后场景 == 第 i 步执行后的快照(undo 方向)
+        for (i, snap) in snapshots.iter().enumerate() {
+            let reached = history.truncate_to(i, &mut scene);
+            assert_eq!(reached, i, "到达值 = 光标 {i}");
+            assert_eq!(history.cursor(), i);
+            assert_eq!(scene, *snap, "光标 {i} 处 == 第 {i} 步执行后的快照");
+        }
+        // 反向再走一遍(redo 方向),覆盖双向走位
+        for (i, snap) in snapshots.iter().enumerate().rev() {
+            let reached = history.truncate_to(i, &mut scene);
+            assert_eq!(reached, i);
+            assert_eq!(scene, *snap);
+        }
+    }
+
+    #[test]
+    fn truncate_to_zero_full_redo_and_out_of_range_clamps() {
+        let (mut scene, root, a, _sub, b, c) = demo_scene();
+        let initial = scene.clone();
+        let mut history = History::new();
+        exec_four_transforms(&mut history, &mut scene, [a, b, c, root]);
+        let fully = scene.clone();
+
+        assert_eq!(
+            history.truncate_to(0, &mut scene),
+            0,
+            "truncate_to(0) == 全撤销"
+        );
+        assert_eq!(scene, initial);
+        assert!(!history.can_undo());
+        assert!(history.can_redo(), "全撤销后 redo 栈仍在");
+
+        assert_eq!(
+            history.truncate_to(4, &mut scene),
+            4,
+            "truncate_to(总步数) == 全重做"
+        );
+        assert_eq!(scene, fully);
+        assert!(history.can_undo());
+        assert!(!history.can_redo());
+
+        // 越界钳制:不 panic,返回实际到达值
+        assert_eq!(history.truncate_to(999, &mut scene), 4, "越界钳到全重做位");
+        assert_eq!(history.truncate_to(usize::MAX, &mut scene), 4);
+        assert_eq!(scene, fully);
+    }
+
+    #[test]
+    fn exec_after_truncate_to_abandons_old_redo_branch() {
+        let (mut scene, root, a, _sub, b, c) = demo_scene();
+        let initial = scene.clone();
+        let mut history = History::new();
+
+        // exec×5(4 条 SetTransform + 1 条 SetFill,互不 merge)
+        exec_four_transforms(&mut history, &mut scene, [a, b, c, root]);
+        let a_fill = scene.path(a).and_then(|p| p.fill.clone());
+        history.exec(
+            SetFill {
+                id: a,
+                old: a_fill,
+                new: Some(Paint::Solid([7, 7, 7, 7])),
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(history.cursor(), 5);
+
+        assert_eq!(history.truncate_to(2, &mut scene), 2);
+        assert!(history.can_redo(), "光标 2 之后还有 3 步 redo");
+
+        // 新 exec:旧 redo 分支整体废弃(QUndoStack 语义)
+        history.exec(
+            SetVisibility {
+                id: a,
+                old: true,
+                new: false,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(
+            history.undo_len(),
+            3,
+            "exec×5 → truncate_to(2) → 新 exec = 3 步"
+        );
+        assert!(!history.can_redo(), "旧 redo 不可达");
+        assert_eq!(history.cursor(), 3);
+
+        while history.can_undo() {
+            history.undo(&mut scene);
+        }
+        assert_eq!(scene, initial, "新分支全撤销回到初始");
+    }
+
+    #[test]
+    fn truncate_after_drops_tail_and_redo_stack() {
+        let (mut scene, root, a, _sub, b, c) = demo_scene();
+        let initial = scene.clone();
+        let mut history = History::new();
+        exec_four_transforms(&mut history, &mut scene, [a, b, c, root]);
+
+        // 先制造 redo 栈:撤 2 步,truncate_after 应连 redo 一起清
+        history.undo(&mut scene);
+        history.undo(&mut scene);
+        assert_eq!(history.cursor(), 2);
+        assert!(history.can_redo());
+
+        history.truncate_after(2);
+        assert_eq!(history.cursor(), 2);
+        assert_eq!(history.undo_len(), 2);
+        assert!(!history.can_redo(), "truncate_after 后 redo 栈为空");
+
+        // 剩余 2 步照常可撤销(截断不破坏既有栈的可用性)
+        while history.can_undo() {
+            history.undo(&mut scene);
+        }
+        assert_eq!(scene, initial);
+
+        // 截断后新 exec 叠加为分支第 1 步
+        history.exec(
+            SetVisibility {
+                id: a,
+                old: true,
+                new: false,
+            }
+            .boxed(),
+            &mut scene,
+        );
+        assert_eq!(history.undo_len(), 1);
+        assert_eq!(history.cursor(), 1);
+
+        // 越界钳制:超过当前光标 = 只清 redo,不动撤销栈
+        history.truncate_after(999);
+        assert_eq!(history.undo_len(), 1);
+
+        // truncate_after(0) 等价整栈清空
+        history.truncate_after(0);
+        assert_eq!(history.cursor(), 0);
+        assert!(!history.can_undo() && !history.can_redo());
+    }
+
+    #[test]
+    fn truncate_on_empty_history_is_noop_and_clear_resets_cursor() {
+        let (mut scene, root, a, _sub, b, c) = demo_scene();
+        let snapshot = scene.clone();
+        let mut history = History::new();
+        assert_eq!(history.cursor(), 0);
+        assert_eq!(history.truncate_to(0, &mut scene), 0);
+        assert_eq!(history.truncate_to(5, &mut scene), 0, "空历史越界钳制到 0");
+        history.truncate_after(0);
+        history.truncate_after(9);
+        assert_eq!(scene, snapshot, "空历史上的截断不动场景");
+
+        exec_four_transforms(&mut history, &mut scene, [a, b, root, c]);
+        assert_eq!(history.cursor(), 4);
+        let edited = scene.clone();
+        history.clear();
+        assert_eq!(history.cursor(), 0, "clear 后光标归零");
+        assert_eq!(history.truncate_to(2, &mut scene), 0);
+        assert_eq!(scene, edited, "clear 后 truncate_to 不动场景");
     }
 
     // —— 效果栈命令(迭代计划 08 S4 #4.1)——

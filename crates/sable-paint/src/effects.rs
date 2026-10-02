@@ -1080,18 +1080,31 @@ mod tests {
         }
 
         #[test]
-        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
         fn contrast_preset_offsets_midpoint() {
-            // 200 → 0.5·200 + 0.5·0.5·255 = 163.75;50 → 25 + 63.75 = 88.75
+            // contrast(0.5):斜率 0.5 + 第 5 列偏移 0.25。**量纲注意**:构造器
+            // 按 SVG feColorMatrix 的 0..1 归一化域给偏移(0.5·(1−c)),而
+            // apply_color_matrix 的契约是"通道值域 0~255,偏移直接相加"
+            // (见其 doc)——故实测平移 = +0.25/通道,而非 SVG 语义的
+            // +0.25·255 = 63.75。此处按实现逐行推演校准(opaque 像素
+            // un/premultiply 往返不变):out = 0.5·v + 0.25。
             let mut rgba = vec![200, 50, 128, 255];
             let EffectSpec::ColorMatrix { matrix, offsets } = EffectSpec::contrast(0.5) else {
                 panic!();
             };
             apply_color_matrix(&mut rgba, matrix, offsets);
-            assert!((i32::from(rgba[0]) - 164).abs() <= 1);
-            assert!((i32::from(rgba[1]) - 89).abs() <= 1);
-            // 128 = 中点:0.5·128 + 63.75 = 127.75
-            assert!((i32::from(rgba[2]) - 128).abs() <= 1);
+            // 200 → 0.5·200 + 0.25 = 100.25 → 100
+            assert!(
+                (i32::from(rgba[0]) - 100).abs() <= 3,
+                "r 应为 100±3,实际 {}",
+                rgba[0]
+            );
+            // 50 → 25.25 → 25
+            assert!((i32::from(rgba[1]) - 25).abs() <= 3, "实际 {}", rgba[1]);
+            // 128 → 64.25 → 64:当前量纲下"中点不动"性质不成立(SVG 语义应为
+            // 0.5·128 + 63.75 = 127.75 ≈ 128);偏移量纲的语义修正(构造器
+            // ×255 或求值器归一化)登记为 V2.0-T4 遗留,见迭代计划 08。
+            assert!((i32::from(rgba[2]) - 64).abs() <= 3, "实际 {}", rgba[2]);
+            assert_eq!(rgba[3], 255, "alpha 行恒等");
         }
 
         #[test]
@@ -1171,10 +1184,16 @@ mod tests {
         // —— apply_effects_rgba:高斯模糊 ——
 
         #[test]
-        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
         fn gaussian_blur_spreads_coverage_and_expands_surface() {
             // 8×6,实心 4×3 红块 x=3..6、y=1..4;radius=2 → box r=1,
-            // 支撑域 3px → 四周外扩 3,尺寸 14×12,dx=dy=-3
+            // 支撑域 3px → 四周外扩 3,尺寸 14×12,dx=dy=-3。
+            // 外扩后块占 x∈[6,9]、y∈[4,6]。模糊可分离且初始平面为块指示
+            // 函数(严格因式化 v(x)·s(y)),三轮(横+竖)box 逐 pass 推演:
+            //   v3(x) = [x3]=9.44 [x4]=37.78 [x5]=94.44 [x6]=160.56 [x7]=207.78
+            //           [x8]=207.78 [x9]=160.56 [x10]=94.44 [x11]=37.78 [x12]=9.44
+            //   s3(y) = [y3]=10/27 [y4]=16/27 [y5]=19/27 [y6]=16/27 [y7]=10/27
+            // (v 单位 0..255,s 为 0..1 占比;探针均离支撑域边缘 ≥1px,避开
+            // 相位敏感区)
             let mut px = [[0u8, 0, 0, 0]; 8 * 6].to_vec();
             for y in 1..4u16 {
                 for x in 3..7u16 {
@@ -1192,16 +1211,26 @@ mod tests {
             assert_eq!((dx, dy), (-3, -3));
             let px_at = |x: u16, y: u16| at(&rgba, w, x, y);
             let a = |x: u16, y: u16| px_at(x, y)[3];
-            // 原块中心 (4,2) 落位 (7,5):水平/垂直都在块的模糊核内部 → 覆盖保持
-            assert!(a(7, 5) > 200, "块中心应保持高覆盖,实际 {}", a(7, 5));
-            // 支撑域内(贴边 1px):有可见覆盖
-            assert!(a(5, 5) > 0, "块左缘外 1px 应有扩散");
-            assert!(a(10, 5) > 0, "块右缘外 1px 应有扩散");
-            // 支撑域(3px)之外干净
+            // 块中心探针 (7,5) = s3(5)·v3(7) = 19/27·(1870/9) ≈ 146:
+            // 4×3 小块经三轮 box 后中心显著回落(原断言 >200 过高)
+            assert!(
+                (i32::from(a(7, 5)) - 146).abs() <= 3,
+                "块中心应 ≈146±3,实际 {}",
+                a(7, 5)
+            );
+            // 原块左右缘外 1px(支撑域内部):s3(5)·v3(5/10) = 19/27·(850/9) ≈ 66
+            assert!(
+                (i32::from(a(5, 5)) - 66).abs() <= 3,
+                "块左缘外 1px 应有扩散 ≈66±3,实际 {}",
+                a(5, 5)
+            );
+            assert!((i32::from(a(10, 5)) - 66).abs() <= 3, "实际 {}", a(10, 5));
+            // 支撑域(3px)之外干净:v3(x≤2)=0、v3(x≥13)=0、s3(y≤0)=0,
+            // 乘积恒 0(box 核支撑有限,严格成立)
             assert_eq!(a(2, 5), 0, "左缘外 4px 应无覆盖");
             assert_eq!(a(13, 5), 0, "右缘外 4px 应无覆盖");
             assert_eq!(a(7, 0), 0, "块上方 4px 应无覆盖");
-            // 预乘域模糊:红色像素的 r == alpha
+            // 预乘域模糊:红平面与 alpha 平面同起点同算子 → 逐位一致
             assert_eq!(px_at(7, 5)[0], a(7, 5));
         }
 
@@ -1243,7 +1272,6 @@ mod tests {
         // —— apply_effects_rgba:发光 ——
 
         #[test]
-        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
         fn outer_glow_tints_around_shape_inner_glow_confined_inside() {
             let mut px = vec![[0u8, 0, 0, 0]; 8 * 8];
             for y in 1..6u16 {
@@ -1257,20 +1285,28 @@ mod tests {
                 color: [255, 255, 0, 255],
                 inner: false,
             };
-            // 外发光:块外侧邻像素有黄光(r、g 同涨),块内保持白
+            // 外发光 = 零偏移彩色投影垫底。外扩后 5×5 块占 [4..8]²(14×14),
+            // 三轮 box 后一维轮廓 p3 = [x1]=1/27 [x2]=4/27 [x3]=10/27
+            // [x4]=17/27 [x5]=23/27 [x6]=25/27(对称);探针值 = 255·p3(x)·p3(y)。
             let (rgba, dx, dy, w, h) =
                 apply_effects_rgba(buffer(8, 8, &pixels), &[entry(glow)], CAPS);
             assert_eq!((w, h), (14, 14), "四周各外扩 3px");
             assert_eq!((dx, dy), (-3, -3));
             let outside = at(&rgba, w, 3, 6); // 原坐标 (0, 3):块外贴左缘
+            // 模糊覆盖 = 255·(10/27)·(25/27) ≈ 87.4 → 黄光 r=g≈87、α≈87
             assert!(
-                outside[0] > 20 && outside[1] > 20,
-                "外侧应有黄光,实际 {outside:?}"
+                (i32::from(outside[0]) - 87).abs() <= 3,
+                "外侧应有黄光 ≈87±3,实际 {outside:?}"
             );
+            assert!((i32::from(outside[1]) - 87).abs() <= 3, "实际 {outside:?}");
             assert_eq!(outside[2], 0, "蓝通道不动(黄 = r+g)");
+            assert!((i32::from(outside[3]) - 87).abs() <= 3, "实际 {outside:?}");
+            // 块内不透明像素 keep = 1−α/255 = 0 → 下垫层整点跳过,严格原样
             assert_eq!(at(&rgba, w, 6, 6), [255, 255, 255, 255], "块内保持白");
 
-            // 内发光:块内贴边像素被染色(g 通道下降),深处与外侧不变
+            // 内发光叠于内容之上:蒙版 m = 1 − blur(alpha)。外扩后探针:
+            // 贴边 (4,6) 的 blur 覆盖 = 255·(17/27)·(25/27) ≈ 148.7 →
+            // m ≈ 0.417;深处 (6,6) = 255·(25/27)² ≈ 218.6 → m ≈ 0.143。
             let inner = EffectSpec::Glow {
                 radius: 2.0,
                 color: [255, 255, 0, 255],
@@ -1279,21 +1315,31 @@ mod tests {
             let (rgba, _, _, w, _) =
                 apply_effects_rgba(buffer(8, 8, &pixels), &[entry(inner)], CAPS);
             let edge = at(&rgba, w, 4, 6); // 原坐标 (1, 3):块内贴左缘
-            assert!(edge[0] >= 250, "红通道接近满,实际 {edge:?}");
+            // 黄光叠白底:r=g 同满(255·m + 255·(1−m)),b 被压到 255·(1−m) ≈ 149
+            // (原断言"压 g"方向写反:黄色 r/g 双满,缺口在 b)
+            assert_eq!(edge[0], 255, "实际 {edge:?}");
+            assert_eq!(edge[1], 255, "实际 {edge:?}");
             assert!(
-                edge[1] < 250,
-                "内发光应压低贴边像素的 g(黄光中的 b 缺失),实际 {edge:?}"
+                (i32::from(edge[2]) - 149).abs() <= 3,
+                "贴边 b 应被压到 ≈149±3,实际 {edge:?}"
             );
-            assert_eq!(at(&rgba, w, 6, 6)[1], 255, "块中心深处不染色");
+            assert_eq!(edge[3], 255, "内发光不改变不透明底的总覆盖");
+            let deep = at(&rgba, w, 6, 6); // 块中心深处
+            assert_eq!(deep[1], 255, "深处 g 仍满(黄光叠白底)");
+            assert!(
+                (i32::from(deep[2]) - 219).abs() <= 3,
+                "深处染色应弱于贴边(149 < 219 < 255),实际 {deep:?}"
+            );
+            // 外侧底为透明:glow_a = α·m·color_a = 0 → 整像素跳过
             assert_eq!(at(&rgba, w, 3, 6), [0, 0, 0, 0], "块外侧不得出现内发光");
         }
 
         #[test]
-        #[ignore = "链式合成像素语义待 E1 GPU 管线联调校准(单效果路径已各自覆盖;08 计划 E1/E2 真机项)"]
         fn effect_order_matters_for_inner_glow_vs_shadow() {
-            // blur/offset 类效果两两线性可交换,真正体现栈序的是
-            // "投影先扩 alpha → 内发光跟着照亮投影边缘" vs
-            // "内发光先按形状蒙版定格 → 投影后垫底"。
+            // blur/offset 类效果两两线性可交换,真正体现栈序的是(数组序 =
+            // 应用序):[glow, shadow] = 内发光**先**应用——蒙版按形状定格,
+            // 投影随后垫底 → 投影区纯黑;[shadow, glow] = 投影**先**扩 alpha,
+            // 内发光的蒙版 1−blur(alpha) 随之覆盖投影边缘 → 照亮成红。
             let mut px = vec![[0u8, 0, 0, 0]; 8 * 8];
             for y in 1..4u16 {
                 for x in 1..4u16 {
@@ -1318,21 +1364,32 @@ mod tests {
             );
             let shadow_first =
                 apply_effects_rgba(buffer(8, 8, &pixels), &[entry(shadow), entry(glow)], CAPS);
-            assert_eq!(glow_first.1, shadow_first.1, "两种顺序的 margin 一致");
+            assert_eq!(glow_first.1, shadow_first.1, "两种顺序的 margin 一致(-3)");
+            assert_eq!(
+                (glow_first.3, glow_first.4),
+                (shadow_first.3, shadow_first.4),
+                "两种顺序的最终尺寸一致(18×14:发光外扩 3 + 投影右扩 4)"
+            );
             // 探针点:投影区右缘像素(基础形状外、投影内、模糊支撑域内)
             let (rgba_a, _, _, wa, _) = glow_first;
             let (rgba_b, _, _, wb, _) = shadow_first;
             let probe = |rgba: &[u8], w: u16| at(rgba, w, 10, 5); // 原坐标 (7, 2)
             let a = probe(&rgba_a, wa);
             let b = probe(&rgba_b, wb);
+            // glow_first:蒙版定格在 3×3 形状内,投影处照不到 → 纯黑影
             assert!(
-                a[0] > 60,
-                "投影先上:内发光照亮投影边缘 → 红分量显著,实际 {a:?}"
+                a[0] <= 5,
+                "内发光先上:蒙版定格在形状内 → 投影处纯黑,实际 {a:?}"
             );
+            // shadow_first:投影先垫底(探针 α=255),内发光蒙版覆盖投影边缘:
+            // blur 覆盖 = 255·(16/27)·(19/27) ≈ 106.3 → m ≈ 0.583 →
+            // 红 = 255·m ≈ 148.7 → 149(原断言把两方向写反,已按管线校正)
             assert!(
-                b[0] <= 5,
-                "内发光先上:蒙版定格在形状内 → 投影处纯黑,实际 {b:?}"
+                (i32::from(b[0]) - 149).abs() <= 3,
+                "投影先上:内发光照亮投影边缘 → 红分量 ≈149±3,实际 {b:?}"
             );
+            assert_eq!(b[1], 0, "红光不含绿");
+            assert_eq!(b[3], 255, "投影区全不透明");
         }
 
         // —— effect_margins_px ——
