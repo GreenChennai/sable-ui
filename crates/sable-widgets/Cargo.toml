@@ -29,6 +29,10 @@ node-graph = []
 
 [dependencies]
 sable-foundation.workspace = true
+# Neon Card 对标组件的离屏自绘底座(CpuRenderer/render_shadow_rgba,cpu 默认
+# feature):金字塔向下依赖(widgets → paint 与 video/widgets → canvas →
+# paint → core 同向,workspace 内部 crate 而非外部依赖;story 效果页同款先例)
+sable-paint.workspace = true
 sable-canvas.workspace = true
 sable-video = { workspace = true, optional = true }
 # layer-panel 专用:NodeId(slotmap key)→ u64 作为 FlipTracker 的元素键(可选,

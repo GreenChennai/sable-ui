@@ -20,6 +20,7 @@
 //! | [`gradient_editor`] | `color` + `binding` + `theme` |
 //! | [`layer_panel`] | `layer-panel` + `theme` |
 //! | [`layer_tree`] | `layer-panel` + `theme`(V2.0 T2,与 layer_panel 同 feature)|
+//! | [`neon_card`] | `anim` + `theme`(V4.0 对标组件,luminaui.in Neon Card 移植)|
 //! | [`effect_stack`] | `inspector` + `theme`(V2.0 T4,效果栈面板)|
 //! | [`inspector`] | `inspector` + `color` + `theme`(number-field/binding 由 Cargo 特性依赖保证)|
 //! | [`timeline_view`] | `timeline` + `theme` |
@@ -65,6 +66,9 @@ pub mod layer_panel;
 /// 树形图层面板(V2.0 T2)。
 #[cfg(all(feature = "layer-panel", feature = "theme"))]
 pub mod layer_tree;
+/// Neon Card(luminaui.in 对标移植,V4.0 对标组件;离屏自绘 + 纯函数动画)。
+#[cfg(all(feature = "anim", feature = "theme"))]
+pub mod neon_card;
 #[cfg(all(feature = "number-field", feature = "theme"))]
 pub mod number_field;
 #[cfg(all(feature = "inspector", feature = "theme"))]
@@ -109,6 +113,10 @@ pub mod prelude {
     pub use crate::layer_panel::LayerPanel;
     #[cfg(all(feature = "layer-panel", feature = "theme"))]
     pub use crate::layer_tree::LayerTreePanel;
+    #[cfg(all(feature = "anim", feature = "theme"))]
+    pub use crate::neon_card::{
+        NeonCardState, NeonCardStyle, frame_cache_key, neon_card, render_neon_card,
+    };
     #[cfg(all(feature = "number-field", feature = "theme"))]
     pub use crate::number_field::NumberField;
     #[cfg(all(feature = "inspector", feature = "theme"))]

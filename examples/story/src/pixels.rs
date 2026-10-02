@@ -39,7 +39,11 @@ const SHADOW_H: u16 = 88;
 /// 预乘 RGBA8 → gpui `RenderImage`(un-premultiply 后经 image 裸帧;
 /// gpui 0.2.2 RenderImage::new 只吃 image crate 的 Frame——与 sable-canvas
 /// "png" feature 同款豁免,video_editor player_view 同路径)。
-fn premul_to_render_image(mut data: Vec<u8>, width: u16, height: u16) -> Option<Arc<RenderImage>> {
+pub(crate) fn premul_to_render_image(
+    mut data: Vec<u8>,
+    width: u16,
+    height: u16,
+) -> Option<Arc<RenderImage>> {
     for px in data.chunks_exact_mut(4) {
         let a = u16::from(px[3]);
         if a > 0 && a < 255 {

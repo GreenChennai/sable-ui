@@ -11,6 +11,7 @@ use sable::widgets::tokens::{FONT_SIZE_BODY, FONT_SIZE_HEADING};
 
 use crate::inputs::{ColorSection, GradientSection, NumberSection};
 use crate::motion::MotionSection;
+use crate::neon::NeonSection;
 use crate::panels::{LayersSection, TimelineSection};
 use crate::pixels::{EffectsSection, TokensSection};
 use crate::ui::{group_title, story_button};
@@ -26,6 +27,7 @@ pub struct StoryApp {
     motion: Entity<MotionSection>,
     effects: Entity<EffectsSection>,
     tokens: Entity<TokensSection>,
+    neon: Entity<NeonSection>,
 }
 
 impl StoryApp {
@@ -39,6 +41,7 @@ impl StoryApp {
         let motion = MotionSection::new(cx);
         let effects = EffectsSection::new(cx);
         let tokens = TokensSection::new(cx);
+        let neon = NeonSection::new(cx);
         StoryApp {
             focus,
             number,
@@ -49,6 +52,7 @@ impl StoryApp {
             motion,
             effects,
             tokens,
+            neon,
         }
     }
 }
@@ -139,7 +143,9 @@ impl Render for StoryApp {
                     .child(self.motion.clone())
                     .child(group_title(cx, "效果与 token"))
                     .child(self.effects.clone())
-                    .child(self.tokens.clone()),
+                    .child(self.tokens.clone())
+                    .child(group_title(cx, "Neon Card"))
+                    .child(self.neon.clone()),
             )
     }
 }

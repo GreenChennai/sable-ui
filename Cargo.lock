@@ -5843,6 +5843,7 @@ dependencies = [
  "peniko",
  "sable-canvas",
  "sable-foundation",
+ "sable-paint",
  "sable-video",
  "slotmap",
  "thiserror 2.0.21",

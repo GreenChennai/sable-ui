@@ -2,6 +2,17 @@
 
 本库遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [Unreleased]
+
+### Added
+- **`sable-widgets::neon_card`**(V4.1 组件波次 1/1,对标 luminaui.in "Neon Card"):
+  流动渐变描边(shimmer,窗口锚定卡心无缝循环)、环境辉光、光标跟随内外辉光、
+  hover 漂移粒子(种子确定性)、hover 缩放 1.02 与入场动画,reduced_motion 全直切;
+  纯函数渲染(可独立单测)+ 帧缓存(空闲零帧提交)。真 backdrop-blur 为 GPU 路线图
+  项,卡体为"半透明底 + 高光内边"等效档(docs/11 对照表)
+- story 第 9 分组:三配色 Neon Card 实机演示(粉紫对标默认/青蓝/金橙)
+- widgets 新增内部依赖边 widgets → sable-paint(向下,离屏自绘底座;手册 §2.1 待补记)
+
 ## [4.0.0] - 2026-10-02
 
 V4.0 迭代(docs/10-迭代计划V4.0.md):V3.0 复盘 review(3 路并行代码核查)实锤
