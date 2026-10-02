@@ -4,7 +4,7 @@
 //! 初始内容是"打开文档"语义(见 document.rs 模块文档第 1 条):直接构建,
 //! 不产生 Command、不进撤销栈;此后的一切修改必须走 `Document::exec`。
 
-use kurbo::BezPath;
+use lumina::kurbo::BezPath;
 use lumina::core::scene::{NodeContent, Paint, PathNode, Rgba8, Scene};
 
 use crate::palette::Palette;

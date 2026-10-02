@@ -50,6 +50,13 @@ pub use lumina_video as video;
 #[cfg(feature = "widgets")]
 pub use lumina_widgets as widgets;
 
+// —— 基础类型直通(07 报告 P2-2)——
+/// 2D 几何库(BezPath/Affine/Rect/Point…),版本与本库内部完全对齐;
+/// 用户代码应 `use lumina::kurbo;` 而非自行依赖 kurbo(免版本对齐负担)。
+pub use kurbo;
+/// 样式原语(Color/Gradient/Brush),与渲染层同源。
+pub use peniko;
+
 // —— 平台层链式再导出(经 lumina-dock,见 crate 文档)——
 /// gpui 0.2.2(feature `dock`;`canvas`-only 场景不导出,自行声明依赖)。
 #[cfg(feature = "dock")]

@@ -54,8 +54,13 @@ parley  = "0.11.1"
 # CPU 兜底渲染(分册六 §6.4 降级链第 4 级;feature "cpu" 门控)
 vello_cpu = "0.2.0"
 # GPU 抽象(仅 lumina-paint 的 "gpu" feature 引入,版本必须与 vello 对齐)
-wgpu  = "30.0.1"
+# 2026-10-02 S0 勘误(07 报告 P0-B):vello 0.10 锁 wgpu 29.0.3,workspace 必须对齐 29,
+# 否则双 wgpu 共存 → vello::Renderer::new 类型不匹配。lumina-paint 已改为直接使用
+# vello::wgpu re-export(单一真相源);本条目保留给未来效果管线(E1)与潜在直接使用者。
+wgpu  = "29"
 image = "0.25"
+# 工程文件序列化(.lumi,分册五 §5.1:MessagePack + 版本号前向兼容)
+rmp-serde = "1.3"
 
 # —— 平台层(feature 门控,进 core/canvas/paint/video 者格杀勿论)——
 gpui = "0.2.2"

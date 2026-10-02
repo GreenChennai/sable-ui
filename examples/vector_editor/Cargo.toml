@@ -8,8 +8,6 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# 只依赖门面:BezPath/Affine 走 lumina::kurbo 直通(07 报告 P2-2,门面已 re-export)
 [dependencies]
 lumina = { path = "../../crates/lumina" }
-# 契约允许的追加依赖(报告已注明):初始场景手写 BezPath 与检查器的
-# Affine 系数换算需要 kurbo 类型;门面未 re-export kurbo。
-kurbo.workspace = true

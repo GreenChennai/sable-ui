@@ -67,6 +67,7 @@ cargo run -p video_editor     # 迷你剪映示例
 - Windows 10/11 + MSVC(Rust 1.85+);GPU 需要 DX12 或 Vulkan(无 GPU 自动落 `cpu-render`)
 - 本机开发约定见 [AGENTS.md](AGENTS.md)(cargo 缓存在 D 盘、`-j2` 防内存耗尽)
 - 门禁:`cargo fmt --check` → `cargo clippy --all-targets -- -D warnings` → `cargo test` → `cargo build --release`
+  ——"全绿"以**默认 feature 组合**为准;GPU/全 feature/最小 feature 组合由 CI 的 feature-matrix job 单独把关(07 报告 P1-1 教训)
 
 ## 许可
 

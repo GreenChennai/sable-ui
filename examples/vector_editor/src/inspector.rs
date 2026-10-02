@@ -16,7 +16,7 @@ use gpui::{
     App, AppContext as _, Component, Entity, IntoElement, ParentElement as _, Render, Styled as _,
     div,
 };
-use kurbo::Affine;
+use lumina::kurbo::Affine;
 use lumina::core::command::{SetFill, SetTransform};
 use lumina::core::scene::{NodeId, Paint};
 use lumina::gpui;

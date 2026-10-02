@@ -1,27 +1,34 @@
-//! GPU 渲染后端(vello 0.10 + wgpu 30),`gpu` feature 门控,默认关闭。
+//! GPU 渲染后端(vello 0.10 + 其 re-export 的 wgpu 29.x),`gpu` feature 门控,默认关闭。
 //!
 //! v0.1 为**骨架**:后端选择(分册六 §6.3)、设备创建、[`GpuGuard`] 设备丢失恢复
 //! (分册六 §1.1)、[`VelloSink`](`PaintSink` → `vello::Scene`)。CI 默认不开 gpu,
 //! 本模块不携带需要 GPU 才能跑的测试。
 //!
-//! 与分册六代码的差异(以 wgpu 30 实际 API 为准,均已核对 docs.rs/源码):
-//! - `Instance::new` 按**值**取 `InstanceDescriptor`(不再是 `&InstanceDescriptor`),
-//!   且 `InstanceDescriptor` 无 `Default`,基座用 `new_without_display_handle()`;
-//! - `request_adapter` 返回 `Result`(不再返回 `Option`);
-//! - `request_device` 仍返回 `(Device, Queue)` 元组;
-//! - `SurfaceError` 在 wgpu 30 已不存在,`Surface::get_current_texture` 返回
-//!   `CurrentSurfaceTexture` 枚举 —— 恢复逻辑改用自有 [`FrameError`] 分类
-//!   (见 [`classify_surface_result`])。
+//! # 版本对齐纪律(2026-10-02 S0 勘误,07 报告 P0)
 //!
-//! API 依据:docs.rs/wgpu/30.0.1、docs.rs/vello/0.10.0
-//! (`Scene::fill(style: Fill, transform, brush: impl Into<BrushRef>, brush_transform, shape)`、
-//! `Scene::stroke(&Stroke, ...)`)。
+//! 本模块的 wgpu 类型**一律经 `vello::wgpu` re-export 使用**(vello lib.rs
+//! `pub use wgpu;`),lumina-paint 不直接依赖 wgpu —— 单一真相源,workspace
+//! 与 vello 的 wgpu 版本永远不可能错配(错配即编译错误,而非运行期类型坑)。
+//! 升级窗口更换 vello 版本时,本模块随其 wgpu 自动跟进。
+//!
+//! wgpu 29.0.4 实测 API(与 30 的差异比预期小):
+//! - `Instance::new` 按**值**取 `InstanceDescriptor`;无 `Default`,基座用
+//!   `new_without_display_handle()`;
+//! - **flags 常量名是 `DEBUG`**(wgpu 29/30 相同;旧名 `DEBUG_MARKERS` 已废弃,
+//!   手册分册六 §6.3 原稿的写法在两代都编译不过);
+//! - `RequestAdapterOptions` 无 `apply_limit_buckets` 字段(wgpu 30 独有,勿加);
+//! - `request_adapter` 返回 `Result`;`request_device` 返回 `(Device, Queue)`;
+//! - `Surface::get_current_texture` 返回 `CurrentSurfaceTexture` 枚举(非
+//!   `Result<_, SurfaceError>`),恢复逻辑用自有 [`FrameError`] 分类。
+//!
+//! API 依据:本地 registry 源码 wgpu-29.0.4 / wgpu-types-29.0.4 / vello-0.10.0。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use kurbo::{Affine, BezPath};
 use lumina_core::scene::{Paint, StrokeStyle};
+use vello::wgpu;
 
 use crate::error::{PaintError, PaintResult};
 use crate::sink::PaintSink;
@@ -61,11 +68,11 @@ pub fn create_instance() -> wgpu::Instance {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = select_backends();
     descriptor.flags = if cfg!(debug_assertions) {
-        wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::DEBUG_MARKERS
+        wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::DEBUG
     } else {
         wgpu::InstanceFlags::empty()
     };
-    // wgpu 30:Instance::new 按值取 descriptor。
+    // Instance::new 按值取 descriptor(wgpu 29/30 相同)。
     wgpu::Instance::new(descriptor)
 }
 
@@ -79,7 +86,6 @@ pub async fn create_device(
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-            apply_limit_buckets: false,
         })
         .await
         .map_err(|_| PaintError::NoAdapter)?;
@@ -112,13 +118,13 @@ pub struct GpuGuard {
 /// 单帧渲染的可重试分类:设备丢失类失败可重建后重试,其余一律致命。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameError {
-    /// 设备丢失/过时(wgpu 30 `CurrentSurfaceTexture::Lost/Outdated` 等),可重试。
+    /// 设备丢失/过时(`CurrentSurfaceTexture::Lost/Outdated` 等),可重试。
     Retryable(String),
     /// 其他失败(校验错误、超时、OOM 等),不重试。
     Fatal(String),
 }
 
-/// 把 wgpu 30 的 `CurrentSurfaceTexture` 分类成 [`FrameError`]。
+/// 把 `CurrentSurfaceTexture` 分类成 [`FrameError`]。
 /// `None` 表示本帧可用(`Success`/`Suboptimal` 携带纹理)或无需恢复的瞬态(遮挡)。
 pub fn classify_surface_result(status: &wgpu::CurrentSurfaceTexture) -> Option<FrameError> {
     use wgpu::CurrentSurfaceTexture as C;
@@ -129,7 +135,8 @@ pub fn classify_surface_result(status: &wgpu::CurrentSurfaceTexture) -> Option<F
         ))),
         C::Timeout => Some(FrameError::Fatal(String::from("surface timeout"))),
         C::Validation => Some(FrameError::Fatal(String::from("surface validation error"))),
-        _ => Some(FrameError::Fatal(String::from("unknown surface status"))),
+        // wgpu 29.0.4 的 CurrentSurfaceTexture 恰为以上 7 变体,无其他;
+        // 升级窗口若上游新增变体,此处会编译报错提醒补分类(有意不留 catch-all)
     }
 }
 
@@ -165,9 +172,9 @@ impl GpuGuard {
     /// 每帧渲染入口:失败时若属可重试(设备丢失),重建设备、代数 +1、重试一次;
     /// 二次失败才算致命。`f` 会被调用至多两次,须为幂等的帧构建闭包(`Fn`)。
     ///
-    /// 与分册六 §1.1 原稿的差异:SurfaceError 已从 wgpu 30 移除,可重试性由
-    /// [`FrameError`] 表达(可经 [`classify_surface_result`] 从
-    /// `CurrentSurfaceTexture` 得到);恢复异步化以复用 `request_device`。
+    /// 与分册六 §1.1 原稿的差异:wgpu 29/30 的取帧结果都是 `CurrentSurfaceTexture`
+    /// 而非 `Result<_, SurfaceError>`,可重试性由 [`FrameError`] 表达(可经
+    /// [`classify_surface_result`] 得到);恢复异步化以复用 `request_device`。
     pub async fn render_with_recovery<T>(
         &mut self,
         adapter: &wgpu::Adapter,
@@ -203,7 +210,7 @@ impl GpuGuard {
 }
 
 fn install_error_handler(device: &wgpu::Device) {
-    // wgpu 30:handler 参数为 Arc<dyn UncapturedErrorHandler>(Error 只记录不 panic)。
+    // handler 参数为 Arc<dyn UncapturedErrorHandler>(wgpu 29/30 相同;Error 只记录不 panic)。
     device.on_uncaptured_error(Arc::new(|error: wgpu::Error| {
         tracing::error!(?error, "GPU uncaptured error(仅记录,不 panic)");
     }));

@@ -10,8 +10,8 @@ authors.workspace = true
 
 [features]
 default = ["cpu"]
-# GPU 路径:Vello(wgpu 30,运行期 auto/DX12/Vulkan 可选,分册六 §6)
-gpu = ["dep:vello", "dep:wgpu"]
+# GPU 路径:Vello(wgpu 经 vello::wgpu re-export,29.x;运行期 auto/DX12/Vulkan 可选,分册六 §6)
+gpu = ["dep:vello"]
 # CPU 兜底:无 GPU 环境/服务器渲染/渲染回归测试(分册六 §6.4 降级链第 4 级)
 cpu = ["dep:vello_cpu"]
 # 后端三选一(编译期偏好 + 运行期 LUMINA_GPU_BACKEND 覆盖,分册六 §6.3)
@@ -26,5 +26,4 @@ peniko.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 vello = { workspace = true, optional = true }
-wgpu = { workspace = true, optional = true }
 vello_cpu = { workspace = true, optional = true }

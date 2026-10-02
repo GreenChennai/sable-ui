@@ -31,6 +31,10 @@ cpu-render = ["lumina-paint/cpu"]
 
 [dependencies]
 lumina-paint.workspace = true
+# 几何/样式基础类型直通 re-export(07 报告 P2-2):用户画第一条 BezPath 必然要
+# kurbo,不该让用户自己猜版本对齐。版本恒与内部各 crate 对齐(同一 workspace 表)。
+kurbo.workspace = true
+peniko.workspace = true
 lumina-core = { workspace = true, optional = true }
 lumina-canvas = { workspace = true, optional = true }
 lumina-widgets = { workspace = true, optional = true }
