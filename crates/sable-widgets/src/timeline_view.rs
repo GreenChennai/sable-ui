@@ -56,6 +56,9 @@ pub struct TimelineView {
     timeline: Entity<Timeline>,
     /// 播放头(本地镜像;真相在应用层 Player)
     playhead_ms: u64,
+    /// 选中片段(应用层同步;高亮描边)。存裸值:ClipId 外部不可构造,
+    /// 上层只有 id_map 的反向裸值可比对。
+    selected: Option<u64>,
     clip_drag: Option<ClipDrag>,
     seeking: bool,
     /// 标尺区 bounds(prepaint 回写;scrub 换算基准)
@@ -78,6 +81,7 @@ impl TimelineView {
         TimelineView {
             timeline,
             playhead_ms: 0,
+            selected: None,
             clip_drag: None,
             seeking: false,
             ruler_bounds: Rc::new(Cell::new(gpui::Bounds::default())),
@@ -90,6 +94,11 @@ impl TimelineView {
     /// 应用层同步播放头(渲染红线用)。
     pub fn set_playhead(&mut self, ms: u64) {
         self.playhead_ms = ms;
+    }
+
+    /// 应用层同步选中片段(高亮描边用;裸值口径,见结构体注释;None = 清除)。
+    pub fn set_selected(&mut self, selected: Option<u64>) {
+        self.selected = selected;
     }
 
     /// 播放头跳转/scrub。
@@ -257,14 +266,22 @@ impl Render for TimelineView {
             }
         }
 
-        // —— 轨道区(纵向可滚动)+ 播放头 ——
+        // —— 轨道区(横向随标尺同步滚动,纵向独立滚动)+ 播放头 ——
         let mut rows = v_flex();
         for track in 0..tracks {
             let kind = self.timeline.read(cx).tracks[track].kind;
-            let clips: Vec<(ClipId, u64, u64, u64)> = self.timeline.read(cx).tracks[track]
+            let clips: Vec<(ClipId, u64, u64, u64, String)> = self.timeline.read(cx).tracks[track]
                 .clips
                 .iter()
-                .map(|c| (c.id, c.start_ms, c.duration_ms, c.in_ms))
+                .map(|c| {
+                    (
+                        c.id,
+                        c.start_ms,
+                        c.duration_ms,
+                        c.in_ms,
+                        asset_display_name(&c.asset.path),
+                    )
+                })
                 .collect();
             let mut row = div()
                 .relative()
@@ -272,8 +289,9 @@ impl Render for TimelineView {
                 .h(px(TRACK_HEIGHT_PX))
                 .mt(px(SpacingTokens::XS))
                 .bg(colors.surface_1);
-            for (id, start_ms, dur_ms, in_ms) in clips {
+            for (id, start_ms, dur_ms, in_ms, name) in clips {
                 let tint = kind_tint(kind, colors);
+                let selected = self.selected == Some(id.value());
                 row = row.child(
                     div()
                         .absolute()
@@ -282,9 +300,13 @@ impl Render for TimelineView {
                         .w(pxv(ms_to_px(dur_ms, pps).max(2.0)))
                         .h(px(TRACK_HEIGHT_PX - 4.0))
                         .rounded(px(RadiusTokens::SM))
-                        .bg(tint)
+                        .bg(tint.opacity(if selected { 0.6 } else { 0.35 }))
                         .border_1()
-                        .border_color(colors.border_subtle)
+                        .border_color(if selected {
+                            colors.accent
+                        } else {
+                            colors.border_subtle
+                        })
                         .cursor_pointer()
                         .child(
                             div()
@@ -292,7 +314,7 @@ impl Render for TimelineView {
                                 .text_size(px(FONT_SIZE_CAPTION))
                                 .text_color(colors.text_primary)
                                 .overflow_hidden()
-                                .child(clip_label(in_ms, dur_ms)),
+                                .child(clip_label(&name, in_ms, dur_ms)),
                         )
                         .on_mouse_down(
                             MouseButton::Left,
@@ -304,35 +326,43 @@ impl Render for TimelineView {
             }
             rows = rows.child(row);
         }
+        // 横向:标尺与轨道同一滚动容器(同步);纵向:轨道区独立滚动,
+        // 标尺恒在顶部(NLE 惯例)。播放头线随内容横向滚动。
         let body = div()
-            .id("timeline-body")
+            .id("timeline-body-x")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .max_h(px(TRACK_HEIGHT_PX * VISIBLE_TRACKS))
+            .overflow_x_scroll()
             .bg(colors.surface_0)
             .child(
-                div()
-                    .relative()
-                    .w(pxv(content_w))
-                    .child(rows)
-                    // 播放头红线(拖拽/点击 scrub 在标尺上;线上把手 = M2)
-                    .child(
-                        div()
-                            .absolute()
-                            .left(pxv(playhead_x))
-                            .top(px(0.0))
-                            .w(px(1.0))
-                            .h_full()
-                            .bg(colors.danger),
-                    ),
+                v_flex().w(pxv(content_w)).child(ruler).child(
+                    div()
+                        .id("timeline-body-y")
+                        .overflow_y_scroll()
+                        .max_h(px(TRACK_HEIGHT_PX * VISIBLE_TRACKS))
+                        .child(
+                            div()
+                                .relative()
+                                .w(pxv(content_w))
+                                .child(rows)
+                                // 播放头红线(拖拽/点击 scrub 在标尺上)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(pxv(playhead_x))
+                                        .top(px(0.0))
+                                        .w(px(1.0))
+                                        .h_full()
+                                        .bg(colors.danger),
+                                ),
+                        ),
+                ),
             );
 
         v_flex()
             .size_full()
             .overflow_hidden()
             .bg(colors.surface_0)
-            .child(ruler)
             .child(body)
             // 根容器收 mouse move/up:拖动中出标尺/clip 仍持续
             .on_mouse_move(cx.listener(Self::on_move))
@@ -405,9 +435,23 @@ pub fn fmt_timecode(ms: u64) -> String {
     format!("{m}:{s:02}.{tenths}")
 }
 
-/// clip 文本(纯函数):素材内入点 + 时长。
-fn clip_label(in_ms: u64, duration_ms: u64) -> String {
-    format!("{} +{}ms", fmt_timecode(in_ms), duration_ms)
+/// clip 文本(纯函数):素材名 + 素材内入点。
+fn clip_label(name: &str, in_ms: u64, duration_ms: u64) -> String {
+    let _ = duration_ms;
+    if name.is_empty() {
+        format!("{} +{}ms", fmt_timecode(in_ms), duration_ms)
+    } else {
+        format!("{name} · {}", fmt_timecode(in_ms))
+    }
+}
+
+/// 素材路径 → 展示名(取文件名,去扩展名;空路径回落空串)。
+fn asset_display_name(path: &str) -> String {
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    file.split_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(file)
+        .to_string()
 }
 
 /// 轨道类型 → 主题语义色(低透明覆盖在 surface 之上)。
@@ -463,5 +507,21 @@ mod tests {
         assert_eq!(fmt_timecode(0), "0:00.0");
         assert_eq!(fmt_timecode(61_250), "1:01.2");
         assert_eq!(fmt_timecode(599_900), "9:59.9");
+    }
+
+    #[test]
+    fn clip_label_prefers_asset_name() {
+        assert_eq!(clip_label("geo01", 0, 5_600), "geo01 · 0:00.0");
+        assert_eq!(clip_label("geo01", 61_250, 5_600), "geo01 · 1:01.2");
+        // 空素材名回落入点 + 时长的旧格式
+        assert_eq!(clip_label("", 0, 12_000), "0:00.0 +12000ms");
+    }
+
+    #[test]
+    fn asset_display_name_stems_and_flattens() {
+        assert_eq!(asset_display_name("03_assets/a/geo01.mp4"), "geo01");
+        assert_eq!(asset_display_name("clipB"), "clipB");
+        assert_eq!(asset_display_name(""), "");
+        assert_eq!(asset_display_name("C:\\x\\vo.wav"), "vo");
     }
 }
