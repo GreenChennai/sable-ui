@@ -52,8 +52,12 @@ type ClipRenderData = (ClipId, u64, u64, u64, String, Option<Vec<Arc<RenderImage
 /// 播放头跳转/scrub 回调:`(ms, &mut App)`(全部 `Rc<dyn Fn>`,可克隆进
 /// 'static 闭包,与 Binding 同纪律:文档修改与撤销由应用层负责)。
 pub type SeekFn = Rc<dyn Fn(u64, &mut App)>;
-/// clip 移动回调:`(ClipId, 吸附后的新起点 ms, &mut App)`。
+/// clip 移动回调:`(ClipId, 吸附后的新起点 ms, &mut App)`。拖拽中**持续**
+/// 触发——应用层应做本地乐观预览(改视图模型),勿逐帧提交后端。
 pub type MoveClipFn = Rc<dyn Fn(ClipId, u64, &mut App)>;
+/// clip 松手回调:`(ClipId, 最终吸附落点 ms, &mut App)`。拖拽结束时触发
+/// 一次——应用层在此提交后端(乐观预览的落地帧)。
+pub type DropClipFn = Rc<dyn Fn(ClipId, u64, &mut App)>;
 /// clip 单击选中回调:`(ClipId, &mut App)`。
 pub type SelectClipFn = Rc<dyn Fn(ClipId, &mut App)>;
 
@@ -69,12 +73,19 @@ pub struct TimelineView {
     /// 片段缩略图条(视频轨胶片条;键 = ClipId 裸值,值 = 等高帧序列,
     /// 渲染时在块内水平平铺、超出裁剪)。应用层按素材异步抽帧后灌入。
     thumbs: HashMap<u64, Vec<Arc<RenderImage>>>,
+    /// 吸附开关(视图层 flag;拖拽换算与指示线读这里,应用层可切换)
+    snap_on: bool,
+    /// 拖拽中最后一次吸附落点((ClipId 裸值, ms));松手时经 on_drop_clip 提交
+    drag_last: Option<(u64, u64)>,
+    /// 吸附命中指示线位置(ms;拖拽中吸附生效时显示,松手清除)
+    snap_indicator: Option<u64>,
     clip_drag: Option<ClipDrag>,
     seeking: bool,
     /// 标尺区 bounds(prepaint 回写;scrub 换算基准)
     ruler_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
     on_seek: SeekFn,
     on_move_clip: MoveClipFn,
+    on_drop_clip: DropClipFn,
     on_select_clip: SelectClipFn,
 }
 
@@ -93,11 +104,15 @@ impl TimelineView {
             playhead_ms: 0,
             selected: None,
             thumbs: HashMap::new(),
+            snap_on: true,
+            drag_last: None,
+            snap_indicator: None,
             clip_drag: None,
             seeking: false,
             ruler_bounds: Rc::new(Cell::new(gpui::Bounds::default())),
             on_seek: Rc::new(|_, _| {}),
             on_move_clip: Rc::new(|_, _, _| {}),
+            on_drop_clip: Rc::new(|_, _, _| {}),
             on_select_clip: Rc::new(|_, _| {}),
         }
     }
@@ -123,10 +138,21 @@ impl TimelineView {
         self
     }
 
-    /// clip 移动(已吸附;碰撞裁决在应用层的 TimelineHistory)。
+    /// clip 移动(已吸附;拖拽中持续触发,应用层做本地乐观预览)。
     pub fn on_move_clip(mut self, f: impl Fn(ClipId, u64, &mut App) + 'static) -> Self {
         self.on_move_clip = Rc::new(f);
         self
+    }
+
+    /// clip 松手(拖拽结束,最终落点;应用层在此提交后端)。
+    pub fn on_drop_clip(mut self, f: impl Fn(ClipId, u64, &mut App) + 'static) -> Self {
+        self.on_drop_clip = Rc::new(f);
+        self
+    }
+
+    /// 吸附开关(应用层同步;影响拖拽换算与指示线)。
+    pub fn set_snap_enabled(&mut self, on: bool) {
+        self.snap_on = on;
     }
 
     /// clip 单击选中。
@@ -171,21 +197,54 @@ impl TimelineView {
         let Some(drag) = self.clip_drag else { return };
         // 借用域限定:时间轴的不可变借用只覆盖 snap 换算,出块即释放,
         // 随后的回调需要 &mut(cx)——不用 drop() 表达这一意图。
-        let snapped = {
+        let (snapped, hit) = {
             let t = self.timeline.read(cx);
             let dx = f64::from(event.position.x) - drag.start_x;
             let d_ms = dx / t.px_per_second * 1000.0;
             let raw = (drag.orig_start_ms as i64 + d_ms as i64).max(0) as u64;
             let tol_ms = tolerance_ms(t.px_per_second, SNAP_TOLERANCE_PX);
-            t.snap(raw, tol_ms, Some(drag.clip))
+            if !self.snap_on {
+                (raw, None)
+            } else {
+                // 候选 = 相邻片段起止(排除自身)+ 0 + 播放头(剪映同款)
+                let mut targets = t.snap_targets(Some(drag.clip));
+                if !targets.contains(&self.playhead_ms) {
+                    targets.push(self.playhead_ms);
+                }
+                let hit = targets
+                    .iter()
+                    .copied()
+                    .min_by_key(|t| t.abs_diff(raw))
+                    .filter(|t| t.abs_diff(raw) <= tol_ms);
+                let snapped = hit.unwrap_or(raw);
+                (snapped, hit)
+            }
         };
+        self.drag_last = Some((drag.clip.value(), snapped));
+        self.snap_indicator = hit;
         (self.on_move_clip)(drag.clip, snapped, cx);
         cx.notify();
     }
 
-    fn on_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn on_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.seeking = false;
+        // 松手落地:最终吸附位置交应用层提交(乐观预览的落地帧)
+        if let Some((id, ms)) = self.drag_last.take() {
+            let cid = self
+                .timeline
+                .read(cx)
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id.value() == id)
+                .map(|c| c.id);
+            if let Some(cid) = cid {
+                (self.on_drop_clip)(cid, ms, cx);
+            }
+        }
         self.clip_drag = None;
+        self.snap_indicator = None;
+        cx.notify();
     }
 
     /// 轨道行空白点击 = seek(行与标尺同一横滚内容坐标系,origin 一致)。
@@ -439,7 +498,19 @@ impl Render for TimelineView {
                                         .w(px(1.0))
                                         .h_full()
                                         .bg(colors.danger),
-                                ),
+                                )
+                                // 吸附指示线(拖拽中吸附命中时显示)
+                                .when_some(self.snap_indicator, |c, at| {
+                                    c.child(
+                                        div()
+                                            .absolute()
+                                            .left(pxv(ms_to_px(at, pps)))
+                                            .top(px(0.0))
+                                            .w(px(2.0))
+                                            .h_full()
+                                            .bg(colors.accent),
+                                    )
+                                }),
                         ),
                 ),
             );
