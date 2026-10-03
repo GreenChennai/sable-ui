@@ -17,12 +17,14 @@
 //! - 波形图/缩略图/拖拽投影动画 = M2(分册四 §8 性能红线:拖动不重解码)。
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     App, Context, Entity, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Window, canvas, div, px,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Render, RenderImage,
+    StatefulInteractiveElement, Styled, StyledImage as _, Window, canvas, div, img, px,
 };
 use sable_video::model::{ClipId, Timeline, TrackKind};
 
@@ -44,6 +46,9 @@ const MIN_DISPLAY_MS: u64 = 60_000;
 /// 纵向滚动区可见轨道数上限(超出出滚动条)。
 const VISIBLE_TRACKS: f32 = 8.0;
 
+/// 渲染期单片段数据快照(id/起点/时长/入点/显示名/缩略图条)。
+type ClipRenderData = (ClipId, u64, u64, u64, String, Option<Vec<Arc<RenderImage>>>);
+
 /// 播放头跳转/scrub 回调:`(ms, &mut App)`(全部 `Rc<dyn Fn>`,可克隆进
 /// 'static 闭包,与 Binding 同纪律:文档修改与撤销由应用层负责)。
 pub type SeekFn = Rc<dyn Fn(u64, &mut App)>;
@@ -61,6 +66,9 @@ pub struct TimelineView {
     /// 选中片段(应用层同步;高亮描边)。存裸值:ClipId 外部不可构造,
     /// 上层只有 id_map 的反向裸值可比对。
     selected: Option<u64>,
+    /// 片段缩略图条(视频轨胶片条;键 = ClipId 裸值,值 = 等高帧序列,
+    /// 渲染时在块内水平平铺、超出裁剪)。应用层按素材异步抽帧后灌入。
+    thumbs: HashMap<u64, Vec<Arc<RenderImage>>>,
     clip_drag: Option<ClipDrag>,
     seeking: bool,
     /// 标尺区 bounds(prepaint 回写;scrub 换算基准)
@@ -84,6 +92,7 @@ impl TimelineView {
             timeline,
             playhead_ms: 0,
             selected: None,
+            thumbs: HashMap::new(),
             clip_drag: None,
             seeking: false,
             ruler_bounds: Rc::new(Cell::new(gpui::Bounds::default())),
@@ -101,6 +110,11 @@ impl TimelineView {
     /// 应用层同步选中片段(高亮描边用;裸值口径,见结构体注释;None = 清除)。
     pub fn set_selected(&mut self, selected: Option<u64>) {
         self.selected = selected;
+    }
+
+    /// 整批替换片段缩略图条(键 = ClipId 裸值;壳侧按素材异步抽帧)。
+    pub fn set_clip_thumbs(&mut self, thumbs: HashMap<u64, Vec<Arc<RenderImage>>>) {
+        self.thumbs = thumbs;
     }
 
     /// 播放头跳转/scrub。
@@ -298,16 +312,18 @@ impl Render for TimelineView {
         let mut rows = v_flex();
         for track in 0..tracks {
             let kind = self.timeline.read(cx).tracks[track].kind;
-            let clips: Vec<(ClipId, u64, u64, u64, String)> = self.timeline.read(cx).tracks[track]
+            let clips: Vec<ClipRenderData> = self.timeline.read(cx).tracks[track]
                 .clips
                 .iter()
                 .map(|c| {
+                    let thumbs = self.thumbs.get(&c.id.value()).cloned();
                     (
                         c.id,
                         c.start_ms,
                         c.duration_ms,
                         c.in_ms,
                         asset_display_name(&c.asset.path),
+                        thumbs,
                     )
                 })
                 .collect();
@@ -319,9 +335,51 @@ impl Render for TimelineView {
                 .bg(colors.surface_1)
                 // 点轨道空白 = scrub 到该点(clip 已 stop_propagation 不冲突)
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_row_down));
-            for (id, start_ms, dur_ms, in_ms, name) in clips {
+            for (id, start_ms, dur_ms, in_ms, name, thumbs) in clips {
                 let tint = kind_tint(kind, colors);
                 let selected = self.selected == Some(id.value());
+                // 内容层:有缩略图条 = 胶片平铺(名称叠底),否则文字标签
+                let content: gpui::AnyElement =
+                    match thumbs.filter(|t| !t.is_empty()) {
+                        Some(frames) => div()
+                            .size_full()
+                            .flex()
+                            .overflow_hidden()
+                            .child(div().flex().h_full().children(frames.into_iter().map(
+                                |frame| {
+                                    img(frame)
+                                        .h_full()
+                                        .w(px(52.0))
+                                        .flex_shrink_0()
+                                        .object_fit(ObjectFit::Cover)
+                                },
+                            )))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(0.0))
+                                    .bottom(px(0.0))
+                                    .w_full()
+                                    .px(px(SpacingTokens::XS))
+                                    .py(px(1.0))
+                                    .bg(gpui::black().opacity(0.45))
+                                    .text_size(px(FONT_SIZE_CAPTION))
+                                    .text_color(colors.text_primary)
+                                    .overflow_hidden()
+                                    .child(clip_label(&name, in_ms, dur_ms)),
+                            )
+                            .into_any_element(),
+                        None => div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .px(px(SpacingTokens::XS))
+                            .text_size(px(FONT_SIZE_CAPTION))
+                            .text_color(colors.text_primary)
+                            .overflow_hidden()
+                            .child(clip_label(&name, in_ms, dur_ms))
+                            .into_any_element(),
+                    };
                 row = row.child(
                     div()
                         .absolute()
@@ -339,17 +397,9 @@ impl Render for TimelineView {
                             colors.border_subtle
                         })
                         .cursor_pointer()
-                        .child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .px(px(SpacingTokens::XS))
-                                .text_size(px(FONT_SIZE_CAPTION))
-                                .text_color(colors.text_primary)
-                                .overflow_hidden()
-                                .child(clip_label(&name, in_ms, dur_ms)),
-                        )
+                        .overflow_hidden()
+                        .relative()
+                        .child(content)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, ev: &MouseDownEvent, win, cx| {
