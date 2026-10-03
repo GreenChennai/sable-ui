@@ -26,13 +26,15 @@ use gpui::{
 };
 use sable_video::model::{ClipId, Timeline, TrackKind};
 
+use gpui::prelude::FluentBuilder as _;
+
 use crate::theme::theme;
 use crate::tokens::{FONT_SIZE_CAPTION, RadiusTokens, SpacingTokens, v_flex};
 
-/// 标尺高度(时间码 11px 行高 14 + 上下留白)。
-pub const RULER_HEIGHT_PX: f32 = 24.0;
-/// 轨道行高(派生基准:行内只有 clip 色块,取紧凑档下限)。
-pub const TRACK_HEIGHT_PX: f32 = 28.0;
+/// 标尺高度(时间码 11px 行高 + 刻度区 + 播放头把手位)。
+pub const RULER_HEIGHT_PX: f32 = 28.0;
+/// 轨道行高(NLE 常规档:clip 36px + 上下留白)。
+pub const TRACK_HEIGHT_PX: f32 = 44.0;
 /// clip 拖拽的吸附容差(屏幕像素,分册四 §8)。
 pub const SNAP_TOLERANCE_PX: f64 = 8.0;
 /// 刻度目标间距下限(像素)。
@@ -172,6 +174,21 @@ impl TimelineView {
         self.clip_drag = None;
     }
 
+    /// 轨道行空白点击 = seek(行与标尺同一横滚内容坐标系,origin 一致)。
+    fn on_row_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+        self.seeking = true;
+        let origin_x = f64::from(self.ruler_bounds.get().origin.x);
+        self.seek_to(f64::from(event.position.x) - origin_x, cx);
+    }
+
     fn on_clip_down(
         &mut self,
         clip: ClipId,
@@ -265,6 +282,17 @@ impl Render for TimelineView {
                 );
             }
         }
+        // 播放头把手(标尺上的红色小帽;scrub 拖红线时视觉锚点)
+        ruler = ruler.child(
+            div()
+                .absolute()
+                .left(pxv((playhead_x - 4.0).max(0.0)))
+                .top(px(0.0))
+                .w(px(8.0))
+                .h(px(6.0))
+                .rounded(px(2.0))
+                .bg(colors.danger),
+        );
 
         // —— 轨道区(横向随标尺同步滚动,纵向独立滚动)+ 播放头 ——
         let mut rows = v_flex();
@@ -288,7 +316,9 @@ impl Render for TimelineView {
                 .w(pxv(content_w))
                 .h(px(TRACK_HEIGHT_PX))
                 .mt(px(SpacingTokens::XS))
-                .bg(colors.surface_1);
+                .bg(colors.surface_1)
+                // 点轨道空白 = scrub 到该点(clip 已 stop_propagation 不冲突)
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::on_row_down));
             for (id, start_ms, dur_ms, in_ms, name) in clips {
                 let tint = kind_tint(kind, colors);
                 let selected = self.selected == Some(id.value());
@@ -300,8 +330,9 @@ impl Render for TimelineView {
                         .w(pxv(ms_to_px(dur_ms, pps).max(2.0)))
                         .h(px(TRACK_HEIGHT_PX - 4.0))
                         .rounded(px(RadiusTokens::SM))
-                        .bg(tint.opacity(if selected { 0.6 } else { 0.35 }))
-                        .border_1()
+                        .bg(tint.opacity(if selected { 0.65 } else { 0.35 }))
+                        .when(selected, |c| c.border_2())
+                        .when(!selected, |c| c.border_1())
                         .border_color(if selected {
                             colors.accent
                         } else {
@@ -310,6 +341,9 @@ impl Render for TimelineView {
                         .cursor_pointer()
                         .child(
                             div()
+                                .size_full()
+                                .flex()
+                                .items_center()
                                 .px(px(SpacingTokens::XS))
                                 .text_size(px(FONT_SIZE_CAPTION))
                                 .text_color(colors.text_primary)
@@ -319,6 +353,7 @@ impl Render for TimelineView {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, ev: &MouseDownEvent, win, cx| {
+                                cx.stop_propagation();
                                 this.on_clip_down(id, start_ms, ev, win, cx)
                             }),
                         ),
