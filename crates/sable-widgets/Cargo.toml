@@ -11,9 +11,11 @@ authors.workspace = true
 # 组件级 feature(分册六 §2.2/§2.3):小软件按需点菜,不想要的组件不进编译产物
 [features]
 default = ["full"]
-full = ["theme", "anim", "binding", "color", "number-field", "inspector", "layer-panel", "timeline", "curve-editor"]
+full = ["theme", "anim", "binding", "color", "number-field", "inspector", "layer-panel", "timeline", "curve-editor", "controls"]
 theme = []
 anim = []
+# 基础控件层(迭代审查报告 §5.6 批1,CMP-01):全部消费 tokens/state_layer/弹簧令牌
+controls = ["theme", "anim"]
 binding = []
 color = []
 # number-field/layer-panel 接入 A7/A4 微交互(HoverState/FlipTracker 在 anim 引擎上),
