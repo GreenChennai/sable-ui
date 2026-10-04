@@ -6,6 +6,13 @@
 //!   hover/press 用白/黑 alpha 叠加(极性随底色亮度自动取向),selected =
 //!   accent 同比例 alpha(深浅一致),disabled 容器不变;修复旧亮度法在
 //!   浅色底钳到 1.0 失效的问题;
+//! - 禁用态统一规则(TOK-07,报告 §5.9):**禁用 = 仅前景降级、容器不变**
+//!   ——任何启用态前景档一律降为 `text_disabled`([`disabled_foreground`]),
+//!   容器背景/描边**不**整体降饱和或变色([`state_layer`] 的
+//!   [`InteractState::Disabled`] 分支恒等直通,`StateLayerTokens` 的
+//!   `disabled` alpha 恒 0)。组件的禁用路径(如 NumberField 禁用态、
+//!   EffectStack 行内小按钮)一律经这两件落色,禁止再各写各的灰态
+//!   (规则门禁:TC-TOK-DISABLED-01);
 //! - 三态交互时长/时长档重指向:[`DUR_INTERACT_MS`] 系列常量(120/200ms
 //!   已重指向 [`crate::tokens::MotionTokens`] 动效四档,消除两处真相);
 //!   [`hover_tint`] / [`pressed_tint`] 保留为**兼容别名**,内部改走
@@ -193,6 +200,20 @@ fn overlay_over_base(base: Hsla, overlay: Hsla, alpha: f32) -> Hsla {
         l: base.l + (overlay.l - base.l) * t,
         a: out_a,
     }
+}
+
+/// 禁用态前景色(TOK-07 统一规则,纯函数):**禁用 = 仅前景降级**——任何
+/// 启用态前景档(`text_strong`..`text_placeholder`)一律降为
+/// `text_disabled` 令牌,不做亮度/饱和度派生(文字档位是 token,禁用色
+/// 必须同源,禁止组件自调灰)。容器侧规则见 [`state_layer`] 的
+/// [`InteractState::Disabled`] 分支:恒等直通,背景/描边逐位不变。
+///
+/// `enabled_fg` 参与签名是为了让调用点可读:`disabled_foreground(启用档,
+/// text_disabled)` 自证"从哪一档降级、降到哪一档";实现恒返回第二参,
+/// 组件不得用它做颜色运算。
+#[must_use]
+pub fn disabled_foreground(_enabled_fg: Hsla, text_disabled: Hsla) -> Hsla {
+    text_disabled
 }
 
 /// hover 态底色(**兼容别名**):内部 = [`state_layer`]`(base, Hover)`——

@@ -446,7 +446,9 @@ fn eye_button(
 }
 
 /// 行内小按钮(上移/下移/删除/添加预设):enabled 态可点 + hover 加亮;
-/// disabled 态纯灰、无热区(栈顶禁"上"、栈底禁"下",见 [`row_move_enabled`])。
+/// disabled 态无热区。TOK-07 统一规则:禁用 = 仅前景降级
+/// ([`interact::disabled_foreground`] → text_disabled),容器背景与启用态
+/// **逐位相同**(旧实现整体褪为无底灰态,违反"容器不变",本轮修正)。
 fn mini_button(
     label: &'static str,
     colors: ColorTokens,
@@ -476,7 +478,12 @@ fn mini_button(
             .child(label)
             .into_any_element()
     } else {
-        base.text_color(colors.text_disabled)
+        // TOK-07:容器不变(bg 保留 surface_2,无 hover 无热区),仅前景降级
+        base.bg(colors.surface_2)
+            .text_color(interact::disabled_foreground(
+                colors.text_secondary,
+                colors.text_disabled,
+            ))
             .child(label)
             .into_any_element()
     }

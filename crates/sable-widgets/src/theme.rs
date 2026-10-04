@@ -405,9 +405,51 @@ mod tests {
 // V3.0 T3:主题定制注入 + 全 token 过渡(纯函数状态机,帧泵在应用层)
 // ---------------------------------------------------------------------------
 
+/// 注入主题的纯组装(TOK-06;不触全局态,库测试直测):以 `mode` 的整套
+/// 预设为底,替换 `colors`;`canvas` 传 `Some(自定义画布语义色)` 时画布
+/// 8 槽全部取注入值,传 `None` 时取 `mode` 预设——**与旧 [`inject`] 的
+/// 组装语义逐位一致**。[`inject`] 与 [`inject_with`] 共用本单点,两条
+/// 入口一套语义。
+#[must_use]
+pub fn injected_theme(
+    colors: ColorTokens,
+    mode: ThemeMode,
+    canvas: Option<CanvasTheme>,
+) -> SableTheme {
+    let mut themed = match mode {
+        ThemeMode::Dark => SableTheme::dark(),
+        ThemeMode::Light => SableTheme::light(),
+    };
+    themed.colors = colors;
+    if let Some(canvas) = canvas {
+        themed.canvas = canvas;
+    }
+    themed
+}
+
+/// 注入自定义调色板 + **可选画布语义色**(TOK-06 第三方换肤入口变体):
+///
+/// - `canvas = Some(自定义)` → 画布 8 槽语义色(底/画板/网格/参考线/选中/
+///   锚点/选中锚点/钢笔预览)**全部取注入值**,第三方换肤可定制画布配色;
+/// - `canvas = None` → 行为与 [`inject`] **逐位一致**(画布重置为 `mode`
+///   预设,兼容语义不变)。
+///
+/// 其余语义(以 `mode` 预设为底、`mode` 字段落为参数、注入即取消过渡)
+/// 与 [`inject`] 完全同源——[`inject`] 就是 `inject_with(.., None)`,两者
+/// 共用 [`injected_theme`] 组装与同一条"清槽 + `set_global`"实现。
+pub fn inject_with(
+    cx: &mut App,
+    colors: ColorTokens,
+    mode: ThemeMode,
+    canvas: Option<CanvasTheme>,
+) {
+    cancel_transition(cx);
+    cx.set_global(injected_theme(colors, mode, canvas));
+}
+
 /// 注入自定义调色板(第三方主题入口,V3.0 T3.1):以 `mode` 的整套预设为
 /// 底,替换 `colors` 后 `set_global`,组件下一帧生效。组件读色走全局态,
-/// 故注入即全量换肤。
+/// 故注入即全量换肤。需要连画布语义色一起定制时用 [`inject_with`]。
 ///
 /// # 注入即取消过渡(V4.0 T5.1 互斥语义)
 ///
@@ -416,21 +458,15 @@ mod tests {
 /// 插值不再覆盖全局——状态机无互斥时,帧泵下一帧就会把注入值冲回插值态
 /// (V4.0 review R5 实锤,本轮修复)。
 ///
-/// # CanvasTheme 强制重置(如实声明,行为与 V3.0 相同)
+/// # CanvasTheme 重置(兼容语义,与 V3.0 逐位一致)
 ///
-/// 画布语义色**不**随注入走:一律取 `mode` 对应预设
+/// 画布语义色**不**随本入口的注入走:一律取 `mode` 对应预设
 /// ([`CanvasTheme::dark`]/[`CanvasTheme::light`])的 8 色整套,`mode` 字段
-/// 同样落为 `mode` 参数。即注入方只能定制 UI 侧 15 个色彩 token,画布
-/// 配色不可定制;`mode` 与当前相同时也仍会被强制重置为该模式预设。
+/// 同样落为 `mode` 参数。即本入口只能定制 UI 侧色彩 token;`mode` 与当前
+/// 相同时也仍会被强制重置为该模式预设。TOK-06 起,要改画布配色请走
+/// [`inject_with`] 传 `Some(CanvasTheme)`。
 pub fn inject(cx: &mut App, colors: ColorTokens, mode: ThemeMode) {
-    cancel_transition(cx);
-    let next = match mode {
-        ThemeMode::Dark => SableTheme::dark(),
-        ThemeMode::Light => SableTheme::light(),
-    };
-    let mut themed = next;
-    themed.colors = colors;
-    cx.set_global(themed);
+    inject_with(cx, colors, mode, None);
 }
 
 /// 主题过渡状态机(V3.0 T3.2,纯函数;对应分册六 §4.3 #14):

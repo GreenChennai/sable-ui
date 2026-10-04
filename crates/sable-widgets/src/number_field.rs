@@ -21,6 +21,13 @@
 //! | IME | [`EntityInputHandler`] 实现挂 `track_focus` 元素,`Window::handle_input`
 //!   在 paint 阶段注册(见下方"IME 钩子") | ✅ 接口全通 |
 //!
+//! # 禁用态(TOK-07,报告 §5.9)
+//!
+//! `.disabled(true)` 门控上表**全部**交互路径(拖拽/滚轮/键盘/双击编辑/
+//! 悬停动画);视觉走 [`disabled_visual`]:**仅前景降级**(`text_disabled`),
+//! 容器背景/描边与静止态逐位相同——不整体降饱和、不变色(规则与门禁
+//! TC-TOK-DISABLED-01 见 [`crate::interact`] 模块 doc)。
+//!
 //! # 编辑态状态机
 //!
 //! ```text
@@ -76,7 +83,7 @@
 //! 容器上)。
 
 use gpui::{
-    Context, ElementId, EntityInputHandler, InteractiveElement, IntoElement, MouseButton,
+    Context, ElementId, EntityInputHandler, Hsla, InteractiveElement, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollWheelEvent,
     SharedString, StatefulInteractiveElement, Styled, Window, canvas, px,
 };
@@ -86,7 +93,8 @@ use crate::binding::Binding;
 use crate::interact::{self, HoverState};
 use crate::theme::theme;
 use crate::tokens::{
-    HEIGHT_COMPACT, MONO_FONT, RadiusTokens, SpacingTokens, TextSize, control_height, h_flex,
+    ColorTokens, HEIGHT_COMPACT, MONO_FONT, RadiusTokens, SpacingTokens, TextSize, control_height,
+    h_flex,
 };
 
 /// 控内布局估行高(12px 等宽数值的紧凑估;高度派生用下限,与
@@ -107,6 +115,35 @@ pub fn value_font_family() -> &'static str {
     MONO_FONT
 }
 
+/// 数值框的禁用态视觉(TOK-07):容器不变、仅前景降级。
+///
+/// 三色全部单一源自 [`ColorTokens`](底 = `surface_2`、描边 = `border_subtle`
+/// ——与**静止态**容器逐位同源;前景经
+/// [`interact::disabled_foreground`](crate::interact::disabled_foreground)
+/// 收敛 `text_disabled`),渲染与门禁(TC-TOK-DISABLED-01)共用本结构,
+/// 不许组件另调灰。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DisabledVisual {
+    /// 容器底(= 静止态 `surface_2`,逐位不变)
+    pub bg: Hsla,
+    /// 容器描边(= 静止态 `border_subtle`,逐位不变)
+    pub border: Hsla,
+    /// 禁用前景(= `text_disabled`)
+    pub fg: Hsla,
+}
+
+/// 禁用态视觉裁决(纯函数,TOK-07 规则在 NumberField 的落地):禁用 =
+/// 仅前景降级,容器背景/描边与静止态**逐位相同**(不整体降饱和/变色)。
+/// render 的 `disabled` 分支与 TC-TOK-DISABLED-01 共用本单点。
+#[must_use]
+pub fn disabled_visual(colors: &ColorTokens) -> DisabledVisual {
+    DisabledVisual {
+        bg: colors.surface_2,
+        border: colors.border_subtle,
+        fg: interact::disabled_foreground(colors.text_secondary, colors.text_disabled),
+    }
+}
+
 /// 数值框(有状态 Entity):`cx.new(|_| NumberField::new(binding).range(0.0, 100.0))`。
 pub struct NumberField {
     binding: Binding<f64>,
@@ -124,6 +161,9 @@ pub struct NumberField {
     /// 悬停事件跟踪用的元素 id(`on_hover` 需要 Stateful 元素;同屏多实例
     /// 必须各给唯一 id,未给则退化为即时 hover 样式)
     element_id: Option<ElementId>,
+    /// 禁用态(TOK-07):真 = 交互全门控(拖拽/滚轮/键盘/悬停动画)且视觉
+    /// 走 [`disabled_visual`](仅前景降级,容器不变)
+    disabled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -303,7 +343,17 @@ impl NumberField {
             focus: None,
             hover: HoverState::new(),
             element_id: None,
+            disabled: false,
         }
+    }
+
+    /// 禁用态(TOK-07):禁用即交互全门控(点击拖拽/双击编辑/滚轮/键盘/
+    /// 悬停动画),视觉经 [`disabled_visual`]——**仅前景降级**
+    /// (`text_disabled`),容器背景/描边与静止态逐位相同。builder 风格,
+    /// 与 [`Self::range`]/[`Self::step`] 同链。
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     /// 元素 id(悬停动画需要 Stateful 元素;同屏多个数值框各给唯一 id,
@@ -378,6 +428,9 @@ impl NumberField {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return; // TOK-07:禁用即交互门控(不拖拽/不进编辑)
+        }
         if event.button != MouseButton::Left {
             return;
         }
@@ -403,6 +456,9 @@ impl NumberField {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return; // TOK-07:禁用即交互门控(拖拽不推进)
+        }
         if self.editing.is_some() {
             return; // 编辑态时拖拽禁用(任务 3.3 #7)
         }
@@ -436,6 +492,9 @@ impl NumberField {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return; // TOK-07:禁用即交互门控(滚轮不步进)
+        }
         if self.editing.is_some() {
             return; // 编辑态滚轮不步进(文本正在编辑,语义冲突)
         }
@@ -459,6 +518,9 @@ impl NumberField {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            return; // TOK-07:禁用即交互门控(步进/编辑/键入全关)
+        }
         let keystroke = &event.keystroke;
         // —— 编辑态:控制键先行(提交/取消/跳格),再进 buffer 状态机
         // (先分流控制键,避免与 `self.editing.as_mut()` 的借用交叠)——
@@ -558,8 +620,12 @@ impl NumberField {
     }
 
     /// A7 悬停进出:驱动 [`HoverState`] 过渡并请求重绘(动画帧由 render 里
-    /// 的 `request_animation_frame` 续)。
+    /// 的 `request_animation_frame` 续)。禁用态忽略(TOK-07:容器不变,
+    /// 无悬停反馈;进行中的过渡由 render 停泵后自然沉降)。
     fn on_hover_changed(&mut self, hovered: &bool, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            return;
+        }
         let now = interact::now_ms();
         if *hovered {
             self.hover.on_enter(now);
@@ -624,18 +690,37 @@ impl Render for NumberField {
         };
 
         // A7/TOK-04 三态底色:静止/悬停 = surface_2 → state_layer(Hover)
-        // 插值(深色叠白/浅色叠黑);按下 = state_layer(Pressed)
+        // 插值(深色叠白/浅色叠黑);按下 = state_layer(Pressed)。
+        // TOK-07 禁用分支:容器(bg/描边)= 静止态**逐位不变**,仅前景经
+        // [`disabled_visual`] 降级到 text_disabled(不整体降饱和,不响应
+        // hover/press)。
+        let disabled = self.disabled;
         let base_bg = colors.surface_2;
         let accent = colors.accent;
         let now = interact::now_ms();
-        let hover_progress = self.hover.progress_at(now);
-        let bg = if dragging || editing.is_some() {
-            interact::state_layer(base_bg, interact::InteractState::Pressed, accent)
+        let hover_progress = if disabled {
+            0.0
         } else {
-            lerp_hsla(
-                base_bg,
-                interact::state_layer(base_bg, interact::InteractState::Hover, accent),
-                hover_progress,
+            self.hover.progress_at(now)
+        };
+        let (bg, border, fg) = if disabled {
+            let v = disabled_visual(colors);
+            (v.bg, v.border, v.fg)
+        } else if dragging || editing.is_some() {
+            (
+                interact::state_layer(base_bg, interact::InteractState::Pressed, accent),
+                colors.border_strong,
+                colors.text_primary,
+            )
+        } else {
+            (
+                lerp_hsla(
+                    base_bg,
+                    interact::state_layer(base_bg, interact::InteractState::Hover, accent),
+                    hover_progress,
+                ),
+                colors.border_subtle,
+                colors.text_secondary,
             )
         };
 
@@ -652,20 +737,12 @@ impl Render for NumberField {
             .px(px(SpacingTokens::SM))
             .rounded(px(RadiusTokens::SM))
             .border_1()
-            .border_color(if dragging || editing.is_some() {
-                colors.border_strong
-            } else {
-                colors.border_subtle
-            })
+            .border_color(border)
             .bg(bg)
             .text_size(px(TextSize::MONO.size))
             .font_family(value_font_family())
             .font_weight(gpui::FontWeight(TextSize::MONO.weight))
-            .text_color(if dragging || editing.is_some() {
-                colors.text_primary
-            } else {
-                colors.text_secondary
-            })
+            .text_color(fg)
             .cursor_pointer()
             .child(display)
             .child(
@@ -686,7 +763,8 @@ impl Render for NumberField {
             );
         // 无 id:退化为 gpui hover 样式即时切换(无动画)。hover 底色必须挂
         // 内容层(阴影容器 bg 会被 quad 与内容盖住,挂上去等于没有反馈)。
-        if self.element_id.is_none() {
+        // 禁用态不挂 hover 样式(TOK-07:容器不变,无交互反馈)。
+        if !disabled && self.element_id.is_none() {
             let hover_bg = interact::state_layer(base_bg, interact::InteractState::Hover, accent);
             inner = inner.hover(move |style| style.bg(hover_bg));
         }
@@ -703,8 +781,9 @@ impl Render for NumberField {
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .on_key_down(cx.listener(Self::on_key_down));
 
-        // 悬停动画在跑就续帧(静止零帧提交,分册六 §4.4)
-        if self.hover.is_running(now) {
+        // 悬停动画在跑就续帧(静止零帧提交,分册六 §4.4);禁用态悬停进度
+        // 冻结(渲染已忽略),不再续帧
+        if !disabled && self.hover.is_running(now) {
             window.request_animation_frame();
         }
         match self.element_id.clone() {
@@ -916,6 +995,26 @@ pub fn format_value(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TOK-07:builder 存位 + 禁用视觉单点(容器 = 静止态容器、前景 =
+    /// text_disabled;TC-TOK-DISABLED-01 的组件侧主体验收在
+    /// tests/gate_inject_disabled.rs,此处锁 builder → 字段链路)。
+    #[test]
+    fn disabled_builder_sets_flag_and_visual_follows_rule() {
+        let field = NumberField::new(Binding::new(|_cx| 0.0, |_v, _cx| {})).disabled(true);
+        assert!(field.disabled, "builder 应存位");
+        assert!(!NumberField::new(Binding::new(|_cx| 0.0, |_v, _cx| {})).disabled);
+        let colors = ColorTokens::dark();
+        let v = disabled_visual(&colors);
+        assert_eq!(
+            v,
+            DisabledVisual {
+                bg: colors.surface_2,
+                border: colors.border_subtle,
+                fg: colors.text_disabled,
+            }
+        );
+    }
 
     #[test]
     fn modifier_scale_alt_takes_priority_over_shift() {

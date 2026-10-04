@@ -57,6 +57,10 @@
   disabled/placeholder/danger/success,浅色 tertiary/disabled/placeholder/accent/
   danger/warning;浅色 accent #4F9FFF→#2264C8,深色 accent 未动;JSON 与六档强弱序
   同步),新增 `ColorTokens.info` 与 WCAG 公开函数
+- **注入语义与禁用规则**(TOK-06/07,第 2 组):`inject_with(…, canvas: Option<CanvasTheme>)`
+  支持第三方定制画布语义色(None=旧 inject 逐位兼容,`inject` 内部委托);禁用态统一规则
+  "仅前景降级、容器不变"——`interact::disabled_foreground` 纯函数 + NumberField `.disabled()`
+  (容器四通道与静止态逐位同源)+ effect_stack mini_button 禁用分支修正(旧:容器整体褪色)
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处
