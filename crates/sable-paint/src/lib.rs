@@ -12,8 +12,11 @@
 //! 3. **切 DX12**:无 Vulkan 设备 → `SABLE_GPU_BACKEND=dx12` 重试;
 //! 4. **vello_cpu 软渲染**:全部失败 → [`cpu::CpuRenderer`] + 提示升级驱动。
 //!
-//! v0.1 落地:cpu 全量([`sink::PaintSink`] 双实现中的 CPU 侧)、gpu 骨架
-//! (后端选择/设备创建/`GpuGuard`/`VelloSink`)。
+//! v0.1 落地:cpu 全量([`sink::PaintSink`] 双实现中的 CPU 侧)、gpu 全链路接线
+//! (后端选择/设备创建/`GpuGuard`/`VelloSink`,以及生产帧入口
+//! [`gpu_frame::GpuFrameRenderer`]:每帧经 `render_with_recovery` 包装幂等帧闭包,
+//! 资源按 `(generation, resource)` 配对缓存,二连败返回宿主契约信号
+//! `GpuDeviceLostFatal`——RBT-01)。
 //!
 //! 上层(sable-canvas)只依赖 [`sink::PaintSink`],降级 = 换 Sink,场景图零改动。
 
@@ -30,6 +33,8 @@ pub mod cpu;
 pub mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+#[cfg(feature = "gpu")]
+pub mod gpu_frame;
 
 pub use error::{PaintError, PaintResult};
 
@@ -41,7 +46,12 @@ pub mod prelude {
     pub use crate::effects::{ShadowCache, ShadowParams, render_shadow_rgba};
     pub use crate::error::{PaintError, PaintResult};
     #[cfg(feature = "gpu")]
-    pub use crate::gpu::{GpuGuard, VelloSink, create_device, create_instance};
+    pub use crate::gpu::{
+        FrameError, FrameRecovery, GpuGuard, VelloSink, create_device, create_instance,
+        render_with_recovery,
+    };
+    #[cfg(feature = "gpu")]
+    pub use crate::gpu_frame::{FrameOutput, GpuDegradation, GpuFrameRenderer};
     pub use crate::sink::PaintSink;
     pub use crate::style::{to_brush, to_color, to_stroke, to_vello_blend, with_opacity};
     pub use sable_foundation::scene::{BlendMode, GradientStop, Paint, Rgba8, StrokeStyle};
