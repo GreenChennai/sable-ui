@@ -28,8 +28,9 @@ use sable_foundation::scene::{GradientStop, Paint, Rgba8};
 
 use crate::binding::Binding;
 use crate::color::ColorWell;
+use crate::controls::button::{Button, ButtonSize, button_element};
 use crate::theme::theme;
-use crate::tokens::{RadiusTokens, SpacingTokens, control_height, h_flex, lerp_rgba8, v_flex};
+use crate::tokens::{RadiusTokens, SpacingTokens, h_flex, lerp_rgba8, v_flex};
 
 /// 预览条采样段数(分册四 §5 契约:24 段)。
 pub const PREVIEW_SAMPLES: usize = 24;
@@ -226,6 +227,8 @@ impl Render for GradientEditor {
         }
 
         // 工具行:加/删色标 + 选中色标的颜色展示(取色浮窗 = M2)
+        // 按钮 = 基础控件层 Button 内联形态(CMP-11 收口:私有 text_button
+        // 已删;hover/press 即时 state-layer,比旧实现(无 hover 反馈)更好)
         let selected_well = selected
             .filter(|i| *i < stops.len())
             .map(|i| stops[i].color);
@@ -236,41 +239,25 @@ impl Render for GradientEditor {
             .child(
                 h_flex()
                     .gap(px(SpacingTokens::SM))
-                    .child(text_button(
-                        "+ 色标",
-                        t.colors,
-                        cx.listener(|this, _ev, win, cx| {
-                            this.add_stop(win, cx);
-                        }),
+                    .child(button_element(
+                        Button::new("gradient-add-stop", "+ 色标")
+                            .size(ButtonSize::Compact)
+                            .on_press(cx.listener(|this, _ev, win, cx| {
+                                this.add_stop(win, cx);
+                            })),
+                        cx,
                     ))
-                    .child(text_button(
-                        "− 删除",
-                        t.colors,
-                        cx.listener(|this, _ev, win, cx| {
-                            this.remove_selected(win, cx);
-                        }),
+                    .child(button_element(
+                        Button::new("gradient-remove-selected", "− 删除")
+                            .size(ButtonSize::Compact)
+                            .on_press(cx.listener(|this, _ev, win, cx| {
+                                this.remove_selected(win, cx);
+                            })),
+                        cx,
                     ))
                     .children(selected_well.map(ColorWell::new)),
             )
     }
-}
-
-/// 小文字按钮(theme 语义色;v0.1 无 hover 动效,动效 = M2 动画引擎接线)。
-fn text_button(
-    label: &'static str,
-    colors: crate::tokens::ColorTokens,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> gpui::AnyElement {
-    div()
-        .px(px(SpacingTokens::SM))
-        .h(px(control_height(crate::tokens::HEIGHT_COMPACT, 14.0, 4.0)))
-        .rounded(px(RadiusTokens::SM))
-        .bg(colors.surface_3)
-        .text_color(colors.text_secondary)
-        .cursor_pointer()
-        .child(label)
-        .on_mouse_down(MouseButton::Left, on_click)
-        .into_any_element()
 }
 
 // —— 纯函数(单测覆盖)——
@@ -483,7 +470,7 @@ mod tests {
         // 常量与派生公式守恒(f32::max 非 const 的固化回归)
         assert_eq!(
             STRIP_H_PX,
-            control_height(crate::tokens::HEIGHT_COMPACT, 12.0, 5.0)
+            crate::tokens::control_height(crate::tokens::HEIGHT_COMPACT, 12.0, 5.0)
         );
     }
 }

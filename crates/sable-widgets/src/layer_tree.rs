@@ -54,14 +54,15 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Context, ElementId, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, px,
-    uniform_list,
+    App, ClickEvent, Context, ElementId, Entity, Hsla, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Window,
+    div, px, uniform_list,
 };
 use sable_foundation::scene::{NodeId, Scene};
 use slotmap::Key;
 
 use crate::anim::lerp_hsla;
+use crate::controls::button::{ButtonVariant, IconButton, icon_button_element};
 use crate::flip::FlipTracker;
 use crate::interact::{self, HoverState, PulseState};
 use crate::theme::theme;
@@ -79,8 +80,6 @@ const INDENT_PX: f32 = SpacingTokens::MD;
 const GLYPH_SIZE_PX: f32 = 12.0;
 /// 眼睛/锁列的方形占位边长(LayerPanel 行内既有占位规格,原样沿用)。
 const EYE_LOCK_SIZE_PX: f32 = 10.0;
-/// 行尾重排小按钮的边长(LG 档,4px 网格)。
-const REORDER_BUTTON_PX: f32 = 16.0;
 
 /// 眼睛 toggle 回调:`(NodeId, &mut App)`(约定同 LayerPanel)。
 pub type ToggleVisibleFn = Rc<dyn Fn(NodeId, &mut App)>;
@@ -415,25 +414,25 @@ impl Render for LayerTreePanel {
                 // 四个重排按钮(↑↓←→;应用层经 Reparent::capture 落命令)
                 let promote = {
                     let panel = panel.clone();
-                    move |_ev: &MouseDownEvent, _win: &mut Window, cx: &mut App| {
+                    move |_ev: &ClickEvent, _win: &mut Window, cx: &mut App| {
                         let _ = panel.update(cx, |this, cx| (this.on_promote)(id, cx));
                     }
                 };
                 let demote = {
                     let panel = panel.clone();
-                    move |_ev: &MouseDownEvent, _win: &mut Window, cx: &mut App| {
+                    move |_ev: &ClickEvent, _win: &mut Window, cx: &mut App| {
                         let _ = panel.update(cx, |this, cx| (this.on_demote)(id, cx));
                     }
                 };
                 let up = {
                     let panel = panel.clone();
-                    move |_ev: &MouseDownEvent, _win: &mut Window, cx: &mut App| {
+                    move |_ev: &ClickEvent, _win: &mut Window, cx: &mut App| {
                         let _ = panel.update(cx, |this, cx| (this.on_move_up)(id, cx));
                     }
                 };
                 let down = {
                     let panel = panel.clone();
-                    move |_ev: &MouseDownEvent, _win: &mut Window, cx: &mut App| {
+                    move |_ev: &ClickEvent, _win: &mut Window, cx: &mut App| {
                         let _ = panel.update(cx, |this, cx| (this.on_move_down)(id, cx));
                     }
                 };
@@ -557,10 +556,33 @@ impl Render for LayerTreePanel {
                     )
                     // 行尾重排按钮组:← 提升一级 / → 降一级 / ↑ 上移 / ↓ 下移
                     // (真拖拽 = v2.1;目标计算走 promote_target 等纯函数)
-                    .child(tree_glyph_button("←", colors, promote))
-                    .child(tree_glyph_button("→", colors, demote))
-                    .child(tree_glyph_button("↑", colors, up))
-                    .child(tree_glyph_button("↓", colors, down))
+                    // CMP-11 收口:私有 tree_glyph_button 已删,统一走
+                    // controls::button 的 IconButton 内联形态(Secondary 凸起
+                    // 底沿用旧视觉;16px → 20px 命中区,A11Y-03 方向更优)
+                    .child(icon_button_element(
+                        IconButton::new(ElementId::NamedInteger("tree-promote".into(), key), "←")
+                            .variant(ButtonVariant::Secondary)
+                            .on_press(promote),
+                        cx,
+                    ))
+                    .child(icon_button_element(
+                        IconButton::new(ElementId::NamedInteger("tree-demote".into(), key), "→")
+                            .variant(ButtonVariant::Secondary)
+                            .on_press(demote),
+                        cx,
+                    ))
+                    .child(icon_button_element(
+                        IconButton::new(ElementId::NamedInteger("tree-move-up".into(), key), "↑")
+                            .variant(ButtonVariant::Secondary)
+                            .on_press(up),
+                        cx,
+                    ))
+                    .child(icon_button_element(
+                        IconButton::new(ElementId::NamedInteger("tree-move-down".into(), key), "↓")
+                            .variant(ButtonVariant::Secondary)
+                            .on_press(down),
+                        cx,
+                    ))
                     .on_hover(on_hover);
                 items.push(row.into_any_element());
             }
@@ -592,34 +614,6 @@ impl Render for LayerTreePanel {
 /// 折叠表只读查询(渲染侧用;absent = 展开)。
 fn collapsed_contains(collapsed: &HashMap<NodeId, bool>, id: NodeId) -> bool {
     collapsed.get(&id).copied().unwrap_or(false)
-}
-
-/// 行尾重排小按钮(↑↓←→ 字形占位;回调收 &mut App;A7 hover 即时
-/// state-layer 叠加)。
-fn tree_glyph_button(
-    label: &'static str,
-    colors: crate::tokens::ColorTokens,
-    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> gpui::AnyElement {
-    let hover_bg = interact::state_layer(
-        colors.surface_3,
-        interact::InteractState::Hover,
-        colors.accent,
-    );
-    div()
-        .size(px(REORDER_BUTTON_PX))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(RadiusTokens::SM))
-        .bg(colors.surface_3)
-        .text_size(px(FONT_SIZE_CAPTION))
-        .text_color(colors.text_secondary)
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover_bg))
-        .child(label)
-        .on_mouse_down(MouseButton::Left, on_click)
-        .into_any_element()
 }
 
 /// f64 几何 → 像素(与 LayerPanel 同款惯例:几何 f64,画元素前一刻降 f32;

@@ -34,24 +34,23 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    App, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
     ParentElement, RenderOnce, Styled, Window, div, px,
 };
 use sable_foundation::effects::{EffectEntry, EffectSpec};
 
+use crate::controls::button::{Button, ButtonSize, button_element};
 use crate::interact;
 use crate::theme::theme;
 use crate::tokens::{
-    ColorTokens, FONT_SIZE_BODY, FONT_SIZE_CAPTION, FONT_SIZE_HEADING, HEIGHT_COMPACT,
-    RadiusTokens, SpacingTokens, control_height, h_flex, v_flex,
+    ColorTokens, FONT_SIZE_BODY, FONT_SIZE_CAPTION, FONT_SIZE_HEADING, RadiusTokens, SpacingTokens,
+    control_height, h_flex, v_flex,
 };
 
 /// 效果行的估行高基准(正文 12px 字号,CJK 派生)。
 const ROW_LINE_HEIGHT_PX: f32 = 16.0;
 /// 行垂直内边距(16 + 2×6 = 28,与属性行/图层面板行同高)。
 const ROW_V_PADDING_PX: f32 = 6.0;
-/// 行内小按钮的估行高基准(caption 11px 字号)。
-const BTN_LINE_HEIGHT_PX: f32 = 14.0;
 
 /// 面板规格(应用层每帧构造;条目从 `Node.effects` 克隆)。
 pub struct EffectStackSpec {
@@ -312,13 +311,13 @@ impl RenderOnce for EffectStackPanel {
                     .text_color(colors.text_disabled)
                     .child(format!("{n} 效果")),
             );
-        for (name, preset) in add_presets() {
+        for (ix, (name, preset)) in add_presets().into_iter().enumerate() {
             let cb = self.cb.clone();
-            header = header.child(mini_button(
-                name,
-                colors,
-                true,
-                Some(Rc::new(move |cx: &mut App| (cb.on_add)(preset.clone(), cx))),
+            header = header.child(button_element(
+                Button::new(ElementId::named_usize("fx-add", ix), name)
+                    .size(ButtonSize::Compact)
+                    .on_press(move |_ev, _win, cx| (cb.on_add)(preset.clone(), cx)),
+                cx,
             ));
         }
 
@@ -357,7 +356,7 @@ impl RenderOnce for EffectStackPanel {
                 .rounded(px(RadiusTokens::SM))
                 .hover(move |style| style.bg(row_bg))
                 // 眼睛:填充 accent = 启用(几何色块占位,取舍见模块 doc)
-                .child(eye_button(colors, enabled, {
+                .child(eye_toggle(colors, enabled, {
                     let cb = eye_cb;
                     Rc::new(move |cx: &mut App| (cb.on_toggle)(ix, !enabled, cx))
                 }))
@@ -373,36 +372,37 @@ impl RenderOnce for EffectStackPanel {
                         })
                         .child(effect_label(&entry.spec)),
                 )
-                .child(mini_button(
-                    "上",
-                    colors,
-                    up_on,
-                    up_on.then(|| {
-                        let cb = self.cb.clone();
-                        let f: Rc<dyn Fn(&mut App)> =
-                            Rc::new(move |cx: &mut App| (cb.on_move_up)(ix, cx));
-                        f
-                    }),
+                // 行内小按钮(CMP-11 收口:私有 mini_button 已删,统一走
+                // controls::button 内联形态;禁用 = 仅前景降级、容器不变、
+                // 不响应——TOK-07 语义由 Button 组件单点保证)
+                .child(button_element(
+                    Button::new(ElementId::named_usize("fx-up", ix), "上")
+                        .size(ButtonSize::Compact)
+                        .disabled(!up_on)
+                        .on_press({
+                            let cb = self.cb.clone();
+                            move |_ev, _win, cx| (cb.on_move_up)(ix, cx)
+                        }),
+                    cx,
                 ))
-                .child(mini_button(
-                    "下",
-                    colors,
-                    down_on,
-                    down_on.then(|| {
-                        let cb = self.cb.clone();
-                        let f: Rc<dyn Fn(&mut App)> =
-                            Rc::new(move |cx: &mut App| (cb.on_move_down)(ix, cx));
-                        f
-                    }),
+                .child(button_element(
+                    Button::new(ElementId::named_usize("fx-down", ix), "下")
+                        .size(ButtonSize::Compact)
+                        .disabled(!down_on)
+                        .on_press({
+                            let cb = self.cb.clone();
+                            move |_ev, _win, cx| (cb.on_move_down)(ix, cx)
+                        }),
+                    cx,
                 ))
-                .child(mini_button(
-                    "删",
-                    colors,
-                    true,
-                    Some({
-                        let cb = self.cb.clone();
-                        Rc::new(move |cx: &mut App| (cb.on_remove)(ix, cx))
-                    }),
+                .child(button_element(
+                    Button::new(ElementId::named_usize("fx-remove", ix), "删")
+                        .size(ButtonSize::Compact)
+                        .on_press({
+                            let cb = self.cb.clone();
+                            move |_ev, _win, cx| (cb.on_remove)(ix, cx)
+                        }),
+                    cx,
                 ));
             panel = panel.child(row);
         }
@@ -412,7 +412,12 @@ impl RenderOnce for EffectStackPanel {
 
 /// 眼睛开关(几何色块占位,LayerPanel 同款):填充 accent = 启用、透明 =
 /// 禁用,边框随状态灰阶;hover 底色即时 state-layer 叠加(TOK-04)。
-fn eye_button(
+///
+/// 命名说明(CMP-11/TC-GATE-DUP-01):这是**状态指示器**而非按钮族成员
+/// ——视觉本体是"填色方块"的状态位(无文本/图标语义,Icon 系统 = §5.5
+/// 后续批次接入真实眼睛图标时再升格为 `IconButton`),不在
+/// `fn *_button` 收口范围内,故命名 `eye_toggle`。
+fn eye_toggle(
     colors: ColorTokens,
     enabled: bool,
     on_toggle: Rc<dyn Fn(&mut App)>,
@@ -443,50 +448,6 @@ fn eye_button(
             on_toggle(cx)
         })
         .into_any_element()
-}
-
-/// 行内小按钮(上移/下移/删除/添加预设):enabled 态可点 + hover 加亮;
-/// disabled 态无热区。TOK-07 统一规则:禁用 = 仅前景降级
-/// ([`interact::disabled_foreground`] → text_disabled),容器背景与启用态
-/// **逐位相同**(旧实现整体褪为无底灰态,违反"容器不变",本轮修正)。
-fn mini_button(
-    label: &'static str,
-    colors: ColorTokens,
-    enabled: bool,
-    on_click: Option<ClickFn>,
-) -> gpui::AnyElement {
-    // 派生制:max(22, 14 行高 + 2×4) = 22(紧凑档下限生效)
-    let h = control_height(HEIGHT_COMPACT, BTN_LINE_HEIGHT_PX, SpacingTokens::XS);
-    let base = div()
-        .px(px(SpacingTokens::XS))
-        .h(px(h))
-        .rounded(px(RadiusTokens::SM))
-        .text_size(px(FONT_SIZE_CAPTION));
-    if let Some(on_click) = on_click.filter(|_| enabled) {
-        let hover_bg = interact::state_layer(
-            colors.surface_2,
-            interact::InteractState::Hover,
-            colors.accent,
-        );
-        base.bg(colors.surface_2)
-            .text_color(colors.text_secondary)
-            .cursor_pointer()
-            .hover(move |style| style.bg(hover_bg))
-            .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _win, cx| {
-                on_click(cx)
-            })
-            .child(label)
-            .into_any_element()
-    } else {
-        // TOK-07:容器不变(bg 保留 surface_2,无 hover 无热区),仅前景降级
-        base.bg(colors.surface_2)
-            .text_color(interact::disabled_foreground(
-                colors.text_secondary,
-                colors.text_disabled,
-            ))
-            .child(label)
-            .into_any_element()
-    }
 }
 
 /// 便捷构造:`effect_stack_panel(&spec, &cb)`(规格与回调克隆进面板)。

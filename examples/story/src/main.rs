@@ -24,6 +24,7 @@
 //! 9. Neon Card(对标 luminaui.in):流动渐变描边/光标辉光/粒子三卡演示。
 
 mod app;
+mod controls;
 mod inputs;
 mod motion;
 mod neon;

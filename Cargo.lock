@@ -5838,7 +5838,6 @@ name = "sable-widgets"
 version = "4.0.0"
 dependencies = [
  "gpui",
- "gpui-component",
  "kurbo 0.13.1",
  "peniko",
  "sable-canvas",

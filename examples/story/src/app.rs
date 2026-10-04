@@ -9,6 +9,7 @@ use sable::widgets::prelude::{SpacingTokens, h_flex, v_flex};
 use sable::widgets::theme::{ThemeMode, advance_transition, set_mode_animated, theme};
 use sable::widgets::tokens::{FONT_SIZE_BODY, FONT_SIZE_HEADING};
 
+use crate::controls::ControlsSection;
 use crate::inputs::{ColorSection, GradientSection, NumberSection};
 use crate::motion::MotionSection;
 use crate::neon::NeonSection;
@@ -20,6 +21,7 @@ use crate::ui::{group_title, story_button};
 pub struct StoryApp {
     focus: FocusHandle,
     number: Entity<NumberSection>,
+    controls: Entity<ControlsSection>,
     color: Entity<ColorSection>,
     gradient: Entity<GradientSection>,
     layers: Entity<LayersSection>,
@@ -34,6 +36,7 @@ impl StoryApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let number = NumberSection::new(cx);
+        let controls = ControlsSection::new(cx);
         let color = ColorSection::new(cx);
         let gradient = GradientSection::new(cx);
         let layers = LayersSection::new(cx);
@@ -45,6 +48,7 @@ impl StoryApp {
         StoryApp {
             focus,
             number,
+            controls,
             color,
             gradient,
             layers,
@@ -133,6 +137,8 @@ impl Render for StoryApp {
                     .gap(px(SpacingTokens::LG))
                     .child(group_title(cx, "输入"))
                     .child(self.number.clone())
+                    .child(group_title(cx, "基础按钮"))
+                    .child(self.controls.clone())
                     .child(group_title(cx, "色彩"))
                     .child(self.color.clone())
                     .child(self.gradient.clone())

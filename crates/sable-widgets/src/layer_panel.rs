@@ -47,6 +47,7 @@ use sable_foundation::scene::{NodeId, Scene};
 use slotmap::Key;
 
 use crate::anim::lerp_hsla;
+use crate::controls::button::{Button, button_element};
 use crate::flip::FlipTracker;
 use crate::interact::{self, HoverState, PulseState};
 use crate::theme::theme;
@@ -207,7 +208,9 @@ impl Render for LayerPanel {
             }
         }
 
-        // 工具行:上移/下移(拖拽排序 = M2)+ 选中计数
+        // 工具行:上移/下移(拖拽排序 = M2)+ 选中计数——按钮 = 基础控件层
+        // Button 的内联形态(CMP-11 收口:私有 simple_tool_button 已删,视觉
+        // 规格单一源自 controls::button,hover/press 即时 state-layer)
         let first_selected = self.selection.first().copied();
         let (up, down, first) = (
             self.on_move_up.clone(),
@@ -216,23 +219,21 @@ impl Render for LayerPanel {
         );
         let toolbar = h_flex()
             .gap(px(SpacingTokens::XS))
-            .child(simple_tool_button(
-                "上移",
-                colors,
-                Rc::new(move |cx: &mut App| {
+            .child(button_element(
+                Button::new("layer-move-up", "上移").on_press(move |_ev, _win, cx| {
                     if let Some(id) = first {
                         up(id, cx);
                     }
                 }),
+                cx,
             ))
-            .child(simple_tool_button(
-                "下移",
-                colors,
-                Rc::new(move |cx: &mut App| {
+            .child(button_element(
+                Button::new("layer-move-down", "下移").on_press(move |_ev, _win, cx| {
                     if let Some(id) = first {
                         down(id, cx);
                     }
                 }),
+                cx,
             ))
             .child(
                 div()
@@ -436,33 +437,6 @@ fn pxv(v: f64) -> gpui::Pixels {
 #[allow(clippy::cast_possible_truncation)]
 fn f32v(v: f64) -> f32 {
     v as f32
-}
-
-/// 工具行小按钮(上移/下移;回调收 &mut App;A7 hover 即时 state-layer 叠加)。
-fn simple_tool_button(
-    label: &'static str,
-    colors: crate::tokens::ColorTokens,
-    on_click: Rc<dyn Fn(&mut App)>,
-) -> gpui::AnyElement {
-    let hover_bg = interact::state_layer(
-        colors.surface_3,
-        interact::InteractState::Hover,
-        colors.accent,
-    );
-    div()
-        .px(px(SpacingTokens::SM))
-        .h(px(LayerPanel::row_height()))
-        .rounded(px(RadiusTokens::SM))
-        .bg(colors.surface_3)
-        .text_size(px(FONT_SIZE_CAPTION))
-        .text_color(colors.text_secondary)
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover_bg))
-        .child(label)
-        .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _win, cx| {
-            on_click(cx)
-        })
-        .into_any_element()
 }
 
 #[cfg(test)]

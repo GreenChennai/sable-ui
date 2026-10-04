@@ -17,12 +17,15 @@ anim = []
 # 基础控件层(迭代审查报告 §5.6 批1,CMP-01):全部消费 tokens/state_layer/弹簧令牌
 controls = ["theme", "anim"]
 binding = []
-color = []
+# color(色轮/渐变编辑器)经工具行按钮消费 controls::button(CMP-11 收口)
+color = ["controls"]
 # number-field/layer-panel 接入 A7/A4 微交互(HoverState/FlipTracker 在 anim 引擎上),
 # 故组件 feature 依赖 anim(与 inspector 依赖 number-field 同款特性依赖链)
 number-field = ["anim"]
-inspector = ["number-field", "binding"]
-layer-panel = ["anim", "dep:slotmap"]
+# inspector/effect_stack/gradient_editor 的工具行按钮消费 controls::button(CMP-11)
+inspector = ["number-field", "binding", "controls"]
+# layer-panel/layer_tree 工具行与行内重排按钮消费 controls::button(CMP-11)
+layer-panel = ["anim", "dep:slotmap", "controls"]
 # timeline/curve-editor 消费 sable-video 的数据模型(2026-10 决策:允许的金字塔扩展边
 # widgets→video,无环;docs/06 §2.1 图待同步)。基础编辑不需要它们。
 timeline = ["dep:sable-video"]
@@ -45,6 +48,7 @@ peniko.workspace = true
 thiserror.workspace = true
 # widgets 是 GPUI 形态的组件层(分册三/四),gpui 是它的身份而非可选依赖;
 # 真正的"零 gpui"场景请用 sable-foundation / sable-canvas(cpu-render)
-# 分册四前提:按钮/输入框/虚拟列表等基础件直接用 gpui-component 现成品,本 crate 只做它没有的
+# 注:曾有 gpui-component 依赖(旧"分册四前提:基础件直接用现成品"),因
+# gpui-component 0.5.1 跑在 gpui-pre 类型世界与本 crate 的 gpui 0.2.2 不互通、
+# 实际零使用(死依赖,COUP-08/CMP-01④),已删;基础控件自研于 src/controls/。
 gpui.workspace = true
-gpui-component.workspace = true
