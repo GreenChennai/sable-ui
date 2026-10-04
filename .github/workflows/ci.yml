@@ -127,5 +127,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check
-          arguments: licenses bans
+          # 注意:arguments 里的空格会被整体引号成一个参数(check "licenses bans"
+          # → unrecognized subcommand),子命令过滤必须连 command 一起写(README 口径)
+          command: check licenses bans
