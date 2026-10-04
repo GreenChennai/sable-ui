@@ -61,6 +61,16 @@
   支持第三方定制画布语义色(None=旧 inject 逐位兼容,`inject` 内部委托);禁用态统一规则
   "仅前景降级、容器不变"——`interact::disabled_foreground` 纯函数 + NumberField `.disabled()`
   (容器四通道与静止态逐位同源)+ effect_stack mini_button 禁用分支修正(旧:容器整体褪色)
+- **基础控件层批 1**(CMP-01/02/04/11 + COUP-08,第 3 组,`sable-widgets::controls`,
+  feature `controls` 默认入 full):`Button`/`IconButton`(四变体×三尺寸,Entity 与
+  RenderOnce 内联双形态单一规格源,press 0.94 弹簧,focus ring,禁用容器逐位不变)、
+  `TextField`(光标/选区/词边界/IME 组合区间一等状态)、`Select`(受控协议+键盘状态机+
+  L3 下拉翻边)、`Choice` 三形态(Checkbox/Switch/Radio,自绘+键盘)、`Tabs`/`PanelTabs`
+  (accent 2px 下划线 200ms 滑动)、`Tooltip`+`key_badge_text`(「名称 (快捷键)」文案单源,
+  400ms 延迟+边界避让+L4 材质)、`ScrollArea`(细滚动条三态+惯性复用 ScrollPhysics)——
+  TC-CMP-BTN-01/TF-01/SEL-01/CHOICE-01/TABS-01/TIP-01/02/SCROLL-01 全部落地;
+  CMP-11 四处私有按钮 helper 收口归零(TC-GATE-DUP-01 静态门禁防复发);
+  删除 gpui-component 死依赖(COUP-08);story 增"基础按钮"分组
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处

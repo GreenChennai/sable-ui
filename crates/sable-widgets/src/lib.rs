@@ -97,6 +97,35 @@ pub mod prelude {
     pub use crate::binding::Binding;
     #[cfg(all(feature = "color", feature = "theme"))]
     pub use crate::color::{ColorWell, ColorWheel};
+    /// 基础控件层(§5.6 批 1,CMP-01/02/04)一站式导出。
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::button::{
+        Button, ButtonSize, ButtonStyle, ButtonVariant, IconButton, IconButtonSize, PRESS_SCALE,
+        PressFn, button_element, button_height, button_style, button_text, icon_button_element,
+        icon_button_style, solid_variant_foreground,
+    };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::choice::{
+        Choice, ChoiceKind, choice_visual, control_knob, hit_height, key_checked_intent,
+    };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::scroll_area::{
+        ScrollArea, ScrollAxis, ScrollState, clamp_offset, max_offset, offset_from_drag,
+        thumb_geometry,
+    };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::select::{Select, dropdown_opens_upward, select_nav};
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::tabs::{PanelTabs, Tabs, tab_height, tabs_nav, underline_fraction};
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::text_field::{
+        TextField, TextFieldBuffer, TextFieldSize, edit_key, text_field_height, word_range_at,
+    };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::tooltip::{
+        TooltipHost, TooltipSpec, format_keystroke, key_badge_text, place_tooltip, render_shortcut,
+        tooltip_slot, tooltip_view,
+    };
     #[cfg(all(feature = "curve-editor", feature = "theme"))]
     pub use crate::curve_editor::CurvePreview;
     #[cfg(all(feature = "inspector", feature = "theme"))]
