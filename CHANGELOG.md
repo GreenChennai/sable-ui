@@ -40,6 +40,14 @@
 - 文档诚实化(DOC-01/02/03/04):docs/00/03/04/05/06、release-checklist 中把已实现的
   主题/令牌/动画/命中测试/选中框/钢笔/图层面板/检查器/基准等从"未开始/占位"订正为
   已实现(附模块路径);黄金基线场景数 5→6 订正
+- **令牌骨架四件**(TOK-08/05/01/04,第 2 组):`docs/design/sable-tokens.json` 真相源
+  (W3C 格式,color/spacing/radius/elevation/state-layer/motion 六表)+ `gate_tokens_sync`
+  门禁(代码↔JSON 逐值对拍,双侧反面测试);中性色阶 surface_0..4 重排 + 文字 6 档
+  (primary/strong/secondary/tertiary/disabled/placeholder,深浅独立调校,存量名全保留);
+  elevation 死代码接活(`theme::shadow/shadow_quads/elevated`,L2→NumberField、L3→NeonCard
+  辉光收敛至令牌,消费门禁防再死);`InteractState` + `state_layer`(alpha 叠加,修复
+  浅色 hover 钳 1.0 失效,全部组件 hover/press/selected 切换);动效令牌(时长四档 +
+  SpringPreset 三档,anim/spring 重指向令牌)
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处

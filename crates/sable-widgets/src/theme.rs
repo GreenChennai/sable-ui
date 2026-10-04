@@ -16,10 +16,12 @@
 //! v0.1 不做)。因此本 crate 组件**刻意不使用 gpui-component**,全部纯 gpui
 //! div/fill/canvas 兜底,类型世界单一,编译面最小。
 
-use gpui::{App, Global, Hsla, rgba};
+use gpui::{App, Global, Hsla, IntoElement, ParentElement, Styled, div, px, rgba};
 
 use crate::anim::reduced_motion;
-use crate::tokens::ColorTokens;
+use crate::tokens::{
+    ColorTokens, ELEVATION_SHADOW_TINT, ELEVATIONS, Elevation, RadiusTokens, shadow_layer_params,
+};
 
 /// 主题模式(深/浅)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -120,6 +122,67 @@ impl SableTheme {
 /// 注入全局主题(应用启动时调用一次;默认深色)。
 pub fn init(cx: &mut App) {
     cx.set_global(SableTheme::dark());
+}
+
+// ---------------------------------------------------------------------------
+// TOK-01:elevation 派生子 + GPUI 落地件(迭代审查报告 2026-10-04 §5.3.2)
+//
+// GPUI 0.2.2 无内建 box-shadow(已核实 styled/style 全表面),落地走两条路:
+// 1. 离屏:`sable-paint::effects::render_shadow_rgba`(NeonCard 辉光底 = L3);
+// 2. quad 近似:[`shadow_quads`]/[`elevated`](3 层扩张矩形逼近高斯衰减,
+//    NumberField 输入凸起 = L2)。参数一律源自 [`crate::tokens::ELEVATIONS`]
+//    (单一真相);消费门禁:tests/gate_elevation_consumed.rs。
+// ---------------------------------------------------------------------------
+
+/// 海拔派生子(TOK-01):取第 `level` 级海拔阴影参数(`0..=4`,对应报告
+/// §5.3.2 的 L0 画布 ~ L4 浮层)。越界钳到最后一级,不 panic。
+pub fn shadow(level: usize) -> Elevation {
+    ELEVATIONS[level.min(ELEVATIONS.len() - 1)]
+}
+
+/// 海拔阴影的 quad 近似层(TOK-01 落地件):按 [`shadow`] 的参数生成 3 个
+/// 绝对定位黑色矩形(内→外扩张、alpha 递减,见
+/// [`crate::tokens::shadow_layer_params`])。
+///
+/// # 用法(关键:quad 必须垫在不透明内容**之下**)
+///
+/// quad 与宿主元素有重叠区(近似高斯的必然后果),宿主的不透明 `bg` 会盖住
+/// 重叠部——直接用 [`elevated`] 包装即可;自行组装时把返回值以
+/// `.children(...)` 前置于内容 child。quad 全部超出元素边界显示(offset_y
+/// 向下),不参与布局。
+pub fn shadow_quads(level: usize) -> Vec<gpui::AnyElement> {
+    let e = shadow(level);
+    shadow_layer_params(level)
+        .into_iter()
+        .map(|(spread, alpha)| {
+            // offset_y 向下为正:quad 整体下移 oy(顶边少探出、底边多探出)
+            let (s, oy) = (spread, e.offset_y);
+            gpui::div()
+                .absolute()
+                .top(px(oy - s))
+                .bottom(px(-s - oy))
+                .left(px(-s))
+                .right(px(-s))
+                .rounded(px(spread + RadiusTokens::SM))
+                .bg(Hsla {
+                    a: alpha,
+                    ..ELEVATION_SHADOW_TINT
+                })
+                .into_any_element()
+        })
+        .collect()
+}
+
+/// 内容包装(TOK-01 落地件):给 `content` 垫上第 `level` 级海拔阴影
+/// ([`shadow_quads`])。`content` 必须**不透明 bg**(如 surface_2 输入底),
+/// 否则阴影重叠区会透进内容。返回的容器 `relative`,调用方可继续链
+/// `.id()`/监听器等(事件语义不受影响)。
+pub fn elevated(level: usize, content: gpui::Div) -> gpui::Div {
+    let mut wrapper = div().relative();
+    for quad in shadow_quads(level) {
+        wrapper = wrapper.child(quad);
+    }
+    wrapper.child(content)
 }
 
 /// 取当前主题。**必须先 [`init`]**(未初始化视为应用装配错误,panic 即fail-fast)。
@@ -320,6 +383,22 @@ mod tests {
         assert_eq!(all.len(), 8);
         assert!(all.iter().all(|h| h.a > 0.99), "画布语义色不透明");
     }
+
+    /// TOK-01:shadow 派生子 = ELEVATIONS 的钳位访问(消费门禁在
+    /// tests/gate_elevation_consumed.rs)。
+    #[test]
+    fn shadow_accessor_reads_elevations_with_clamp() {
+        for (level, e) in ELEVATIONS.iter().enumerate() {
+            assert_eq!(shadow(level), *e, "shadow({level}) 应逐字段等于令牌表");
+        }
+        // 越界钳到最后一级,不 panic
+        assert_eq!(shadow(99), ELEVATIONS[ELEVATIONS.len() - 1]);
+        // L0 无影
+        assert_eq!(
+            (shadow(0).blur, shadow(0).offset_y, shadow(0).alpha),
+            (0.0, 0.0, 0.0)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,9 +482,12 @@ impl ThemeTransition {
             surface_4: l(a.surface_4, b.surface_4),
             border_subtle: l(a.border_subtle, b.border_subtle),
             border_strong: l(a.border_strong, b.border_strong),
+            text_strong: l(a.text_strong, b.text_strong),
             text_primary: l(a.text_primary, b.text_primary),
             text_secondary: l(a.text_secondary, b.text_secondary),
+            text_tertiary: l(a.text_tertiary, b.text_tertiary),
             text_disabled: l(a.text_disabled, b.text_disabled),
+            text_placeholder: l(a.text_placeholder, b.text_placeholder),
             accent: l(a.accent, b.accent),
             accent_muted: l(a.accent_muted, b.accent_muted),
             danger: l(a.danger, b.danger),

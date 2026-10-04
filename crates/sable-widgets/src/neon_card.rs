@@ -11,7 +11,7 @@
 //! | # | 对标效果 | 本实现 | 偏差 |
 //! |---|---|---|---|
 //! | 1 | 2px 流动渐变描边 `linear-gradient(90deg,#FF0080→#7928CA→#FF0080)`,200% 底 2s 线性无限循环 | 描边 paint 为 [`Paint::LinearGradient`],span = 2×卡宽,端点随 `now_ms` 沿描边方向平移(周期 = 卡宽,渐变首尾同色 → 无缝循环) | 对标是 CSS 无限循环;本实现**仅 hover/过渡期间逐帧流动**,空闲冻结缓存(性能纪律,见下) |
-//! | 2 | 环境辉光 `box-shadow 0 0 20px 2px` 粉紫 15% | [`render_shadow_rgba`](sable_paint::effects::render_shadow_rgba) blur 20 / α 0.15,预乘域按 [`NeonCardStyle::glow_color`] 着色 | 无 |
+//! | 2 | 环境辉光 `box-shadow 0 0 20px 2px` 粉紫 15% | [`render_shadow_rgba`](sable_paint::effects::render_shadow_rgba):blur **消费 L3 浮层海拔令牌**(`tokens::ELEVATIONS[3].blur` = 16,TOK-01 接线);α 0.15 与 [`NeonCardStyle::glow_color`] 为品牌辉光载荷保持移植保真,预乘域着色 | 辉光几何随海拔令牌(消费门禁在 tests/gate_elevation_consumed.rs);强度/着色保持对标值 |
 //! | 3 | 光标跟随外辉光:1000px 径向,主色 15%→透明 40%,层透明度 0.75→1 | 卡下整幅径向渐变(中心 = 光标),透明度随 hover 进度在 0.75→1.0 插值 | 对标有 CSS blur;径向渐变本身即软边,无需再模糊 |
 //! | 4 | 卡体:圆角 16px、1px white/10 内描边、slate-900 85%(hover 70%) | 卡体 = `tokens.surface_2` × [`NeonCardStyle::glass_alpha`](hover 线性降 [`NEON_GLASS_HOVER_ALPHA_DELTA`]);内描边 = `tokens.border_strong`(深色即 white 12%,浅色为黑系,深浅皆可辨) | **真 backdrop-blur 是 GPU 真机项**,本组件用"半透明深底 + 高光内边"等效——doc 如实声明 |
 //! | 5 | 光标跟随内高光:800px 径向 white 8%→透明 40%,淡入 | 以卡体路径为裁切填充径向渐变(路径填充 = 天然裁切),alpha × hover 进度 | 高光物理上是白色,取对标白色常量(非主题语义色) |
@@ -65,12 +65,16 @@ use crate::tokens::{ColorTokens, rgba8_from_hsla};
 // 对标数值常量(来源 luminaui.in;样式载荷,非主题语义色)
 // ---------------------------------------------------------------------------
 
-/// 缓冲四周外边距(px,4px 网格):容纳环境辉光(blur 20 的 3×box 支撑域
-/// 30px)+ hover 缩放 2% 余量 + 粒子小辉光。缓冲 = 卡体 + 2×本值。
+/// 缓冲四周外边距(px,4px 网格):容纳环境辉光(blur 16 的 3×box 支撑域
+/// 24px)+ hover 缩放 2% 余量 + 粒子小辉光。缓冲 = 卡体 + 2×本值。
 pub const NEON_PAD_PX: f32 = 48.0;
-/// 环境辉光模糊(对标 `box-shadow` 的 20px)。
-pub const NEON_GLOW_BLUR_PX: f32 = 20.0;
-/// 环境辉光强度(对标的 15% 透明度)。
+/// 环境辉光模糊(px):**消费 L3 浮层海拔令牌**(TOK-01,报告 §5.3.2,
+/// `tokens::ELEVATIONS[3].blur`;消费门禁 tests/gate_elevation_consumed.rs)。
+/// 原对标值 20 收编进海拔阶梯(16 = 同阶梯最近档),辉光随令牌收紧。
+pub const NEON_GLOW_BLUR_PX: f32 = crate::tokens::ELEVATIONS[3].blur;
+/// 环境辉光强度(对标载荷 15%,与 [`NeonCardStyle::glow_color`] 同属品牌
+/// 辉光样式,不是中性投影——故**不**取海拔 alpha;海拔几何(blur)消费
+/// 令牌,强度保持移植保真)。
 pub const NEON_GLOW_ALPHA: f32 = 0.15;
 /// 光标跟随外辉光半径(对标的 1000px)。
 pub const NEON_CURSOR_GLOW_RADIUS: f64 = 1000.0;
@@ -355,8 +359,9 @@ pub fn render_neon_card(
     ))
     .to_path(0.1);
 
-    // 1) 静态环境辉光(对标 box-shadow 0 0 20px 2px @15%):阴影管线出
-    //    预乘黑 coverage,再按 glow_color 在预乘域着色(垫底)。
+    // 1) 静态环境辉光(对标 box-shadow 0 0 20px 2px @15%;TOK-01:blur 消费
+    //    L3 浮层海拔 tokens::ELEVATIONS[3]):阴影管线出预乘黑 coverage,
+    //    再按 glow_color 在预乘域着色(垫底;辉光居中无投影偏移)。
     let mut out = render_shadow_rgba(
         &glow_path,
         to_buffer,

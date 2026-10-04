@@ -15,10 +15,11 @@
 //! [`control_height`] 派生制:默认档 26 只是下限,正文 12px 行高约 16 +
 //! 2×6 padding = 28 实际生效,不压 CJK 字形)。
 //!
-//! # A7 微交互(hover 态,分册六 §4.3 #1)
+//! # A7 微交互(hover 态,分册六 §4.3 #1 + TOK-04 state-layer)
 //!
-//! 行悬停时底色 = [`hover_tint`](crate::interact::hover_tint)(surface_1 基色
-//! 加亮 4%,静止时不着色、视觉零变化)。**即时切换而非 120ms 插值**:本组件
+//! 行悬停时底色 = [`state_layer`](crate::interact::state_layer)(surface_1
+//! 基色上叠白 6%/黑 4%——极性随主题自动取向,静止时不着色、视觉零变化)。
+//! **即时切换而非 120ms 插值**:本组件
 //! 是 RenderOnce(无跨帧状态可持 [`HoverState`](crate::interact::HoverState)),
 //! 插值版接线示范见 NumberField(有状态 Entity);把属性行包进有状态容器后
 //! 可用同款状态机升级 = TODO-M2。行本身不可点击,不设 pressed 态。
@@ -79,8 +80,13 @@ impl RenderOnce for PropertyRow {
         let colors = &theme(cx).colors;
         // gpui 0.2.2 没有 impl IntoElement for Option(已核实),None 用空占位
         let control = self.control.unwrap_or_else(|| div().into_any_element());
-        // A7:hover 底色 = surface_1 加亮 4%(即时切换,理由见模块 doc)
-        let hover_bg = interact::hover_tint(colors.surface_1);
+        // A7/TOK-04:hover 底色 = state-layer(surface_1 上叠白/黑,即时
+        // 切换,理由见模块 doc;修复浅色主题 hover 钳 1.0 失效)
+        let hover_bg = interact::state_layer(
+            colors.surface_1,
+            interact::InteractState::Hover,
+            colors.accent,
+        );
         h_flex()
             .h(px(PropertyRow::row_height()))
             .gap(px(SpacingTokens::SM))

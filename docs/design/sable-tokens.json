@@ -1,0 +1,99 @@
+{
+  "$schema": "https://tr.designtokens.org/format/",
+  "$description": "sable-ui 设计令牌真相源(TOK-08,迭代审查报告 2026-10-04 §5.3)。与本文件逐值同步的代码真相:crates/sable-widgets/src/tokens.rs;门禁:crates/sable-widgets/tests/gate_tokens_sync.rs(TC-GATE-TOKENS-01/TC-ANI-SPRING-01)——改任一侧必须同轮改另一侧。范围:color(深/浅全量)/spacing/radius/elevation/state-layer/motion(时长四档+弹簧三档);字号/字体表(TOK-02)属下一批,刻意不含,不得提前补造。深色表面值来自报告 §5.3.1 中性阶梯 N0~N12,浅色为独立调校(非反相)。颜色一律 #RRGGBBAA。",
+  "color": {
+    "dark": {
+      "surface-0": { "$type": "color", "$value": "#0E0E10FF", "$description": "N0 画布外/应用底" },
+      "surface-1": { "$type": "color", "$value": "#1C1C1EFF", "$description": "N2 面板底" },
+      "surface-2": { "$type": "color", "$value": "#313136FF", "$description": "N5 卡片/输入凸起" },
+      "surface-3": { "$type": "color", "$value": "#3A3A40FF", "$description": "N6 hover" },
+      "surface-4": { "$type": "color", "$value": "#45454CFF", "$description": "N7 pressed" },
+      "border-subtle": { "$type": "color", "$value": "#FFFFFF0F", "$description": "white 6%" },
+      "border-strong": { "$type": "color", "$value": "#FFFFFF1F", "$description": "white 12%" },
+      "text-strong": { "$type": "color", "$value": "#FFFFFFFF", "$description": "N12 标题/数值" },
+      "text-primary": { "$type": "color", "$value": "#FFFFFFEB", "$description": "white 92% 正文默认" },
+      "text-secondary": { "$type": "color", "$value": "#9A9AA4FF", "$description": "N10 次文字" },
+      "text-tertiary": { "$type": "color", "$value": "#6E6E78FF", "$description": "N9 弱文字" },
+      "text-disabled": { "$type": "color", "$value": "#FFFFFF52", "$description": "white 32%" },
+      "text-placeholder": { "$type": "color", "$value": "#FFFFFF47", "$description": "white 28% 最弱档" },
+      "accent": { "$type": "color", "$value": "#4F9FFFFF" },
+      "accent-muted": { "$type": "color", "$value": "#4F9FFF33", "$description": "accent 20%(历史选中底,新代码走 state-layer)" },
+      "danger": { "$type": "color", "$value": "#F24822FF" },
+      "warning": { "$type": "color", "$value": "#FFC700FF" },
+      "success": { "$type": "color", "$value": "#14AE5CFF" }
+    },
+    "light": {
+      "surface-0": { "$type": "color", "$value": "#F7F7F8FF", "$description": "应用底(独立调校)" },
+      "surface-1": { "$type": "color", "$value": "#FFFFFFFF", "$description": "面板底(白)" },
+      "surface-2": { "$type": "color", "$value": "#F1F1F3FF", "$description": "卡片/输入" },
+      "surface-3": { "$type": "color", "$value": "#E8E8EBFF", "$description": "hover" },
+      "surface-4": { "$type": "color", "$value": "#DDDDE1FF", "$description": "pressed" },
+      "border-subtle": { "$type": "color", "$value": "#00000014", "$description": "black 8%" },
+      "border-strong": { "$type": "color", "$value": "#00000029", "$description": "black 16%" },
+      "text-strong": { "$type": "color", "$value": "#000000FF", "$description": "纯黑 标题/数值" },
+      "text-primary": { "$type": "color", "$value": "#1B1B1FFF" },
+      "text-secondary": { "$type": "color", "$value": "#6B6B6BFF" },
+      "text-tertiary": { "$type": "color", "$value": "#8A8A90FF" },
+      "text-disabled": { "$type": "color", "$value": "#A0A0A5FF" },
+      "text-placeholder": { "$type": "color", "$value": "#ACACB2FF", "$description": "比禁用更弱(更浅)" },
+      "accent": { "$type": "color", "$value": "#4F9FFFFF", "$description": "品牌色跨主题共用" },
+      "accent-muted": { "$type": "color", "$value": "#4F9FFF1F", "$description": "accent 12%(历史)" },
+      "danger": { "$type": "color", "$value": "#D93025FF" },
+      "warning": { "$type": "color", "$value": "#8F6700FF" },
+      "success": { "$type": "color", "$value": "#0E7C42FF" }
+    }
+  },
+  "spacing": {
+    "xs": { "$type": "dimension", "$value": 4 },
+    "sm": { "$type": "dimension", "$value": 8 },
+    "md": { "$type": "dimension", "$value": 12 },
+    "lg": { "$type": "dimension", "$value": 16 },
+    "xl": { "$type": "dimension", "$value": 24 },
+    "xxl": { "$type": "dimension", "$value": 32 }
+  },
+  "radius": {
+    "sm": { "$type": "dimension", "$value": 4, "$description": "输入框/小按钮" },
+    "md": { "$type": "dimension", "$value": 6, "$description": "按钮/Tab/下拉(全局默认)" },
+    "lg": { "$type": "dimension", "$value": 8, "$description": "卡片/分组/菜单" },
+    "xl": { "$type": "dimension", "$value": 12, "$description": "对话框/浮层" }
+  },
+  "elevation": {
+    "$description": "报告 §5.3.2 L0~L4 材质阶梯;blur/offsetY/alpha 与 tokens.rs ELEVATIONS 逐级一致,阴影恒黑。",
+    "l0": { "$type": "shadow", "$value": { "blur": 0, "offsetY": 0, "alpha": 0.0, "color": "#000000FF" } },
+    "l1": { "$type": "shadow", "$value": { "blur": 2, "offsetY": 1, "alpha": 0.08, "color": "#000000FF" } },
+    "l2": { "$type": "shadow", "$value": { "blur": 8, "offsetY": 2, "alpha": 0.14, "color": "#000000FF" } },
+    "l3": { "$type": "shadow", "$value": { "blur": 16, "offsetY": 4, "alpha": 0.2, "color": "#000000FF" } },
+    "l4": { "$type": "shadow", "$value": { "blur": 32, "offsetY": 8, "alpha": 0.32, "color": "#000000FF" } }
+  },
+  "state-layer": {
+    "$description": "报告 §5.3.3 状态层 alpha(TOK-04);selected 深浅同比例(TC-TOK-STATE-02),disabled = 容器不变。",
+    "dark": {
+      "hover": { "$type": "number", "$value": 0.06 },
+      "press": { "$type": "number", "$value": 0.1 },
+      "selected": { "$type": "number", "$value": 0.14 },
+      "focus-ring": { "$type": "number", "$value": 1.0 },
+      "disabled": { "$type": "number", "$value": 0.0 }
+    },
+    "light": {
+      "hover": { "$type": "number", "$value": 0.04 },
+      "press": { "$type": "number", "$value": 0.08 },
+      "selected": { "$type": "number", "$value": 0.14 },
+      "focus-ring": { "$type": "number", "$value": 1.0 },
+      "disabled": { "$type": "number", "$value": 0.0 }
+    }
+  },
+  "motion": {
+    "$description": "报告 §5.8:时长四档 + 弹簧档。duration 单位 ms;spring = 质量-阻尼-刚度(与 anim::Spring 同量纲)。",
+    "duration": {
+      "instant": { "$type": "duration", "$value": 0 },
+      "hover": { "$type": "duration", "$value": 80 },
+      "state": { "$type": "duration", "$value": 120 },
+      "panel": { "$type": "duration", "$value": 200 }
+    },
+    "spring": {
+      "snappy": { "$type": "spring", "$value": { "stiffness": 400.0, "damping": 28.0, "mass": 1.0 } },
+      "soft": { "$type": "spring", "$value": { "stiffness": 180.0, "damping": 22.0, "mass": 1.0 } },
+      "bouncy": { "$type": "spring", "$value": { "stiffness": 300.0, "damping": 15.0, "mass": 1.0 } }
+    }
+  }
+}

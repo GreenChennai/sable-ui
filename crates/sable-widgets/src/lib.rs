@@ -109,6 +109,8 @@ pub mod prelude {
         DUR_INTERACT_MS, DUR_OVERLAY_MS, DUR_PANEL_MS, DUR_PULSE_MS, DUR_VIEW_JUMP_MS, HoverState,
         PulseState, hover_tint, pressed_tint,
     };
+    #[cfg(all(feature = "anim", feature = "theme"))]
+    pub use crate::interact::{InteractState, state_layer};
     #[cfg(all(feature = "layer-panel", feature = "theme"))]
     pub use crate::layer_panel::LayerPanel;
     #[cfg(all(feature = "layer-panel", feature = "theme"))]
@@ -125,12 +127,15 @@ pub mod prelude {
     pub use crate::property_row::section;
     #[cfg(feature = "theme")]
     pub use crate::theme::{
-        CanvasTheme, SableTheme, ThemeMode, init as init_theme, theme as sable_theme,
+        CanvasTheme, SableTheme, ThemeMode, elevated as theme_elevated, init as init_theme,
+        shadow as theme_shadow, shadow_quads as theme_shadow_quads, theme as sable_theme,
     };
     #[cfg(all(feature = "timeline", feature = "theme"))]
     pub use crate::timeline_view::TimelineView;
     #[cfg(feature = "theme")]
     pub use crate::tokens::{
-        ColorTokens, RadiusTokens, SpacingTokens, control_height, h_flex, v_flex,
+        ColorTokens, ELEVATIONS, Elevation, MotionTokens, RadiusTokens, SPRING_BOUNCY,
+        SPRING_SNAPPY, SPRING_SOFT, SpacingTokens, SpringPreset, StateLayerTokens, control_height,
+        h_flex, v_flex,
     };
 }

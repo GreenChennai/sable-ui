@@ -2,8 +2,14 @@
 //!
 //! # 可复用件(本模块,组件按需取用)
 //!
-//! - 三态交互时长/亮度 token:[`DUR_INTERACT_MS`] 系列常量 +
-//!   [`hover_tint`] / [`pressed_tint`](L 分量 +4%/+8%,分册六 §4.3 #1);
+//! - 状态层(TOK-04,报告 §5.3.3):[`InteractState`] + [`state_layer`]——
+//!   hover/press 用白/黑 alpha 叠加(极性随底色亮度自动取向),selected =
+//!   accent 同比例 alpha(深浅一致),disabled 容器不变;修复旧亮度法在
+//!   浅色底钳到 1.0 失效的问题;
+//! - 三态交互时长/时长档重指向:[`DUR_INTERACT_MS`] 系列常量(120/200ms
+//!   已重指向 [`crate::tokens::MotionTokens`] 动效四档,消除两处真相);
+//!   [`hover_tint`] / [`pressed_tint`] 保留为**兼容别名**,内部改走
+//!   [`state_layer`];
 //! - [`HoverState`]:悬停进度状态机(120ms ease-out,0..1,支持中途打断从
 //!   当前值接续),供**有状态组件**(Entity)每帧读进度做 bg 插值;
 //! - [`PulseState`]:撤销/重做视觉脉冲(300ms accent 描边闪一次,#7),
@@ -24,9 +30,10 @@
 //!
 //! | # | 清单项 | 参数 | 接线 / 归属层 |
 //! |---|---|---|---|
-//! | 1 | 控件 hover/press | 120ms ease-out,亮度 ±4/8% | ✅ 组件层:本模块 token +
-//!   [`HoverState`](NumberField 动画插值)、PropertyRow(gpui hover 样式即时
-//!   三态)、LayerPanel 行(hover 高亮) |
+//! | 1 | 控件 hover/press | 120ms ease-out,state-layer alpha 叠加 | ✅ 组件层:本模块
+//!   [`state_layer`](TOK-04,深色叠白/浅色叠黑,selected = accent 14%)+
+//!   [`HoverState`](NumberField 动画插值)、PropertyRow/LayerPanel/LayerTree/
+//!   EffectStack 行(gpui hover 样式即时三态) |
 //! | 2 | Dock 面板拖拽重排 | Spring::SNAPPY 归位 | 归属 **sable-dock**:gpui-component
 //!   DockArea 拖放结束回调 → [`crate::anim::Spring::SNAPPY`](anim 引擎已备),
 //!   面板重排接线 = TODO(上游 Dock 无动画 seam,需 M2 评估) |
@@ -70,9 +77,19 @@ use gpui::Hsla;
 
 use crate::anim::{Easing, reduced_motion};
 
-/// 三态交互时长(hover/press,分册六 §4.3 #1):120ms。
+/// 三态交互时长(hover/press,分册六 §4.3 #1):= 动效四档的 STATE 档
+/// ([`crate::tokens::MotionTokens::DUR_STATE_MS`],ANI-07 单点;`theme`
+/// feature 关闭的降级编译才落到字面量)。
+#[cfg(feature = "theme")]
+pub const DUR_INTERACT_MS: f64 = crate::tokens::MotionTokens::DUR_STATE_MS;
+/// 降级编译(theme feature 关闭,tokens 不在编译面)的字面量回退。
+#[cfg(not(feature = "theme"))]
 pub const DUR_INTERACT_MS: f64 = 120.0;
-/// 面板折叠/展开时长(#3):200ms。
+/// 面板折叠/展开时长(#3):= 动效四档的 PANEL 档(单点同上)。
+#[cfg(feature = "theme")]
+pub const DUR_PANEL_MS: f64 = crate::tokens::MotionTokens::DUR_PANEL_MS;
+/// 降级编译(theme feature 关闭)的字面量回退。
+#[cfg(not(feature = "theme"))]
 pub const DUR_PANEL_MS: f64 = 200.0;
 /// 浮层/Toast 时长(#4/#5):240ms。
 pub const DUR_OVERLAY_MS: f64 = 240.0;
@@ -81,16 +98,120 @@ pub const DUR_PULSE_MS: f64 = 300.0;
 /// 视图跳转时长("缩放到适应" #9):280ms。
 pub const DUR_VIEW_JUMP_MS: f64 = 280.0;
 
-/// hover 亮度偏移(+4% L,分册六 §4.3 #1)。
+/// hover 亮度偏移(历史值 +4% L,分册六 §4.3 #1)。**仅存兼容**:三态表达
+/// 已迁 state-layer alpha 叠加(TOK-04),本常量只供旧宿主对照,不再参与
+/// 任何本仓逻辑。
 pub const HOVER_LIGHTNESS_DELTA: f32 = 0.04;
-/// pressed 亮度偏移(+8% L,分册六 §4.3 #1)。
+/// pressed 亮度偏移(历史值 +8% L)。仅存兼容,同上。
 pub const PRESSED_LIGHTNESS_DELTA: f32 = 0.08;
 
 /// hover/leave 过渡缓动(分册六 §4.3 #1:ease-out)。
 const HOVER_EASE: Easing = Easing::OutCubic;
 
-/// 亮度偏移(hover +4%、pressed +8%):对 Hsla 只调 L 分量并钳制 [0,1],
-/// h/s/a 原样保留——色相/透明度不随三态漂移。
+// ---------------------------------------------------------------------------
+// TOK-04:状态层 state-layer(报告 §5.3.3;alpha 叠加替代亮度偏移)
+//
+// 亮度法(旧 hover_tint 的 L+4%/+8%)在浅色高亮度底会钳到 1.0 而完全失效
+// (旧代码注释自认)。state-layer 用 alpha 叠加:深色表面叠白、浅色表面叠
+// 黑(极性按底色亮度自动取向),selected 统一 accent@14%(深浅同比例),
+// disabled 容器不变(仅前景降级,TOK-07)。alpha 值单一源自
+// [`crate::tokens::StateLayerTokens`](深/浅各一套)。
+//
+// 新 API 定义在 `theme` feature 下(依赖 tokens;anim 单开的降级编译面不
+// 含状态层,`hover_tint`/`pressed_tint` 在该配置回退旧亮度法)。
+// ---------------------------------------------------------------------------
+
+/// 交互状态(state-layer 的裁决输入)。
+#[cfg(feature = "theme")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InteractState {
+    /// 静止:原样返回 base
+    Idle,
+    /// 悬停:中性叠加(深色表面叠白、浅色表面叠黑)
+    Hover,
+    /// 按下:更强的中性叠加
+    Pressed,
+    /// 选中:accent 同比例 alpha(深浅一致,TC-TOK-STATE-02)
+    Selected,
+    /// 焦点环:accent 实色(1.5px 外描边绘制接线 = A11Y 批次)
+    FocusRing,
+    /// 禁用:容器不变(底色原样,仅前景降级)
+    Disabled,
+}
+
+/// 状态层裁决(纯函数,TOK-04):把 `state` 对应的叠加层混合到 `base` 上。
+///
+/// - 极性自动取向:`base.l >= 0.5` 视为浅色表面(叠黑),否则叠白——
+///   浅色白底 hover 因此**可见变化**(TC-TOK-STATE-01,不再钳 1.0 死值);
+/// - `accent` 仅 [`InteractState::Selected`]/[`InteractState::FocusRing`]
+///   消费(其余状态可传任意占位色,推荐传 `colors.accent` 保持调用形一致);
+/// - 混合在 HSL 域按 alpha 贡献比加权(h 走最短弧),对不透明底 =
+///   `lerp(base, overlay, alpha)`;对透明底(图层行悬停垫片)= 纯叠加层
+///   (色 = overlay,alpha = 状态 alpha),两种调用形一个公式。
+#[cfg(feature = "theme")]
+#[must_use]
+pub fn state_layer(base: Hsla, state: InteractState, accent: Hsla) -> Hsla {
+    let layers = if base.l >= 0.5 {
+        crate::tokens::StateLayerTokens::light()
+    } else {
+        crate::tokens::StateLayerTokens::dark()
+    };
+    let light_surface = base.l >= 0.5;
+    // 中性叠加:白(深色表面)/黑(浅色表面);h/s 取 0(消色差)
+    let neutral = Hsla {
+        h: 0.0,
+        s: 0.0,
+        l: if light_surface { 0.0 } else { 1.0 },
+        a: 1.0,
+    };
+    let (overlay, alpha) = match state {
+        InteractState::Idle | InteractState::Disabled => return base,
+        InteractState::Hover => (neutral, layers.hover),
+        InteractState::Pressed => (neutral, layers.press),
+        InteractState::Selected => (accent, layers.selected),
+        InteractState::FocusRing => (accent, layers.focus_ring),
+    };
+    overlay_over_base(base, overlay, alpha)
+}
+
+/// alpha 叠加混合(HSL 域):`overlay` 以 `alpha` 不透明度压在 `base` 上。
+/// 结果 alpha = 标准 over;h/s/l 按叠加贡献占比 `t` 加权(h 最短弧)。
+#[cfg(feature = "theme")]
+fn overlay_over_base(base: Hsla, overlay: Hsla, alpha: f32) -> Hsla {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let out_a = overlay.a * alpha + base.a * (1.0 - alpha);
+    if out_a <= f32::EPSILON {
+        return Hsla { a: 0.0, ..overlay };
+    }
+    let t = (overlay.a * alpha) / out_a;
+    // 色相最短弧(与 anim::lerp_hsla 同语义,避免 0.9→0.1 绕远)
+    let dh = overlay.h - base.h;
+    let dh = dh - dh.round();
+    Hsla {
+        h: base.h + dh * t,
+        s: base.s + (overlay.s - base.s) * t,
+        l: base.l + (overlay.l - base.l) * t,
+        a: out_a,
+    }
+}
+
+/// hover 态底色(**兼容别名**):内部 = [`state_layer`]`(base, Hover)`——
+/// 深色表面 +白 6%、浅色表面 -黑 4%(修复浅色底亮度法钳 1.0 失效)。
+/// 新代码请直接用 [`state_layer`]。
+#[cfg(feature = "theme")]
+pub fn hover_tint(base: Hsla) -> Hsla {
+    state_layer(base, InteractState::Hover, base)
+}
+
+/// pressed 态底色(**兼容别名**):内部 = [`state_layer`]`(base, Pressed)`。
+#[cfg(feature = "theme")]
+pub fn pressed_tint(base: Hsla) -> Hsla {
+    state_layer(base, InteractState::Pressed, base)
+}
+
+/// 亮度偏移(仅 theme-less 降级编译的别名回退路径使用):对 Hsla 只调
+/// L 分量并钳制 [0,1],h/s/a 原样保留。
+#[cfg(not(feature = "theme"))]
 fn tint(base: Hsla, delta: f32) -> Hsla {
     Hsla {
         l: (base.l + delta).clamp(0.0, 1.0),
@@ -98,13 +219,14 @@ fn tint(base: Hsla, delta: f32) -> Hsla {
     }
 }
 
-/// hover 态底色:base 亮度 +4%(浅色主题高亮度底会钳到 1.0 无变化,调用方
-/// 可改用更深的 base 或主题 surface_3)。
+/// hover 态底色(theme-less 降级编译回退:旧亮度法 +4%)。
+#[cfg(not(feature = "theme"))]
 pub fn hover_tint(base: Hsla) -> Hsla {
     tint(base, HOVER_LIGHTNESS_DELTA)
 }
 
-/// pressed 态底色:base 亮度 +8%。
+/// pressed 态底色(theme-less 降级编译回退:旧亮度法 +8%)。
+#[cfg(not(feature = "theme"))]
 pub fn pressed_tint(base: Hsla) -> Hsla {
     tint(base, PRESSED_LIGHTNESS_DELTA)
 }
@@ -258,47 +380,139 @@ mod tests {
 
     #[test]
     fn duration_tokens_match_spec() {
-        // 分册六 §4.3 参数表逐项对齐
+        // 分册六 §4.3 参数表逐项对齐;120/200 两档已重指向动效四档(tokens
+        // 单点,ANI-07;测试配置恒开 theme,故直接断言与 MotionTokens 一致)
         assert_eq!(DUR_INTERACT_MS, 120.0);
+        assert_eq!(DUR_INTERACT_MS, crate::tokens::MotionTokens::DUR_STATE_MS);
         assert_eq!(DUR_PANEL_MS, 200.0);
+        assert_eq!(DUR_PANEL_MS, crate::tokens::MotionTokens::DUR_PANEL_MS);
         assert_eq!(DUR_OVERLAY_MS, 240.0);
         assert_eq!(DUR_PULSE_MS, 300.0);
         assert_eq!(DUR_VIEW_JUMP_MS, 280.0);
+        // 历史亮度偏移仅存兼容(值冻结,不参与本仓逻辑)
         assert_eq!(HOVER_LIGHTNESS_DELTA, 0.04);
         assert_eq!(PRESSED_LIGHTNESS_DELTA, 0.08);
     }
 
+    /// TC-TOK-STATE-01(报告 §5.3.3/TOK-04):浅色白底 hover 可见变化,
+    /// 不再是亮度法钳 1.0 的死值;深色底 hover 相应变亮。
     #[test]
-    fn tint_raises_lightness_by_token_delta() {
+    fn tc_tok_state_01_light_hover_changes_and_dark_brightens() {
+        let white = Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 1.0,
+            a: 1.0,
+        };
+        let hover_white = state_layer(white, InteractState::Hover, white);
+        assert!(hover_white.l < 1.0, "浅色白底 hover 必须可见变化(压暗)");
+        assert!(
+            (hover_white.l - (1.0 - 0.04)).abs() < 1e-6,
+            "浅色 hover = 黑 4% 叠加"
+        );
+        assert_eq!(hover_white.a, 1.0, "不透明底叠后仍不透明");
+        // 旧亮度法在此底会钳 1.0(state_layer 的极性取向按 l>=0.5)
+        let pressed_white = state_layer(white, InteractState::Pressed, white);
+        assert!(
+            pressed_white.l < hover_white.l,
+            "press 弱于 hover(压得更深)"
+        );
+        // 深色底:hover 变亮(白 6% 叠加)
+        let dark_surface = crate::tokens::ColorTokens::dark().surface_2;
+        let hover_dark = state_layer(dark_surface, InteractState::Hover, dark_surface);
+        assert!(hover_dark.l > dark_surface.l, "深色表面 hover 应变亮");
+        assert!((hover_dark.l - (dark_surface.l + (1.0 - dark_surface.l) * 0.06)).abs() < 1e-6);
+    }
+
+    /// TC-TOK-STATE-02:深/浅 selected 底均为 accent 同比例 alpha(14%),
+    /// 混合结果 = lerp(base, accent, 0.14),两主题一致。
+    #[test]
+    fn tc_tok_state_02_selected_is_accent_at_same_ratio_both_themes() {
+        let dark = crate::tokens::ColorTokens::dark();
+        let light = crate::tokens::ColorTokens::light();
+        assert_eq!(
+            crate::tokens::StateLayerTokens::dark().selected,
+            crate::tokens::StateLayerTokens::light().selected,
+            "selected alpha 深浅同比例(令牌侧)"
+        );
+        for tokens in [dark, light] {
+            let base = tokens.surface_1;
+            let sel = state_layer(base, InteractState::Selected, tokens.accent);
+            let t = crate::tokens::StateLayerTokens::dark().selected;
+            assert!(
+                (sel.l - (base.l + (tokens.accent.l - base.l) * t)).abs() < 1e-6,
+                "selected = lerp(base, accent, {t})"
+            );
+            // 色相按最短弧混合(同实现语义;accent 色相 0.58 对灰底 h=0 会
+            // 取 -0.417 弧,两主题一致)
+            let dh = tokens.accent.h - base.h;
+            let dh_shortest = dh - dh.round();
+            assert!(
+                (sel.h - (base.h + dh_shortest * t)).abs() < 1e-6,
+                "色相最短弧同比例混合"
+            );
+            assert_eq!(sel.a, 1.0);
+        }
+        // 透明底(行垫片形态):结果 = accent@14% 的纯叠加层
+        let transparent = Hsla::transparent_black();
+        let sel_over_transparent = state_layer(transparent, InteractState::Selected, dark.accent);
+        assert!((sel_over_transparent.a - 0.14).abs() < 1e-6);
+        assert_eq!(sel_over_transparent.l, dark.accent.l);
+    }
+
+    /// 状态层其余语义(纯函数):disabled/idle 原样直通;极性按亮度自动
+    /// 取向;色相走最短弧。
+    #[test]
+    fn state_layer_idle_disabled_passthrough_and_polarity() {
         let base = Hsla {
             h: 0.3,
-            s: 0.8,
+            s: 0.5,
             l: 0.4,
             a: 1.0,
         };
-        let hover = hover_tint(base);
-        assert!(
-            (hover.l - 0.44).abs() < 1e-6,
-            "hover L +4%,得到 {}",
-            hover.l
+        assert_eq!(state_layer(base, InteractState::Idle, base), base);
+        assert_eq!(state_layer(base, InteractState::Disabled, base), base);
+        // 深色底(l<0.5)叠白、浅色底(l>=0.5)叠黑
+        let hover = state_layer(base, InteractState::Hover, base);
+        assert!(hover.l > base.l && hover.l < 1.0);
+        let light_base = Hsla { l: 0.9, ..base };
+        let hover_light = state_layer(light_base, InteractState::Hover, light_base);
+        assert!(hover_light.l < light_base.l, "浅色底 hover 应压暗(叠黑)");
+        // 兼容别名与直调一致
+        assert_eq!(hover_tint(base), hover);
+        assert_eq!(
+            pressed_tint(base),
+            state_layer(base, InteractState::Pressed, base)
         );
-        let pressed = pressed_tint(base);
-        assert!(
-            (pressed.l - 0.48).abs() < 1e-6,
-            "pressed L +8%,得到 {}",
-            pressed.l
-        );
-        // h/s/a 不动
-        assert_eq!((hover.h, hover.s, hover.a), (base.h, base.s, base.a));
-        // 高亮度底钳制不越界
-        let bright = Hsla {
+        // 高亮度底不再钳死(旧亮度法在 l=0.98 时 hover 无变化)
+        let near_white = Hsla {
             h: 0.0,
             s: 0.0,
             l: 0.98,
             a: 1.0,
         };
-        assert_eq!(hover_tint(bright).l, 1.0);
-        assert_eq!(pressed_tint(bright).l, 1.0);
+        assert!(
+            hover_tint(near_white).l < 0.98,
+            "浅底 hover 必须可见(修复点)"
+        );
+        // 色相最短弧:0.9 → 0.1 的叠加应走 +0.2 弧(经 1.0/0.0),不倒退 -0.8
+        let magenta_base = Hsla {
+            h: 0.9,
+            s: 0.8,
+            l: 0.3,
+            a: 1.0,
+        };
+        let selected_magenta = state_layer(
+            magenta_base,
+            InteractState::Selected,
+            Hsla {
+                h: 0.1,
+                ..magenta_base
+            },
+        );
+        let t = crate::tokens::StateLayerTokens::dark().selected;
+        let expected = magenta_base.h + 0.2 * t;
+        assert!((selected_magenta.h - expected).abs() < 1e-6);
     }
 
     #[test]

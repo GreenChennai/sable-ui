@@ -260,7 +260,8 @@ impl Render for LayerPanel {
 
                 // A4 Invert/Play:本帧该行的让位偏移(重排检出后 160ms 衰减)
                 let flip_offset = flip_rows.borrow_mut().invert_play(key, now);
-                // A7:悬停高亮(选中行保持 accent_muted 优先)
+                // A7:悬停高亮(TOK-04:选中行走 state-layer selected,悬停
+                // 不与选中叠加)
                 let hover_p = if hovered_node == Some(id) {
                     hover_progress
                 } else {
@@ -324,11 +325,23 @@ impl Render for LayerPanel {
                     } else {
                         Hsla::transparent_black()
                     })
-                    .when(selected, |el| el.bg(colors.accent_muted))
+                    // TOK-04:选中 = state-layer(面板底上叠 accent 14%,深浅
+                    // 同比例);悬停 = state-layer(Hover)插值(叠白/黑随主题)
+                    .when(selected, |el| {
+                        el.bg(interact::state_layer(
+                            colors.surface_1,
+                            interact::InteractState::Selected,
+                            colors.accent,
+                        ))
+                    })
                     .when(!selected && hover_p > 0.0, |el| {
                         el.bg(lerp_hsla(
                             Hsla::transparent_black(),
-                            colors.surface_3,
+                            interact::state_layer(
+                                colors.surface_1,
+                                interact::InteractState::Hover,
+                                colors.accent,
+                            ),
                             hover_p,
                         ))
                     })
@@ -425,13 +438,17 @@ fn f32v(v: f64) -> f32 {
     v as f32
 }
 
-/// 工具行小按钮(上移/下移;回调收 &mut App;A7 hover 即时加亮)。
+/// 工具行小按钮(上移/下移;回调收 &mut App;A7 hover 即时 state-layer 叠加)。
 fn simple_tool_button(
     label: &'static str,
     colors: crate::tokens::ColorTokens,
     on_click: Rc<dyn Fn(&mut App)>,
 ) -> gpui::AnyElement {
-    let hover_bg = interact::hover_tint(colors.surface_3);
+    let hover_bg = interact::state_layer(
+        colors.surface_3,
+        interact::InteractState::Hover,
+        colors.accent,
+    );
     div()
         .px(px(SpacingTokens::SM))
         .h(px(LayerPanel::row_height()))

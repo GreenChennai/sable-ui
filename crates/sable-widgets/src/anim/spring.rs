@@ -24,6 +24,14 @@
 //! 速度进入弹簧,不掉速(iOS 手感的关键,08-A2)**。
 
 /// 弹簧(质量-阻尼-刚度)。[`Spring::solve`] 系列是解析式,随时可求任意 t。
+///
+/// # 档位单点(ANI-06/TOK-08)
+///
+/// [`Spring::SNAPPY`]/[`Spring::SOFT`]/[`Spring::BOUNCY`] 的数值单一源自
+/// `crate::tokens::SPRING_SNAPPY`/`SPRING_SOFT`/`SPRING_BOUNCY`(theme
+/// feature 关闭的降级编译才落到本文件字面量);数值与
+/// `docs/design/sable-tokens.json` 的 motion.spring 表逐值一致
+/// (TC-ANI-SPRING-01,门禁 tests/gate_tokens_sync.rs)。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spring {
     /// 刚度 k
@@ -35,13 +43,43 @@ pub struct Spring {
 }
 
 impl Spring {
-    /// 面板归位(分册六 §4.2:近乎临界,几乎无过冲)。
+    /// 面板归位(分册六 §4.2:近乎临界,几乎无过冲;§5.8 弹簧利落档)。
+    #[cfg(feature = "theme")]
+    pub const SNAPPY: Spring = Spring {
+        stiffness: crate::tokens::SPRING_SNAPPY.stiffness,
+        damping: crate::tokens::SPRING_SNAPPY.damping,
+        mass: crate::tokens::SPRING_SNAPPY.mass,
+    };
+    /// theme-less 降级编译的字面量回退(与 tokens::SPRING_SNAPPY 同值)。
+    #[cfg(not(feature = "theme"))]
     pub const SNAPPY: Spring = Spring {
         stiffness: 400.0,
         damping: 28.0,
         mass: 1.0,
     };
-    /// 弹窗回弹(欠阻尼,可见过冲)。
+    /// 柔和跟随(§5.8 弹簧柔和档:面板拖拽跟手,轻微过冲的柔顺跟随)。
+    #[cfg(feature = "theme")]
+    pub const SOFT: Spring = Spring {
+        stiffness: crate::tokens::SPRING_SOFT.stiffness,
+        damping: crate::tokens::SPRING_SOFT.damping,
+        mass: crate::tokens::SPRING_SOFT.mass,
+    };
+    /// theme-less 降级编译的字面量回退(与 tokens::SPRING_SOFT 同值)。
+    #[cfg(not(feature = "theme"))]
+    pub const SOFT: Spring = Spring {
+        stiffness: 180.0,
+        damping: 22.0,
+        mass: 1.0,
+    };
+    /// 弹窗回弹(欠阻尼,可见过冲;历史档位,数值保持契约不变)。
+    #[cfg(feature = "theme")]
+    pub const BOUNCY: Spring = Spring {
+        stiffness: crate::tokens::SPRING_BOUNCY.stiffness,
+        damping: crate::tokens::SPRING_BOUNCY.damping,
+        mass: crate::tokens::SPRING_BOUNCY.mass,
+    };
+    /// theme-less 降级编译的字面量回退(与 tokens::SPRING_BOUNCY 同值)。
+    #[cfg(not(feature = "theme"))]
     pub const BOUNCY: Spring = Spring {
         stiffness: 300.0,
         damping: 15.0,
@@ -97,6 +135,29 @@ impl Spring {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spring_tiers_match_tokens_and_soft_follows_gently() {
+        // 档位数值 = tokens 单点(theme 开启的常规编译面;TC-ANI-SPRING-01
+        // 在 tests/gate_tokens_sync.rs 另与 JSON 逐值对拍)
+        for (tier, preset) in [
+            (Spring::SNAPPY, crate::tokens::SPRING_SNAPPY),
+            (Spring::SOFT, crate::tokens::SPRING_SOFT),
+            (Spring::BOUNCY, crate::tokens::SPRING_BOUNCY),
+        ] {
+            assert_eq!(
+                (tier.stiffness, tier.damping, tier.mass),
+                (preset.stiffness, preset.damping, preset.mass)
+            );
+        }
+        // SOFT 端点正确、轻微过冲(ζ ≈ 0.82,峰约 1.01——柔顺跟随不松垮)
+        assert_eq!(Spring::SOFT.solve(0.0), 0.0);
+        assert!((Spring::SOFT.solve(5.0) - 1.0).abs() < 1e-6);
+        let peak = (0..=400)
+            .map(|i| Spring::SOFT.solve(f64::from(i) / 400.0 * 2.0))
+            .fold(f64::MIN, f64::max);
+        assert!(peak > 1.0 && peak < 1.05, "SOFT 应轻微过冲,实际 {peak}");
+    }
 
     #[test]
     fn spring_solve_endpoints_and_overshoot() {

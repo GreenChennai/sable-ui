@@ -57,15 +57,23 @@
 //! (受 [`crate::inspector`] 调用形态约束),焦点句柄在首帧 render 惰性
 //! 创建并以 `tab_stop(true)` 进 Tab 环游序。
 //!
-//! # A7 微交互(hover/press 三态,分册六 §4.3 #1)
+//! # A7 微交互(hover/press 三态,分册六 §4.3 #1 + TOK-04 state-layer)
 //!
-//! 底色 = `surface_2` 基色上插值:hover 时经 [`hover_tint`](crate::interact::hover_tint)
-//! 加亮 4%(120ms ease-out,由 [`HoverState`](crate::interact::HoverState) 驱动),
-//! 按下(scrub 拖拽中)直接取 `pressed_tint` 加亮 8%。同屏多个实例时必须
+//! 底色 = `surface_2` 凸起材质(N5)上做状态层混合:hover =
+//! [`state_layer`](crate::interact::state_layer)(深色叠白 6%/浅色叠黑 4%,
+//! 120ms ease-out,由 [`HoverState`](crate::interact::HoverState) 驱动),
+//! 按下(scrub 拖拽中)= `InteractState::Pressed`。同屏多个实例时必须
 //! 经 [`.element_id`](Self::element_id) 给唯一 id;未给 id 时退化为 gpui
 //! hover 样式即时切换(无动画,不破缺省构造)。减弱动态(A8)下插值被
 //! [`reduced_motion`](crate::anim::reduced_motion) 短路,进度直通 0/1;
 //! 编辑态光标为常亮竖线(不闪烁),与 A8 无关。
+//!
+//! # 海拔材质(TOK-01,报告 §5.3.2)
+//!
+//! 输入是"L2 凸起"材质:渲染时经 [`theme::elevated`](crate::theme::elevated)
+//! 垫 [`ELEVATIONS[2]`](crate::tokens::ELEVATIONS) 的 quad 近似阴影
+//! (GPUI 0.2.2 无 box-shadow)。内容层保持原事件语义(监听器全部在外层
+//! 容器上)。
 
 use gpui::{
     Context, ElementId, EntityInputHandler, InteractiveElement, IntoElement, MouseButton,
@@ -606,14 +614,20 @@ impl Render for NumberField {
             }
         };
 
-        // A7 三态底色:静止/悬停 = surface_2 → hover_tint 插值;按下 = pressed_tint
+        // A7/TOK-04 三态底色:静止/悬停 = surface_2 → state_layer(Hover)
+        // 插值(深色叠白/浅色叠黑);按下 = state_layer(Pressed)
         let base_bg = colors.surface_2;
+        let accent = colors.accent;
         let now = interact::now_ms();
         let hover_progress = self.hover.progress_at(now);
         let bg = if dragging || editing.is_some() {
-            interact::pressed_tint(base_bg)
+            interact::state_layer(base_bg, interact::InteractState::Pressed, accent)
         } else {
-            lerp_hsla(base_bg, interact::hover_tint(base_bg), hover_progress)
+            lerp_hsla(
+                base_bg,
+                interact::state_layer(base_bg, interact::InteractState::Hover, accent),
+                hover_progress,
+            )
         };
 
         // IME 钩子:paint 阶段注册平台输入处理器(Window::handle_input 断言
@@ -621,11 +635,11 @@ impl Render for NumberField {
         let ime_focus = focus.clone();
         let ime_entity = cx.entity();
 
-        let root = h_flex()
-            .relative()
+        // 内容层:视觉样式(底/描边/文字)+ 显示文本 + IME 钩子 canvas
+        let mut inner = h_flex()
             .justify_center()
+            .w_full()
             .h(px(Self::control_height()))
-            .min_w_0()
             .px(px(SpacingTokens::SM))
             .rounded(px(RadiusTokens::SM))
             .border_1()
@@ -642,12 +656,6 @@ impl Render for NumberField {
                 colors.text_secondary
             })
             .cursor_pointer()
-            .track_focus(&focus)
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
-            .on_key_down(cx.listener(Self::on_key_down))
             .child(display)
             .child(
                 canvas(
@@ -665,6 +673,24 @@ impl Render for NumberField {
                 .absolute()
                 .inset_0(),
             );
+        // 无 id:退化为 gpui hover 样式即时切换(无动画)。hover 底色必须挂
+        // 内容层(阴影容器 bg 会被 quad 与内容盖住,挂上去等于没有反馈)。
+        if self.element_id.is_none() {
+            let hover_bg = interact::state_layer(base_bg, interact::InteractState::Hover, accent);
+            inner = inner.hover(move |style| style.bg(hover_bg));
+        }
+
+        // TOK-01 消费点 1:输入凸起 = L2 海拔(theme::elevated 内部取
+        // tokens::ELEVATIONS[2] 的 quad 近似阴影;不透明底盖住重叠区)。
+        // 事件语义不变:id/焦点/监听器全部挂在外层容器。
+        let root = crate::theme::elevated(2, inner)
+            .min_w_0()
+            .track_focus(&focus)
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_key_down(cx.listener(Self::on_key_down));
 
         // 悬停动画在跑就续帧(静止零帧提交,分册六 §4.4)
         if self.hover.is_running(now) {
@@ -676,10 +702,7 @@ impl Render for NumberField {
                 .id(id)
                 .on_hover(cx.listener(Self::on_hover_changed))
                 .into_any_element(),
-            // 无 id:退化为 gpui hover 样式即时切换(无动画)
-            None => root
-                .hover(move |style| style.bg(interact::hover_tint(base_bg)))
-                .into_any_element(),
+            None => root.into_any_element(),
         }
     }
 }

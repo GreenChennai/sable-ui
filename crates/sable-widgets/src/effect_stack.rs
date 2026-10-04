@@ -22,7 +22,7 @@
 //! # 零硬编码纪律与 A7
 //!
 //! 颜色一律 [`crate::theme`] 语义色;行高/按钮高走 [`control_height`]
-//! 派生制。行与按钮的 hover 底色 = [`interact::hover_tint`](即时切换,
+//! 派生制。行与按钮的 hover 底色 = [`interact::state_layer`](即时切换,
 //! 本组件是 RenderOnce,无跨帧状态;插值版接线 = M2,同 PropertyRow)。
 //! 眼睛/按钮图标用几何色块 + 单字占位(gpui-component 的 Icon 跑在
 //! gpui-pre 类型世界不可用,与 LayerPanel 同款取舍;Lucide = M2)。
@@ -341,7 +341,13 @@ impl RenderOnce for EffectStackPanel {
         for (ix, entry) in self.spec.entries.iter().enumerate() {
             let (up_on, down_on) = row_move_enabled(n, ix);
             let enabled = entry.enabled;
-            let row_bg = interact::hover_tint(colors.surface_1);
+            // A7/TOK-04:行 hover 底色走 state-layer(深色叠白/浅色叠黑,
+            // 修复浅色主题 hover 钳 1.0 失效)
+            let row_bg = interact::state_layer(
+                colors.surface_1,
+                interact::InteractState::Hover,
+                colors.accent,
+            );
             let eye_cb = self.cb.clone();
             let row = h_flex()
                 .w_full()
@@ -405,13 +411,17 @@ impl RenderOnce for EffectStackPanel {
 }
 
 /// 眼睛开关(几何色块占位,LayerPanel 同款):填充 accent = 启用、透明 =
-/// 禁用,边框随状态灰阶;hover 底色即时加亮。
+/// 禁用,边框随状态灰阶;hover 底色即时 state-layer 叠加(TOK-04)。
 fn eye_button(
     colors: ColorTokens,
     enabled: bool,
     on_toggle: Rc<dyn Fn(&mut App)>,
 ) -> gpui::AnyElement {
-    let hover_bg = interact::hover_tint(colors.surface_1);
+    let hover_bg = interact::state_layer(
+        colors.surface_1,
+        interact::InteractState::Hover,
+        colors.accent,
+    );
     div()
         .size(px(10.0))
         .flex_shrink_0()
@@ -451,7 +461,11 @@ fn mini_button(
         .rounded(px(RadiusTokens::SM))
         .text_size(px(FONT_SIZE_CAPTION));
     if let Some(on_click) = on_click.filter(|_| enabled) {
-        let hover_bg = interact::hover_tint(colors.surface_2);
+        let hover_bg = interact::state_layer(
+            colors.surface_2,
+            interact::InteractState::Hover,
+            colors.accent,
+        );
         base.bg(colors.surface_2)
             .text_color(colors.text_secondary)
             .cursor_pointer()
