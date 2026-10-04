@@ -6,6 +6,15 @@
 //! 2. 任意两 clip 的区间 `[start, start+duration)` 互不重叠(相邻贴合允许);
 //! 3. `duration_ms` = 全轨 max(clip end),是派生缓存,由每次修改后刷新。
 //!
+//! # 守卫(RBT-07/RBT-08,迭代审查报告 §6 RB-13)
+//!
+//! - `Clip::validate` 是 **speed / 出入点 / duration 的唯一守卫谓词**,
+//!   反序列化(手写 `Deserialize`,加载即校验)与 `Timeline::set_speed`
+//!   两条入口共用,坏值一律结构化 [`VideoError::InvalidClip`],不静默钳制;
+//! - 所有结构修改在收尾处做**发布期同样生效**的不变量校验,破坏即
+//!   [`VideoError::InvariantViolated`];成功路径上 debug 构建另有
+//!   `debug_assert!` 额外校验(见 `Timeline::finish_mutation`)。
+//!
 //! # id 身份(架构决策,详见 crate 文档)
 //!
 //! [`ClipId`] 稳定自增 u64、**永不复用**(连跳号都不回收),因此撤销历史里的
@@ -84,7 +93,13 @@ pub struct Keyframe {
 /// `in_ms`/`out_ms` 是素材内出入点(源域),`start_ms`/`duration_ms` 是时间轴
 /// 位置(时间轴域);变速时 `duration_ms = round((out_ms - in_ms) / speed)`。
 /// 两域换算存在 ±1ms 取整误差,取舍以时间轴域连续性优先(docs/04 §8)。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// # 反序列化守卫(RBT-07/RB-13)
+///
+/// `Deserialize` 为手写实现:字段照常提取后立即过 [`Clip::validate`],
+/// speed 非有限正数 / 出点不大于入点 / duration 为 0 一律报错——坏值无法经
+/// 任何 serde 格式(.sable/MessagePack/JSON)绕过守卫进入内存。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Clip {
     pub id: ClipId,
     pub asset: AssetRef,
@@ -111,6 +126,67 @@ impl Clip {
     pub fn source_span_ms(&self) -> u64 {
         self.out_ms.saturating_sub(self.in_ms)
     }
+
+    /// 结构守卫(RBT-07/RB-13):speed 有限且 > 0、出点严格大于入点、
+    /// duration > 0。反序列化与 `Timeline::set_speed` 两条入口共用同一
+    /// 谓词,守卫策略恒一致;坏值返回结构化 [`VideoError::InvalidClip`]。
+    pub fn validate(&self) -> VideoResult<()> {
+        ensure_valid_speed(self.speed)?;
+        if self.out_ms <= self.in_ms {
+            return Err(VideoError::InvalidClip("出点必须大于入点(out > in)"));
+        }
+        if self.duration_ms == 0 {
+            return Err(VideoError::InvalidClip("duration_ms 必须大于 0"));
+        }
+        Ok(())
+    }
+}
+
+/// speed 守卫谓词(RBT-07):`set_speed` 与反序列化两条入口共用,策略恒一致。
+/// `!(speed > 0.0)` 同时命中 0/负数/NaN(0 > 0 为假、负数同理、`!(NaN > 0)`
+/// 恰为 true——改写为 `speed <= 0.0` 即行为变更),`is_finite` 再拦 ±inf。
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn ensure_valid_speed(speed: f64) -> VideoResult<()> {
+    if !(speed > 0.0) || !speed.is_finite() {
+        return Err(VideoError::InvalidClip(
+            "speed 必须为有限正数(speed > 0 且有限)",
+        ));
+    }
+    Ok(())
+}
+
+impl<'de> Deserialize<'de> for Clip {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// 字段镜像(与 `Clip` 一一对应);守卫在字段提取后立即执行,
+        /// 错误以 [`VideoError`] 的 Display 文本进入反序列化器的结构化错误。
+        #[derive(Deserialize)]
+        struct RawClip {
+            id: ClipId,
+            asset: AssetRef,
+            start_ms: u64,
+            duration_ms: u64,
+            in_ms: u64,
+            out_ms: u64,
+            speed: f64,
+            keyframes: Vec<Keyframe>,
+        }
+        let raw = RawClip::deserialize(deserializer)?;
+        let clip = Clip {
+            id: raw.id,
+            asset: raw.asset,
+            start_ms: raw.start_ms,
+            duration_ms: raw.duration_ms,
+            in_ms: raw.in_ms,
+            out_ms: raw.out_ms,
+            speed: raw.speed,
+            keyframes: raw.keyframes,
+        };
+        clip.validate().map_err(serde::de::Error::custom)?;
+        Ok(clip)
+    }
 }
 
 /// 一条轨道。`clips` 按 start_ms 严格升序、互不重叠(不变量,见模块文档)。
@@ -135,7 +211,13 @@ impl Track {
 ///
 /// `PartialEq` 为手写实现:`next_clip_id` 计数器**刻意不参与相等**——撤销到放置
 /// 之前时计数器不回退(id 永不复用),撤销等价性必须无视它。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// # 反序列化守卫(RBT-07)
+///
+/// `Deserialize` 为手写实现:反序列化完成后立即过 [`Timeline::validate`]
+/// (每个 clip 的数据守卫 + 结构不变量),坏文件在加载边界即被结构化拒收,
+/// 不带病进内存。
+#[derive(Clone, Debug, Serialize)]
 pub struct Timeline {
     pub tracks: Vec<Track>,
     /// 时间轴缩放(像素/秒),时间↔像素换算见 [`Timeline::ms_to_px`]。
@@ -168,6 +250,37 @@ impl PartialEq for Timeline {
             && self.px_per_second == other.px_per_second
             && self.snap_enabled == other.snap_enabled
             && self.duration_ms == other.duration_ms
+    }
+}
+
+impl<'de> Deserialize<'de> for Timeline {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// 字段镜像(含两个 `#[serde(default)]` 字段,与 `Timeline` 一致)。
+        #[derive(Deserialize)]
+        struct RawTimeline {
+            tracks: Vec<Track>,
+            px_per_second: f64,
+            snap_enabled: bool,
+            #[serde(default)]
+            duration_ms: u64,
+            #[serde(default)]
+            next_clip_id: u64,
+        }
+        let raw = RawTimeline::deserialize(deserializer)?;
+        let timeline = Timeline {
+            tracks: raw.tracks,
+            px_per_second: raw.px_per_second,
+            snap_enabled: raw.snap_enabled,
+            duration_ms: raw.duration_ms,
+            next_clip_id: raw.next_clip_id,
+        };
+        // 加载入口统一 validate(RBT-07):坏 clip 数据与结构不变量破坏
+        // (乱序/重叠/缓存不一致)一律在此结构化报错。
+        timeline.validate().map_err(serde::de::Error::custom)?;
+        Ok(timeline)
     }
 }
 
@@ -210,7 +323,7 @@ impl Timeline {
             return Err(VideoError::EmptyTimeline);
         }
         let removed = self.tracks.remove(track);
-        self.refresh_duration();
+        self.finish_mutation("remove_track")?;
         debug_assert!(self.is_valid());
         Ok(removed)
     }
@@ -283,6 +396,7 @@ impl Timeline {
         clip.start_ms = new_start_ms;
         match self.insert_clip_raw(t, clip) {
             Ok(()) => {
+                self.finish_mutation("move_clip")?;
                 debug_assert!(self.is_valid());
                 Ok(())
             }
@@ -307,9 +421,11 @@ impl Timeline {
         let Some((t, i)) = self.locate(id) else {
             return Err(VideoError::ClipNotFound(id.value()));
         };
-        let clip = &self.tracks[t].clips[i];
-        let speed = clip.speed;
-        let start = clip.start_ms;
+        // duration 按 (out-in)/speed 换算:speed 被直改破坏时在此按统一谓词
+        // 拒收,防 inf/NaN duration 进入时间轴(RBT-07/RB-13)
+        let speed = self.tracks[t].clips[i].speed;
+        ensure_valid_speed(speed)?;
+        let start = self.tracks[t].clips[i].start_ms;
         let new_duration = (((new_out_ms - new_in_ms) as f64 / speed).round() as u64).max(1);
         let new_end = start.saturating_add(new_duration);
         if let Some(next) = self.tracks[t].clips.get(i + 1) {
@@ -321,7 +437,7 @@ impl Timeline {
         clip.in_ms = new_in_ms;
         clip.out_ms = new_out_ms;
         clip.duration_ms = new_duration;
-        self.refresh_duration();
+        self.finish_mutation("trim_clip")?;
         debug_assert!(self.is_valid());
         Ok(())
     }
@@ -342,7 +458,7 @@ impl Timeline {
             return Err(VideoError::ClipNotFound(id.value()));
         };
         let clip = self.tracks[t].clips.remove(i);
-        self.refresh_duration();
+        self.finish_mutation("remove_clip")?;
         debug_assert!(self.is_valid());
         Ok(clip)
     }
@@ -352,25 +468,33 @@ impl Timeline {
         let Some((t, i)) = self.locate(id) else {
             return Err(VideoError::ClipNotFound(id.value()));
         };
+        // 前移下溢预检(RBT-08):release 无溢出检查,`-=` 回绕会静默破坏
+        // 时间轴。正常不变量下后续起点 >= 被删终点 > 被删时长,不会下溢;
+        // 只有不变量已被绕过 API 的直改破坏才会触发,显式拒收、原状保留。
+        let removed_duration = self.tracks[t].clips[i].duration_ms;
+        if self.tracks[t].clips[i + 1..]
+            .iter()
+            .any(|c| c.start_ms < removed_duration)
+        {
+            return Err(VideoError::InvariantViolated(
+                "ripple_remove:后续 clip 起点小于被删时长,前移将下溢",
+            ));
+        }
         let clip = self.tracks[t].clips.remove(i);
         for c in &mut self.tracks[t].clips[i..] {
-            c.start_ms -= clip.duration_ms; // 后续起点 >= 被删终点 > duration,不会下溢
+            c.start_ms -= clip.duration_ms; // 上方已预检,不会下溢
         }
-        self.refresh_duration();
+        self.finish_mutation("ripple_remove")?;
         debug_assert!(self.is_valid());
         Ok(clip)
     }
 
-    /// 变速(speed 必须 > 0);duration 按素材时长换算重算:duration = (out-in)/speed。
+    /// 变速(speed 必须为有限正数);duration 按素材时长换算重算:duration = (out-in)/speed。
     /// 变慢(duration 变长)撞到右邻时返回 [`VideoError::Overlap`]。
     pub fn set_speed(&mut self, id: ClipId, speed: f64) -> VideoResult<()> {
-        // NaN 是调用方可能传入的非法值,必须与 0/负数一同拒绝:!(NaN > 0.0)
-        // 恰为 true,而 NaN <= 0.0 为 false,故保留否定比较(改写即行为变更)。
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        if !(speed > 0.0) {
-            // NaN 也走这里:! (NaN > 0.0) == true
-            return Err(VideoError::InvalidRange("speed 必须大于 0"));
-        }
+        // 与反序列化入口共用同一守卫谓词、同一错误变体(RBT-07:两条入口
+        // 同一策略):0/负数/NaN 经 `!(speed > 0.0)` 拦截,±inf 由 is_finite 拦截。
+        ensure_valid_speed(speed)?;
         let Some((t, i)) = self.locate(id) else {
             return Err(VideoError::ClipNotFound(id.value()));
         };
@@ -386,7 +510,7 @@ impl Timeline {
         let clip = &mut self.tracks[t].clips[i];
         clip.speed = speed;
         clip.duration_ms = new_duration;
-        self.refresh_duration();
+        self.finish_mutation("set_speed")?;
         debug_assert!(self.is_valid());
         Ok(())
     }
@@ -430,6 +554,23 @@ impl Timeline {
 
     // —— 不变量自检(测试与 debug_assert 用)——
 
+    /// 全量校验(RBT-07 加载入口与测试用):每个 clip 过 [`Clip::validate`],
+    /// 再校验结构不变量([`Self::is_valid`]:升序不重叠、duration>0、派生缓存
+    /// 一致)。任一失败返回结构化错误,不静默钳制。
+    pub fn validate(&self) -> VideoResult<()> {
+        for track in &self.tracks {
+            for clip in &track.clips {
+                clip.validate()?;
+            }
+        }
+        if !self.is_valid() {
+            return Err(VideoError::InvariantViolated(
+                "结构不变量(升序/不重叠/duration>0/缓存一致)",
+            ));
+        }
+        Ok(())
+    }
+
     /// 校验三条不变量(见模块文档):升序不重叠、duration>0、派生缓存正确。
     pub fn is_valid(&self) -> bool {
         let mut max_end = 0u64;
@@ -452,6 +593,18 @@ impl Timeline {
     }
 
     // —— 内部零件(crate 内命令系统复用)——
+
+    /// 修改收尾(RBT-08):刷新派生缓存后做**发布期同样生效**的不变量校验,
+    /// 失败显式返回 [`VideoError::InvariantViolated`] 而非静默放行;成功路径
+    /// 上 debug 构建再由调用方叠加 `debug_assert!` 额外校验。输入校验齐全时
+    /// 本校验不可达,出现即内部缺陷或不变量已被绕过 API 的直改破坏。
+    fn finish_mutation(&mut self, op: &'static str) -> VideoResult<()> {
+        self.refresh_duration();
+        if !self.is_valid() {
+            return Err(VideoError::InvariantViolated(op));
+        }
+        Ok(())
+    }
 
     /// 铸造新 id:自增,永不复用;u64 溢出按回绕处理(现实中不可达)。
     fn mint_id(&mut self) -> ClipId {
@@ -482,7 +635,10 @@ impl Timeline {
             speed: 1.0,
             keyframes: Vec::new(),
         };
-        self.insert_clip_raw(track, clip).map_err(|err| err.1)
+        self.insert_clip_raw(track, clip).map_err(|err| err.1)?;
+        self.finish_mutation("place_clip")?;
+        debug_assert!(self.is_valid());
+        Ok(())
     }
 
     /// 保持有序 + 碰撞检查的插入(失败时不消费 clip,以 `Box<(Clip, VideoError)>`
@@ -538,6 +694,9 @@ impl Timeline {
                 "分割点必须严格落在 clip 内部(start < ms < end)",
             ));
         }
+        // clip 数据守卫(RBT-07):speed 非有限正数 / 出入点倒挂会让下面的
+        // 换算产生 inf/NaN,先按统一谓词拒收
+        clip.validate()?;
         let left_id = clip.id;
         let local = ms - clip.start_ms;
         let (speed, in_ms, out_ms, duration) =
@@ -554,9 +713,17 @@ impl Timeline {
                 "分割点换算到素材域后过于贴近边缘,拒绝退化分割",
             ));
         }
+        // 右半起点溢出预检(RBT-08):release 无溢出检查,回绕会静默打乱升序
+        // 不变量;显式拒收,时间轴保持原状
+        let right_start =
+            clip.start_ms
+                .checked_add(left_duration)
+                .ok_or(VideoError::InvariantViolated(
+                    "split_at:右半起点溢出,拒绝分割",
+                ))?;
         let mut right = clip.clone();
         right.id = right_id;
-        right.start_ms += left_duration;
+        right.start_ms = right_start;
         right.duration_ms = duration - left_duration;
         right.in_ms = split_source;
         right.keyframes = clip
@@ -576,7 +743,7 @@ impl Timeline {
             left.keyframes.retain(|k| k.t_ms < local);
         }
         t.clips.insert(idx + 1, right);
-        self.refresh_duration();
+        self.finish_mutation("split_at")?;
         debug_assert!(self.is_valid());
         Ok((left_id, right_id))
     }
@@ -903,19 +1070,13 @@ mod tests {
         // 变速回去,duration 复原(素材域 out-in 是稳定量,无漂移)
         assert_eq!(tl.set_speed(a, 1.0), Ok(()));
         assert_eq!(tl.clip(a).expect("a").duration_ms, 500);
-        // 非法速度
-        assert!(matches!(
-            tl.set_speed(a, 0.0),
-            Err(VideoError::InvalidRange(_))
-        ));
-        assert!(matches!(
-            tl.set_speed(a, -1.0),
-            Err(VideoError::InvalidRange(_))
-        ));
-        assert!(matches!(
-            tl.set_speed(a, f64::NAN),
-            Err(VideoError::InvalidRange(_))
-        ));
+        // 非法速度(与反序列化共用同一谓词、同一错误变体:InvalidClip)
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                matches!(tl.set_speed(a, bad), Err(VideoError::InvalidClip(_))),
+                "speed = {bad} 必须被拒收为 InvalidClip"
+            );
+        }
         // 变慢撞右邻:speed 0.5 → duration 1000,b 起点在 500
         assert_eq!(tl.set_speed(a, 0.5), Err(VideoError::Overlap));
         // 不存在的 clip
@@ -1044,6 +1205,170 @@ mod tests {
         tl.insert_clip_raw(0, snapshot.tracks[0].clips[0].clone())
             .expect("reinsert");
         assert_eq!(tl, snapshot, "删除又放回后内容等价(尽管 id 计数器已前进)");
+    }
+
+    // —— TC-RBT-VIDEO-01/02、TC-RBT-TL-01(迭代审查报告 RBT-07/RBT-08/§6 RB-13)——
+
+    /// 构造最小 Timeline JSON(.sable 同构数据),注入指定 speed 字面量。
+    fn timeline_json_with_speed(speed_json: &str) -> String {
+        format!(
+            r#"{{"tracks":[{{"kind":"Video","clips":[{{"id":0,"asset":{{"path":"/assets/v.mp4","hash":1}},"start_ms":0,"duration_ms":100,"in_ms":0,"out_ms":100,"speed":{speed_json},"keyframes":[]}}],"muted":false,"locked":false}}],"px_per_second":100.0,"snap_enabled":true,"duration_ms":100,"next_clip_id":1}}"#
+        )
+    }
+
+    fn plain_clip(id: u64, speed: f64) -> Clip {
+        Clip {
+            id: ClipId(id),
+            asset: AssetRef::new("/assets/v.mp4", 1),
+            start_ms: 0,
+            duration_ms: 100,
+            in_ms: 0,
+            out_ms: 100,
+            speed,
+            keyframes: Vec::new(),
+        }
+    }
+
+    /// TC-RBT-VIDEO-01:经 .sable 同构序列化数据注入 speed=0/-1/NaN/inf,
+    /// 反序列化必须返回结构化错误(不静默钳制、不 panic);坏出入点与
+    /// 结构破坏(同轨重叠)同样在加载边界被拒收;合法文件照常加载。
+    #[test]
+    fn tc_rbt_video_01_deserialization_rejects_bad_values() {
+        // speed = 0 / 负数:JSON 合法,必须由统一守卫谓词(而非解析器)拒绝
+        for bad in ["0", "-1", "0.0", "-0.5"] {
+            let err = serde_json::from_str::<Timeline>(&timeline_json_with_speed(bad))
+                .expect_err("坏 speed 必须反序列化失败");
+            assert!(
+                err.to_string()
+                    .contains("非法 clip 数据: speed 必须为有限正数"),
+                "错误信息必须来自 InvalidClip 守卫: {err}"
+            );
+        }
+        // ±inf / NaN 无法用 JSON 数字字面量表达,经同一守卫谓词(Clip::validate,
+        // 即反序列化内部调用的同一函数)验证拒收
+        for speed in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let err = plain_clip(0, speed)
+                .validate()
+                .expect_err("非有限 speed 必须被守卫拒收");
+            assert!(matches!(err, VideoError::InvalidClip(msg) if msg.contains("speed")));
+        }
+        // 1e999 溢出 f64:无论解析层还是守卫层拦截,都不得静默放行
+        assert!(serde_json::from_str::<Timeline>(&timeline_json_with_speed("1e999")).is_err());
+        // 出入点倒挂(out <= in)同样被守卫拒收
+        let bad_range = timeline_json_with_speed("1.0")
+            .replace("\"in_ms\":0,\"out_ms\":100", "\"in_ms\":200,\"out_ms\":100");
+        let err = serde_json::from_str::<Timeline>(&bad_range).expect_err("出点必须大于入点");
+        assert!(
+            err.to_string().contains("出点必须大于入点"),
+            "错误信息必须来自 InvalidClip 守卫: {err}"
+        );
+        // 结构破坏(同轨重叠)在加载入口被 Timeline::validate 拒收
+        let overlapping = r#"{"tracks":[{"kind":"Video","clips":[
+            {"id":0,"asset":{"path":"/a.mp4","hash":1},"start_ms":0,"duration_ms":100,"in_ms":0,"out_ms":100,"speed":1.0,"keyframes":[]},
+            {"id":1,"asset":{"path":"/b.mp4","hash":1},"start_ms":50,"duration_ms":100,"in_ms":0,"out_ms":100,"speed":1.0,"keyframes":[]}],
+            "muted":false,"locked":false}],
+            "px_per_second":100.0,"snap_enabled":true,"duration_ms":150,"next_clip_id":2}"#;
+        let err = serde_json::from_str::<Timeline>(overlapping).expect_err("重叠结构必须被拒收");
+        assert!(
+            err.to_string().contains("时间轴不变量被破坏"),
+            "错误信息必须来自 InvariantViolated: {err}"
+        );
+        // 合法 speed 正常通过反序列化(守卫不误伤)
+        let tl: Timeline =
+            serde_json::from_str(&timeline_json_with_speed("1.5")).expect("合法文件必须可加载");
+        assert!(tl.is_valid());
+        assert_eq!(tl.tracks[0].clips[0].speed, 1.5);
+    }
+
+    /// TC-RBT-VIDEO-02:`set_speed` 与反序列化(Clip::validate)两条入口
+    /// 对同一坏值拒收策略一致、错误变体一致;合法 speed 两条入口一致放行。
+    #[test]
+    fn tc_rbt_video_02_speed_guard_policy_identical() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            // 入口一:set_speed 拒收,且不改动时间轴
+            let (mut tl, ids) = demo_timeline();
+            let snapshot = tl.clone();
+            assert!(
+                matches!(tl.set_speed(ids[0], bad), Err(VideoError::InvalidClip(_))),
+                "set_speed({bad}) 必须返回 InvalidClip"
+            );
+            assert_eq!(tl, snapshot, "被拒收的变速不得改动时间轴");
+            // 入口二:同一坏值经反序列化守卫也是同一变体
+            assert!(
+                matches!(
+                    plain_clip(0, bad).validate(),
+                    Err(VideoError::InvalidClip(_))
+                ),
+                "同一坏值经反序列化守卫也必须返回 InvalidClip"
+            );
+        }
+        // 反序列化错误信息与 InvalidClip 的 Display 同源(错误类型/策略一致)
+        let err = serde_json::from_str::<Timeline>(&timeline_json_with_speed("0"))
+            .expect_err("speed=0 必须被拒收");
+        let guard_err = plain_clip(0, 0.0)
+            .validate()
+            .expect_err("speed=0 必须被守卫拒收");
+        let VideoError::InvalidClip(msg) = guard_err else {
+            panic!("测试前置失败:守卫必须返回 InvalidClip,实际 {guard_err:?}");
+        };
+        assert!(
+            err.to_string()
+                .contains(&VideoError::InvalidClip(msg).to_string()),
+            "反序列化错误必须携带同一 InvalidClip 文本: {err}"
+        );
+        // 合法 speed:两条入口一致放行(单 clip 无右邻,变速不撞)
+        for good in [0.1, 0.5, 1.0, 2.0, 100.0] {
+            let mut tl = Timeline::new();
+            tl.add_track(TrackKind::Video);
+            let id = tl.place_clip(0, asset("v"), 0, 1000).expect("place");
+            assert_eq!(tl.set_speed(id, good), Ok(()), "set_speed({good}) 必须放行");
+            let clip = tl.clip(id).expect("clip");
+            assert_eq!(clip.validate(), Ok(()), "合法 speed 加载守卫必须放行");
+            assert!(tl.is_valid());
+        }
+    }
+
+    /// TC-RBT-TL-01:非法修改必须返回 Err 而非静默通过(普通 cargo test
+    /// 即验证,不依赖 debug_assert):变速 +inf 旧实现 release 下被放行
+    /// (duration 归 1);波纹前移下溢在 release 回绕、debug 崩溃;两者
+    /// 现在均为类型化 Err 且时间轴原状;常规非法修改依旧类型化拒收。
+    #[test]
+    fn tc_rbt_tl_01_illegal_mutations_rejected_not_silent() {
+        // 1) 变速 +inf:显式拒收,时间轴原状
+        let (mut tl, ids) = demo_timeline();
+        let snapshot = tl.clone();
+        assert!(matches!(
+            tl.set_speed(ids[0], f64::INFINITY),
+            Err(VideoError::InvalidClip(_))
+        ));
+        assert_eq!(tl, snapshot, "非法修改不得生效");
+
+        // 2) 波纹删除前移下溢:不变量已被直改破坏时显式拒收(模拟历史脏数据;
+        //    API 自身无法构造此状态),拒收后原状保留
+        let mut tl = Timeline::new();
+        tl.add_track(TrackKind::Video);
+        let a = tl.place_clip(0, asset("a"), 0, 100).expect("a");
+        let b = tl.place_clip(0, asset("b"), 100, 200).expect("b");
+        tl.tracks[0].clips[1].start_ms = 50; // 绕过 API 直改制造不变量破坏
+        assert!(matches!(
+            tl.ripple_remove(a),
+            Err(VideoError::InvariantViolated(_))
+        ));
+        assert_eq!(tl.clip(a).map(|c| c.start_ms), Some(0), "拒收后原状");
+        assert_eq!(tl.clip(b).map(|c| c.start_ms), Some(50), "拒收后原状");
+
+        // 3) 常规非法修改依旧走类型化 Result 拒收(回归:通道未被弱化)
+        let (mut tl, ids) = demo_timeline();
+        assert_eq!(
+            tl.place_clip(0, asset("x"), 100, 100),
+            Err(VideoError::Overlap)
+        );
+        assert_eq!(tl.move_clip(ids[1], 100), Err(VideoError::Overlap));
+        assert!(matches!(
+            tl.trim_clip(ids[0], 300, 300),
+            Err(VideoError::InvalidRange(_))
+        ));
+        assert!(tl.is_valid(), "全部拒收后时间轴不变量必须成立");
     }
 
     // —— proptest:随机直接修改序列始终维持不变量 ——

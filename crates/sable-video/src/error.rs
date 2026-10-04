@@ -17,7 +17,8 @@ pub enum VideoError {
     #[error("区间重叠:同轨 clip 互不重叠,操作被拒绝")]
     Overlap,
 
-    /// 非法参数/区间(out<=in、speed<=0、duration==0、分割点不在 clip 内部等)。
+    /// 非法参数/区间(out<=in、duration==0、分割点不在 clip 内部等)。
+    /// clip 数据本身的坏值(speed 非有限正数等)归 [`VideoError::InvalidClip`]。
     #[error("非法区间或参数: {0}")]
     InvalidRange(&'static str),
 
@@ -28,6 +29,18 @@ pub enum VideoError {
     /// 时间轴为空(或只剩最后一条轨道,拒绝删空)。
     #[error("时间轴为空")]
     EmptyTimeline,
+
+    /// clip 数据非法(speed 非有限正数、出点不大于入点、duration 为 0)。
+    /// 反序列化守卫与 `set_speed` 两条入口共用本变体,策略恒一致
+    /// (迭代审查报告 RBT-07 / §6 RB-13:数值除零/非有限守卫)。
+    #[error("非法 clip 数据: {0}")]
+    InvalidClip(&'static str),
+
+    /// 时间轴不变量被破坏(修改收尾校验失败)。正常使用不可达;出现即内部
+    /// 缺陷或不变量已被绕过 API 的直改破坏——release 下显式报错而非静默放行
+    /// (迭代审查报告 RBT-08:不变量从 debug_assert 升级为 Result)。
+    #[error("时间轴不变量被破坏: {0}")]
+    InvariantViolated(&'static str),
 }
 
 /// video 层统一 `Result` 别名。
@@ -65,5 +78,13 @@ mod tests {
         );
 
         assert!(VideoError::EmptyTimeline.to_string().contains("时间轴为空"));
+
+        let err = VideoError::InvalidClip("speed 必须为有限正数");
+        assert!(err.to_string().contains("非法 clip 数据"));
+        assert!(err.to_string().contains("speed 必须为有限正数"));
+
+        let err = VideoError::InvariantViolated("波纹前移将下溢");
+        assert!(err.to_string().contains("时间轴不变量被破坏"));
+        assert!(err.to_string().contains("波纹前移将下溢"));
     }
 }
