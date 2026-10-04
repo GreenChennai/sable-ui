@@ -7,7 +7,7 @@
 
 - [x] 门禁:fmt / clippy `-D warnings` / test(全 workspace)/ build --release
 - [x] feature 矩阵:gpu / all-features / core-only / core+cpu-render(CI feature-matrix job)
-- [x] 渲染回归:5 场景黄金 PNG,像素容差 0.1%(`SABLE_UPDATE_GOLDENS=1` 再生成)
+- [x] 渲染回归:6 场景黄金 PNG,像素容差 0.1%(`crates/sable-canvas/tests/golden.rs` 场景 1-6;复现:`cargo test -p sable-canvas --test golden`;`SABLE_UPDATE_GOLDENS=1` 再生成。2026-10-04 订正:原记 5 场景)
 - [x] 撤销正确性:proptest 随机命令序列回快照(core 256 默认 / 2000 加压) + `.sable` 存取 roundtrip
 - [x] 动画契约:13 组黄金值快照(1e-9)
 - [x] 基准体系:criterion 四组(命令/存取/命中/渲染)——`cargo bench` 人工跑,数据入 RELEASE NOTES

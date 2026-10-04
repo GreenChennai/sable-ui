@@ -16,6 +16,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # GATE-09 CHANGELOG 门禁需要 HEAD~1(默认浅克隆深度 1 取不到)
+          fetch-depth: 2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -26,6 +29,43 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: sable-foundation 零 UI 依赖纪律(分册六 §2.4)
         run: cargo check -p sable-foundation --no-default-features
+      # GATE-08 依赖红线:上游 ARL-1.0 禁抄码,vb_*/cutforge-* 节点不得进依赖图
+      - name: 依赖红线(vb_*/cutforge-* 不得出现在依赖图,分册十二 G-5)
+        shell: bash
+        run: |
+          cargo tree --workspace -e normal > "$RUNNER_TEMP/cargo_tree.txt"
+          if grep -E "vb_|cutforge-" "$RUNNER_TEMP/cargo_tree.txt"; then
+            echo "::error::依赖图出现红线节点(vb_*/cutforge-*):ARL-1.0/ACL-1.0 禁抄码纪律"
+            exit 1
+          fi
+          echo "依赖图无 vb_*/cutforge-* 节点:通过"
+      # GATE-09 CHANGELOG 纪律:crates/examples 变更必须同步 CHANGELOG(分册十二 G-7)
+      - name: CHANGELOG 纪律(分册十二 G-7)
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "非 push 事件(PR),跳过;以 push 进 main 的提交为校验对象"
+            exit 0
+          fi
+          if ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            echo "取不到 HEAD~1(首次提交/浅克隆),跳过本次校验"
+            exit 0
+          fi
+          # 先落变量再判空:GH bash 默认 -o pipefail,grep -q 提前关管道
+          # 会让 git diff 吃 SIGPIPE 干扰判断,不用管道判定
+          changed_src="$(git diff --name-only HEAD~1..HEAD -- crates/ examples/)"
+          changed_log="$(git diff --name-only HEAD~1..HEAD -- CHANGELOG.md)"
+          if [ -z "$changed_src" ]; then
+            echo "本次提交未触及 crates/ 或 examples/,CHANGELOG 校验不适用"
+            exit 0
+          fi
+          if [ -n "$changed_log" ]; then
+            echo "CHANGELOG 纪律通过(触及 crates/examples 且已更新 CHANGELOG)"
+          else
+            echo "::error::本提交改了 crates/ 或 examples/ 但未更新 CHANGELOG.md(Unreleased 段)"
+            echo "$changed_src"
+            exit 1
+          fi
       - name: test(单线程确定性;并行竞态见 layer_tree/anim 注释)
         env:
           RUST_TEST_THREADS: 1
@@ -78,3 +118,14 @@ jobs:
           N=$(cargo tree -p sable-paint --features gpu -i wgpu | grep -c "wgpu v")
           echo "wgpu 版本数: $N"
           [ "$N" = "1" ] || { cargo tree -p sable-paint --features gpu -i wgpu; exit 1; }
+
+  # 许可自动审计(GATE-08,分册十二 G-6):独立 job,不阻塞现有三 job 的语义。
+  # licenses 红线 = ARL-1.0 合规的机器可查形态;bans multiple-versions 仅告警。
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: licenses bans

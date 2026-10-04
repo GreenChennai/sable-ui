@@ -1,0 +1,5 @@
+# GATE-04 硬编码色豁免清单(每行:<仓库根相对路径> # 原因)
+# 规则:文件级整文件豁免。新增豁免必须写明原因并附验证方式;条目指向的文件
+# 不存在时门禁会红(改名/删除后同步清理)。
+crates/sable-widgets/src/tokens.rs # 令牌单一真相源:全 workspace 唯一允许定义颜色字面量的文件(其头部纪律注释即本门禁的合同文本)
+crates/sable-widgets/src/theme.rs # CanvasTheme 画布语义色表:深浅两套画布方案在此集中定义,消费方一律经 theme(cx) 取色
