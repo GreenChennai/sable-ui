@@ -94,9 +94,12 @@ pub mod prelude {
     };
 
     /// dock 工作台惯用件(重命名 `init` 避免与将来其它 init 撞名)。
+    /// `load_layout`/`persist_layout` 为壳态持久化契约(RBT-02);
+    /// `restore_layout`/`save_layout` 为 JSON 字符串层便利(非落盘契约)。
     #[cfg(feature = "dock")]
     pub use sable_dock::{
-        SablePanel, WorkspacePresets, init as init_dock, load_layout, save_layout,
+        LoadedLayout, SablePanel, WorkspacePresets, init as init_dock, load_layout, persist_layout,
+        restore_layout, save_layout,
     };
 }
 

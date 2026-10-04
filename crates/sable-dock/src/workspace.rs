@@ -29,6 +29,23 @@
 //!   &PanelInfo, &mut Window, &mut App| -> Box<dyn PanelView>)`;
 //! - `DockArea` 自实现 `Render`;0.5.1 没有 renderer seam/DockSkin,
 //!   外观(标题栏/缩放钮)由 `ActiveTheme` 内置渲染。
+//!
+//! # 宿主契约:壳态持久化(RBT-02 / §6 RB-03、RB-08)
+//!
+//! **壳态(布局/键位/主题/面板开关)落盘必须经本 crate 的持久化契约,
+//! 宿主禁自写**(禁 `std::fs::write` 直写、禁静默吞错):
+//!
+//! - 布局:写经 [`persist_layout`](crate::persistence::persist_layout)
+//!   (原子写,失败不留半截文件),读经
+//!   [`load_layout`](crate::persistence::load_layout)(缺失 → 默认;损坏 →
+//!   默认 + 显式"已回退";版本迁移契约见 `crate::persistence` 模块文档);
+//! - 键位/主题等其余壳态:经 `sable_foundation::persistence::atomic_write`
+//!   落盘,解析失败回退默认并告警,纪律与布局一致;
+//! - 本模块的 [`save_layout`] / [`restore_layout`] 只是 JSON 字符串层的
+//!   便利封装(剪贴板/调试/宿主自管存储),**不构成落盘契约**。
+//!
+//! 违反形态(上游 VellumBench UI-12 / R-17 教训):多窗口最后写入胜、
+//! 坏文件崩壳、壳态无持久化。
 
 use std::sync::Arc;
 
@@ -123,7 +140,9 @@ impl Render for SablePanel {
 ///
 /// 结构:左 dock(面板组,260px)| 中画布区 | 右 dock(面板组,300px),
 /// 每个区域是一个 tab 组;面板可拖拽重排/关闭/缩放,布局可
-/// [`save_layout`] / [`load_layout`]。右侧为空时不创建右 dock。
+/// [`persist_layout`](crate::persistence::persist_layout) /
+/// [`load_layout`](crate::persistence::load_layout) 持久化(壳态契约)。
+/// 右侧为空时不创建右 dock。
 pub struct WorkspacePresets;
 
 impl WorkspacePresets {
@@ -179,27 +198,48 @@ pub fn tab_group(
     DockItem::tabs(panels, dock_area, window, cx)
 }
 
-/// 序列化 `DockArea` 当前布局为 JSON(`DockArea::dump` + serde,上游真实
-/// 序列化面)。宿主可 `cx.subscribe(&area, ..)` 监听上游
-/// `DockEvent::LayoutChanged` 自动保存。
+/// 序列化 `DockArea` 当前布局为 JSON 字符串(`DockArea::dump` + serde,上游
+/// 真实序列化面)。
+///
+/// **这只是字符串层便利**(剪贴板/调试/宿主自管存储),不是落盘契约:
+/// 落盘必须走 [`persist_layout`](crate::persistence::persist_layout)(原子写
+/// + 版本归一,见 `crate::persistence` 模块文档的宿主契约)。
 pub fn save_layout(area: &Entity<DockArea>, cx: &App) -> DockResult<String> {
     let state = area.read(cx).dump(cx);
     Ok(serde_json::to_string(&state)?)
 }
 
-/// 从 JSON 恢复布局。未注册工厂的面板名会被上游落 `InvalidPanel` 占位
-/// (上游宽容策略,占位面板原样携带其 PanelState,下次 save 不丢数据)。
-pub fn load_layout(
+/// 把布局状态应用到 `DockArea`(上游 `DockArea::load` 的错误归一封装)。
+///
+/// 持久化契约的"读"半边(`load_layout` 得到 [`DockAreaState`] 后的落地点);
+/// 未注册工厂的面板名会被上游落 `InvalidPanel` 占位(上游宽容策略,占位
+/// 面板原样携带其 PanelState,下次 save 不丢数据)。
+pub fn apply_layout(
+    area: &Entity<DockArea>,
+    state: DockAreaState,
+    window: &mut Window,
+    cx: &mut App,
+) -> DockResult<()> {
+    area.update(cx, |area, cx| {
+        area.load(state, window, cx)
+            .map_err(|err| DockError::Load(err.to_string()))
+    })
+}
+
+/// 从 JSON 字符串恢复布局(原 `load_layout`;持久化契约落地后改现名以免与
+/// 文件级 [`load_layout`](crate::persistence::load_layout) 撞名)。
+///
+/// 内部 = serde 反序列化 + [`apply_layout`]。**注意**:字符串来源不受契约
+/// 保护,宿主从文件读布局必须走 `crate::persistence` 契约(原子写半边保证
+/// 文件完整,损坏回退与版本迁移在读半边)。
+pub fn restore_layout(
     area: &Entity<DockArea>,
     json: &str,
     window: &mut Window,
     cx: &mut App,
 ) -> DockResult<()> {
     let state: DockAreaState = serde_json::from_str(json)?;
-    area.update(cx, |area, cx| {
-        area.load(state, window, cx)
-            .map_err(|err| DockError::Load(err.to_string()))
-    })
+    apply_layout(area, state, window, cx)
 }
 
 /// 注册面板重建工厂(转发 gpui-component 0.5.1 `register_panel`):

@@ -1,8 +1,9 @@
 //! # sable-dock — L4 面板系统
 //!
 //! 基于 gpui-component DockArea 的设计软件工作台:经典三段式(左图层素材/
-//! 中画布/右属性)、面板便利层、布局序列化(用户工作区随偏好恢复,
-//! Illustrator "工作区" 功能)。手册:docs/03 §6。
+//! 中画布/右属性)、面板便利层、布局持久化契约(原子写 + 坏文件回退 +
+//! 版本迁移,用户工作区随偏好恢复,Illustrator "工作区" 功能)。
+//! 手册:docs/03 §6;宿主契约见 [`workspace`] / [`persistence`] 模块文档。
 //!
 //! # 来源与署名
 //!
@@ -15,7 +16,8 @@
 //!
 //! | 模块 | 职责 |
 //! |---|---|
-//! | [`workspace`] | `WorkspacePresets` 三段式预设、`SablePanel` 面板包装、save/load |
+//! | [`workspace`] | `WorkspacePresets` 三段式预设、`SablePanel` 面板包装、save/restore |
+//! | [`persistence`] | 壳态持久化契约:原子写落盘 + 坏文件回退默认 + 版本迁移(RBT-02) |
 //! | [`error`] | `DockError` / `DockResult` 统一错误 |
 //! | [`window_effects`] | E3 窗口系统材质(Mica/Acrylic,需 `window-backdrop` feature)|
 //!
@@ -46,13 +48,18 @@
 #![deny(unsafe_code)]
 
 pub mod error;
+pub mod persistence;
 #[cfg(feature = "window-backdrop")]
 pub mod window_effects;
 pub mod workspace;
 
 pub use error::{DockError, DockResult};
+pub use persistence::{
+    FallbackReason, LAYOUT_VERSION, LoadedLayout, load_layout, persist_layout, persist_layout_state,
+};
 pub use workspace::{
-    SablePanel, WorkspacePresets, init, load_layout, register_panel_factory, save_layout, tab_group,
+    SablePanel, WorkspacePresets, apply_layout, init, register_panel_factory, restore_layout,
+    save_layout, tab_group,
 };
 
 /// gpui 再导出(见 crate 文档"再导出"节)。
