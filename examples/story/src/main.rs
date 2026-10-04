@@ -37,6 +37,8 @@ fn main() {
     sable::gpui::Application::new().run(|cx: &mut App| {
         // 主题(全局 token;幂等)
         sable::widgets::theme::init(cx);
+        // 字体随包注册(TOK-02:Inter + JetBrains Mono,失败降级系统字体)
+        sable::widgets::fonts::install(cx);
 
         let bounds = Bounds::centered(None, size(px(1180.), px(920.)), cx);
         let options = WindowOptions {

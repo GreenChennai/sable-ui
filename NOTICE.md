@@ -13,6 +13,15 @@ Sable UI 采用 **MIT OR Apache-2.0** 双许可(见 LICENSE-MIT / LICENSE-APACHE
 | [GraphiteEditor/Graphite](https://github.com/GraphiteEditor/Graphite) | Apache-2.0 | 工具状态机(ToolBehavior)设计 | crates/sable-canvas/src/tool.rs |
 | [VellumBench vb_ui](https://github.com/GreenChennai/VellumBench)(自研) | ACL-1.0(上游自有) | 仅**设计令牌语义与组件交互规范**的思想对齐(控件高度档/间距网格/三态),未复制源码 | crates/sable-widgets/src/tokens.rs |
 
+## 随包字体(assets/fonts/,TOK-02)
+
+| 字体 | 版本 | 许可证 | 来源 | 落点 |
+|---|---|---|---|---|
+| [Inter](https://rsms.me/inter/) | 4.1(Inter-Regular / -Medium / -SemiBold.ttf) | SIL Open Font License 1.1(全文:assets/fonts/Inter-LICENSE.txt) | https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip | crates/sable-widgets/src/fonts.rs(include_bytes! 嵌入,UI 字体) |
+| [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | 2.304(JetBrainsMono-Regular.ttf) | SIL Open Font License 1.1(全文:assets/fonts/JetBrainsMono-OFL.txt) | https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip | 同上(等宽数值字体) |
+
+字体二进制不做源码级修改(仅重命名入库);OFL 允许随软件分发,保留许可文件与上述出处即满足其条款。
+
 ## 纪律
 
 1. 上表"移植内容"列只登记思想级与代码级两类;纯 API 调用不算移植,无需登记。

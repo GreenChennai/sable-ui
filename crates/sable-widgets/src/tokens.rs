@@ -10,11 +10,18 @@
 //!
 //! # JSON 真相源与逐值同步门禁(TOK-08,迭代审查报告 §5.3 原则)
 //!
-//! 本文件的 color/spacing/radius/elevation/state-layer/motion 六表与
-//! `docs/design/sable-tokens.json`(W3C design-tokens 格式)逐值同步;两侧
-//! 任一侧改值不同步,`crates/sable-widgets/tests/gate_tokens_sync.rs` 即红。
-//! **改动任何令牌值必须同轮改 JSON**(反之亦然)。字号/字体表(TOK-02)属
-//! 下一批,JSON 刻意不含,不得提前造假。
+//! 本文件的 color/spacing/radius/elevation/state-layer/motion/typography
+//! 七表与 `docs/design/sable-tokens.json`(W3C design-tokens 格式)逐值同步;
+//! 两侧任一侧改值不同步,`crates/sable-widgets/tests/gate_tokens_sync.rs`
+//! 即红。**改动任何令牌值必须同轮改 JSON**(反之亦然)。
+//!
+//! # WCAG 对比度门禁(TOK-03,迭代审查报告 §5.10.4)
+//!
+//! [`relative_luminance`]/[`contrast_ratio`]/[`composite_over`] 是零依赖纯
+//! 函数,供 `tests/gate_contrast.rs` 遍历深浅两主题 × 文字档 × 表面断言
+//! WCAG AA(≥4.5:1;焦点环非文本 ≥3:1)。文字色与表面按**实际组合**先
+//! alpha 合成再计算(深色主题的半透文字档不做豁免)。本轮按门禁结果当场
+//! 改值(不达标即改,不调阈值),新旧值对照见各字段注释与 JSON `$description`。
 //!
 //! # 控件高度派生制(AGENTS.md §3.4,docs/upstream/02 §3.4 实证裁决)
 //!
@@ -52,30 +59,36 @@ pub struct ColorTokens {
     pub text_strong: Hsla,
     /// 主文字(正文默认档)
     pub text_primary: Hsla,
-    /// 次文字/标签(深色=N10 #9A9AA4)
+    /// 次文字/标签(深色=A6 #a6a6b0;TOK-03 前 #9a9aa4 在凸起面上 4.6:1,
+    /// 加亮腾出更弱档的对比度带)
     pub text_secondary: Hsla,
-    /// 三级弱文字(时间码/辅助说明;深色=N9 #6E6E78)
+    /// 三级弱文字(时间码/辅助说明;深色=#9c9ca4,TOK-03 前旧值 #6e6e78
+    /// 在凸起面仅 2.6:1 不达 WCAG AA,当场改亮)
     pub text_tertiary: Hsla,
-    /// 禁用文字
+    /// 禁用文字(white 54%;TOK-03 报告口径比 WCAG 豁免更严,禁用文字也
+    /// 按 ≥4.5:1 断言,旧值 white 32% 仅 2.9:1,当场改值)
     pub text_disabled: Hsla,
-    /// 输入占位文字(最弱档,弱于 disabled)
+    /// 输入占位文字(white 52%,弱于 disabled;旧值 white 28% 仅 2.4:1)
     pub text_placeholder: Hsla,
     /// 强调色:选中/聚焦/主按钮
     pub accent: Hsla,
     /// 强调色的低透明版本(选中行底/批量高亮;历史字段,新代码选中底请走
     /// [`crate::interact::state_layer`](TOK-04,深浅同比例 accent alpha))
     pub accent_muted: Hsla,
-    /// 危险(删除/错误)
+    /// 危险(删除/错误;TOK-03 前旧值 #f24822 在凸起面 3.5:1 不达 AA,
+    /// 当场改亮为 #ff704c,同色相)
     pub danger: Hsla,
     /// 警告
     pub warning: Hsla,
-    /// 成功
+    /// 成功(TOK-03 前旧值 #14ae5c 在凸起面 4.46:1 差线,微调 #17b45e)
     pub success: Hsla,
+    /// 信息(蓝;TOK-03 批次新增,与深色 accent 区分度低故取独立青蓝)
+    pub info: Hsla,
 }
 
 impl ColorTokens {
     /// 深色主题(分册六 §3.1 原值 + 报告 §5.3.1 中性阶梯重指向;Illustrator
-    /// 式深色方案)。
+    /// 式深色方案。文字弱档/功能色按 TOK-03 对比度门禁改值)。
     pub fn dark() -> Self {
         ColorTokens {
             surface_0: rgba(0x0E0E10FF).into(),     // N0 #0e0e10 画布外/应用底
@@ -87,40 +100,43 @@ impl ColorTokens {
             border_strong: rgba(0xFFFFFF1F).into(), // white 12%
             text_strong: rgba(0xFFFFFFFF).into(),   // N12 #ffffff 标题/数值
             text_primary: rgba(0xFFFFFFEB).into(),  // white 92% 正文默认
-            text_secondary: rgba(0x9A9AA4FF).into(), // N10 #9a9aa4 次文字
-            text_tertiary: rgba(0x6E6E78FF).into(), // N9 #6e6e78 弱文字
-            text_disabled: rgba(0xFFFFFF52).into(), // white 32%
-            text_placeholder: rgba(0xFFFFFF47).into(), // white 28% 占位(最弱)
+            text_secondary: rgba(0xA6A6B0FF).into(), // #a6a6b0 次文字(TOK-03)
+            text_tertiary: rgba(0x9C9CA4FF).into(), // #9c9ca4 弱文字(TOK-03)
+            text_disabled: rgba(0xFFFFFF8A).into(), // white 54%(TOK-03)
+            text_placeholder: rgba(0xFFFFFF86).into(), // white 52% 占位(最弱)
             accent: rgba(0x4F9FFFFF).into(),        // #4f9fff(选中/聚焦/主按钮)
             accent_muted: rgba(0x4F9FFF33).into(),  // accent 20%(历史选中背景)
-            danger: rgba(0xF24822FF).into(),        // #f24822 删除/溢出
+            danger: rgba(0xFF704CFF).into(),        // #ff704c 删除/溢出(TOK-03)
             warning: rgba(0xFFC700FF).into(),       // #ffc700 警告
-            success: rgba(0x14AE5CFF).into(),       // #14ae5c 成功
+            success: rgba(0x17B45EFF).into(),       // #17b45e 成功(TOK-03)
+            info: rgba(0x4FC3FFFF).into(),          // #4fc3ff 信息(TOK-03)
         }
     }
 
-    /// 浅色主题(报告 §5.3.1:反向**独立调校**,非深色反相;accent 品牌色
-    /// 跨主题共用——与 docs/upstream/02 §3.1 决策一致)。
+    /// 浅色主题(报告 §5.3.1:反向**独立调校**,非深色反相;accent 浅色
+    /// 加深为 #2264c8 过 WCAG AA(TOK-03 前旧值 #4f9fff 在白底仅 2.7:1),
+    /// 品牌蓝相保持;文字弱档/功能色同批按门禁改值)。
     pub fn light() -> Self {
         ColorTokens {
-            surface_0: rgba(0xF7F7F8FF).into(),     // 应用底(工作区周围)
-            surface_1: rgba(0xFFFFFFFF).into(),     // 面板底(白)
-            surface_2: rgba(0xF1F1F3FF).into(),     // 卡片/输入(独立调校浅灰)
-            surface_3: rgba(0xE8E8EBFF).into(),     // hover
-            surface_4: rgba(0xDDDDE1FF).into(),     // active/pressed
-            border_subtle: rgba(0x00000014).into(), // black 8%
-            border_strong: rgba(0x00000029).into(), // black 16%
-            text_strong: rgba(0x000000FF).into(),   // 纯黑 标题/数值
-            text_primary: rgba(0x1B1B1FFF).into(),  // #1b1b1f 正文默认
-            text_secondary: rgba(0x6B6B6BFF).into(),
-            text_tertiary: rgba(0x8A8A90FF).into(),
-            text_disabled: rgba(0xA0A0A5FF).into(),
-            text_placeholder: rgba(0xACACB2FF).into(), // 比禁用更弱(更浅)
-            accent: rgba(0x4F9FFFFF).into(),           // 品牌色共用
-            accent_muted: rgba(0x4F9FFF1F).into(),     // accent 12%(历史)
-            danger: rgba(0xD93025FF).into(),
-            warning: rgba(0x8F6700FF).into(), // 浅底上加深保证对比度
+            surface_0: rgba(0xF7F7F8FF).into(),        // 应用底(工作区周围)
+            surface_1: rgba(0xFFFFFFFF).into(),        // 面板底(白)
+            surface_2: rgba(0xF1F1F3FF).into(),        // 卡片/输入(独立调校浅灰)
+            surface_3: rgba(0xE8E8EBFF).into(),        // hover
+            surface_4: rgba(0xDDDDE1FF).into(),        // active/pressed
+            border_subtle: rgba(0x00000014).into(),    // black 8%
+            border_strong: rgba(0x00000029).into(),    // black 16%
+            text_strong: rgba(0x000000FF).into(),      // 纯黑 标题/数值
+            text_primary: rgba(0x1B1B1FFF).into(),     // #1b1b1f 正文默认
+            text_secondary: rgba(0x646464FF).into(),   // #646464(TOK-03,腾对比度带)
+            text_tertiary: rgba(0x696969FF).into(),    // #696969(TOK-03,旧值 3.0:1)
+            text_disabled: rgba(0x6B6B70FF).into(),    // #6b6b70(TOK-03 报告口径 ≥4.5)
+            text_placeholder: rgba(0x6D6D72FF).into(), // #6d6d72 比禁用更弱(TOK-03)
+            accent: rgba(0x2264C8FF).into(),           // #2264c8 品牌蓝加深(TOK-03)
+            accent_muted: rgba(0x2264C81F).into(),     // accent 12%(历史)
+            danger: rgba(0xC32A1FFF).into(),           // #c32a1f(TOK-03,旧值凸起面 4.2:1)
+            warning: rgba(0x8A6200FF).into(),          // #8a6200 浅底加深(TOK-03 加余量)
             success: rgba(0x0E7C42FF).into(),
+            info: rgba(0x0C669DFF).into(), // #0c669d 信息(TOK-03)
         }
     }
 }
@@ -337,6 +353,87 @@ pub const SPRING_BOUNCY: SpringPreset = SpringPreset {
     mass: 1.0,
 };
 
+/// 排版字号档(报告 §5.4,TOK-02):字号/行高/字重三值一组的单一结构。
+///
+/// 七档具名常量([`TextSize::DISPLAY`]..[`TextSize::MONO`])与
+/// [`TEXT_SIZES`] 表、`docs/design/sable-tokens.json` 的 `typography.text-size`
+/// 表三方逐值同步(门禁:gate_tokens_sync + TC-TOK-TYPE-01)。`weight` 为
+/// CSS 字重数值(400/500/600),消费侧经 `gpui::FontWeight(ts.weight)` 使用。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextSize {
+    /// 字号 px
+    pub size: f32,
+    /// 行高 px(≥ size;CJK 安全)
+    pub line_height: f32,
+    /// 字重(400 regular / 500 medium / 600 semibold)
+    pub weight: f32,
+}
+
+impl TextSize {
+    /// 启动器标题/空态主标题(20/28/600)
+    pub const DISPLAY: TextSize = TextSize {
+        size: 20.0,
+        line_height: 28.0,
+        weight: 600.0,
+    };
+    /// 对话框/面板组标题(15/22/600)
+    pub const TITLE: TextSize = TextSize {
+        size: 15.0,
+        line_height: 22.0,
+        weight: 600.0,
+    };
+    /// 分组头/选中项(13/20/600)
+    pub const BODY_STRONG: TextSize = TextSize {
+        size: 13.0,
+        line_height: 20.0,
+        weight: 600.0,
+    };
+    /// 默认正文(13/20/400)
+    pub const BODY: TextSize = TextSize {
+        size: 13.0,
+        line_height: 20.0,
+        weight: 400.0,
+    };
+    /// 字段标签/图层行(12/18/500)
+    pub const LABEL: TextSize = TextSize {
+        size: 12.0,
+        line_height: 18.0,
+        weight: 500.0,
+    };
+    /// 状态栏/tooltip 副行(11/16/400)
+    pub const CAPTION: TextSize = TextSize {
+        size: 11.0,
+        line_height: 16.0,
+        weight: 400.0,
+    };
+    /// 十六进制/数值(12/18/400,等宽族 [`MONO_FONT`],tabular-nums 语义
+    /// 由等宽字形天然满足)
+    pub const MONO: TextSize = TextSize {
+        size: 12.0,
+        line_height: 18.0,
+        weight: 400.0,
+    };
+}
+
+/// 七档排版表(具名档 + 取值;JSON `typography.text-size` 的代码真相镜像,
+/// 顺序 = 强弱语义序,供门禁与遍历消费)。
+pub const TEXT_SIZES: [(&str, TextSize); 7] = [
+    ("display", TextSize::DISPLAY),
+    ("title", TextSize::TITLE),
+    ("body-strong", TextSize::BODY_STRONG),
+    ("body", TextSize::BODY),
+    ("label", TextSize::LABEL),
+    ("caption", TextSize::CAPTION),
+    ("mono", TextSize::MONO),
+];
+
+/// UI 字体族(Inter,随包注册,见 [`crate::fonts`];fallback 链声明也在
+/// 该模块——缺字降级到系统 CJK)。
+pub const UI_FONT: &str = "Inter";
+
+/// 等宽数值字体族(JetBrains Mono,随包注册;NumberField 等数值显示用)。
+pub const MONO_FONT: &str = "JetBrains Mono";
+
 /// 控件高度紧凑档下限(22px,分册六 §3.2)。
 pub const HEIGHT_COMPACT: f32 = 22.0;
 /// 控件高度默认档下限(26px,分册六 §3.2)。
@@ -353,12 +450,13 @@ pub fn control_height(tier: f32, line_height: f32, v_padding: f32) -> f32 {
     tier.max(line_height + 2.0 * v_padding)
 }
 
-/// 面板正文字号(12px,分册六 §3.2 字号表)。
-pub const FONT_SIZE_BODY: f32 = 12.0;
-/// 面板标题字号(13px)。
-pub const FONT_SIZE_HEADING: f32 = 13.0;
-/// 注释/时间码字号(11px)。
-pub const FONT_SIZE_CAPTION: f32 = 11.0;
+/// 面板正文字号(12px;存量别名,TOK-02 后重指向 [`TextSize::LABEL`]——
+/// 12px 档语义即"字段标签/面板正文",编译期常量,宿主零改动)。
+pub const FONT_SIZE_BODY: f32 = TextSize::LABEL.size;
+/// 面板标题字号(13px;存量别名,重指向 [`TextSize::BODY_STRONG`] 的字号)。
+pub const FONT_SIZE_HEADING: f32 = TextSize::BODY_STRONG.size;
+/// 注释/时间码字号(11px;存量别名,重指向 [`TextSize::CAPTION`] 的字号)。
+pub const FONT_SIZE_CAPTION: f32 = TextSize::CAPTION.size;
 
 /// 水平弹性容器预设(行):flex row + 垂直居中。
 ///
@@ -477,6 +575,51 @@ pub(crate) fn lerp_rgba8(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
     ]
 }
 
+/// sRGB 单通道(0~255)→ 线性光(WCAG 2.x 相对亮度定义)。
+fn srgb_channel_to_linear(c: u8) -> f32 {
+    let c = f32::from(c) / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// WCAG 2.x 相对亮度(零依赖纯函数,TOK-03):8-bit sRGB 经线性化后按
+/// `0.2126 R + 0.7152 G + 0.0722 B` 合成。半透明色的亮度无定义——请先经
+/// [`composite_over`] 落到实际底色再测。
+#[must_use]
+pub fn relative_luminance(color: Hsla) -> f32 {
+    let [r, g, b, _] = rgba8_from_hsla(color);
+    0.212_6 * srgb_channel_to_linear(r)
+        + 0.715_2 * srgb_channel_to_linear(g)
+        + 0.072_2 * srgb_channel_to_linear(b)
+}
+
+/// WCAG 对比度 `(L1 + 0.05) / (L2 + 0.05)`(亮者作 L1;范围 [1, 21])。
+/// 文本 AA ≥ 4.5,大字号/非文本(UI 组件边界、焦点环)≥ 3.0。
+#[must_use]
+pub fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// 前景按 source-over 叠到背景上(8-bit sRGB 域合成,结果不透明)。
+/// 深色主题的文字档是半透明白系,门禁必须**先合成再测对比度**——
+/// 直接拿原始色算会在透明度上失真。
+#[must_use]
+pub fn composite_over(fg: Hsla, bg: Hsla) -> Hsla {
+    let [fr, fg_, fb, fa8] = rgba8_from_hsla(fg);
+    let [br, bg8, bb, _] = rgba8_from_hsla(bg);
+    let fa = f32::from(fa8) / 255.0;
+    let mix = |f: u8, b: u8| -> u8 {
+        (f32::from(f) * fa + f32::from(b) * (1.0 - fa))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    hsla_from_rgba8([mix(fr, br), mix(fg_, bg8), mix(fb, bb), 255])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,11 +654,76 @@ mod tests {
         assert!(light.text_primary.l < 0.5);
         // 边框半透
         assert!(dark.border_subtle.a < 0.2 && light.border_subtle.a < 0.2);
-        // 品牌色跨主题共用
-        assert_eq!(dark.accent, light.accent);
+        // 品牌蓝相跨主题保持,但浅色加深过 WCAG AA(TOK-03:旧值白底 2.7:1)
+        assert_ne!(dark.accent, light.accent, "浅色 accent 为对比度加深值");
         // 功能色两套各自成值
         assert_ne!(dark.danger, light.danger);
         assert_ne!(dark.success, light.success);
+        assert_ne!(dark.info, light.info);
+    }
+
+    /// WCAG 纯函数的已知值校验(TOK-03):黑白 21:1、CSS 常用阈值参考对
+    /// (#767676 vs white = 4.54)、合成路径与手算一致。
+    #[test]
+    fn wcag_luminance_and_contrast_match_reference_values() {
+        let white = rgba(0xFFFFFFFF).into();
+        let black = rgba(0x000000FF).into();
+        assert!(
+            (contrast_ratio(white, black) - 21.0).abs() < 1e-4,
+            "黑白 = 21:1"
+        );
+        // WCAG 官方示例:#767676 是白底上恰好过 AA(4.5)的灰
+        let gray = rgba(0x767676FF).into();
+        let ratio = contrast_ratio(gray, white);
+        assert!(
+            (4.54..=4.55).contains(&ratio),
+            "#767676 vs white = 4.54,得 {ratio}"
+        );
+        // 同色 = 1:1
+        assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-6);
+        // 半透明合成:50% 白叠在黑上 = #808080,对白底对比度 ≈ 3.66
+        let half_white = rgba(0xFFFFFF80).into();
+        let on_black = composite_over(half_white, black);
+        let manual = rgba(0x808080FF).into();
+        assert!(
+            (relative_luminance(on_black) - relative_luminance(manual)).abs() < 0.001,
+            "50% 白叠黑应等于 #808080"
+        );
+        let expected = contrast_ratio(manual, white);
+        assert!(
+            (3.94..=3.96).contains(&expected),
+            "#808080 vs white = 1.05/(lin(0.5)+0.05) ≈ 3.95,得 {expected}"
+        );
+    }
+
+    /// TC-TOK-TYPE-01 的令牌侧自检(逐值门禁主体验收在
+    /// tests/gate_tokens_sync.rs):七档三值与报告 §5.4 表逐值一致。
+    #[test]
+    fn text_size_tiers_match_report_5_4_table() {
+        let expect: [(&str, f32, f32, f32); 7] = [
+            ("display", 20.0, 28.0, 600.0),
+            ("title", 15.0, 22.0, 600.0),
+            ("body-strong", 13.0, 20.0, 600.0),
+            ("body", 13.0, 20.0, 400.0),
+            ("label", 12.0, 18.0, 500.0),
+            ("caption", 11.0, 16.0, 400.0),
+            ("mono", 12.0, 18.0, 400.0),
+        ];
+        assert_eq!(TEXT_SIZES.len(), expect.len(), "必须恰七档");
+        for ((name, ts), (want, size, lh, w)) in TEXT_SIZES.iter().zip(expect) {
+            assert_eq!(*name, want, "档名序 = 报告表序");
+            assert_eq!(
+                (ts.size, ts.line_height, ts.weight),
+                (size, lh, w),
+                "{name} 三值与报告 §5.4 不符"
+            );
+            assert!(
+                ts.line_height >= ts.size,
+                "{name} 行高必须 ≥ 字号(CJK 安全)"
+            );
+        }
+        assert_eq!(UI_FONT, "Inter");
+        assert_eq!(MONO_FONT, "JetBrains Mono");
     }
 
     /// TC-TOK-NEUTRAL-01(报告 §5.3.1/TOK-05):深色表面 5 级严格变亮;

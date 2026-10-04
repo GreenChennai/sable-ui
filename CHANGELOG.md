@@ -48,6 +48,15 @@
   辉光收敛至令牌,消费门禁防再死);`InteractState` + `state_layer`(alpha 叠加,修复
   浅色 hover 钳 1.0 失效,全部组件 hover/press/selected 切换);动效令牌(时长四档 +
   SpringPreset 三档,anim/spring 重指向令牌)
+- **排版系统 + WCAG 对比度门禁**(TOK-02/03,第 2 组):字号 7 档(display/title/
+  body-strong/body/label/caption/mono,字号/行高/字重三值)进令牌与 JSON typography 表;
+  字体随包 assets/fonts/(Inter 400/500/600 + JetBrains Mono,OFL 许可登记 NOTICE.md,
+  `fonts::install(cx)` 注册,fallback 链 UI→系统 CJK);NumberField 数值接 mono 族;
+  WCAG 相对亮度/对比度纯函数 + `gate_contrast` 门禁(两主题 × 文字/功能色/焦点环/
+  选中底全矩阵 ≥4.5:1/3:1,含注入反面)——**13 处不达标色值当场修正**(深色 tertiary/
+  disabled/placeholder/danger/success,浅色 tertiary/disabled/placeholder/accent/
+  danger/warning;浅色 accent #4F9FFF→#2264C8,深色 accent 未动;JSON 与六档强弱序
+  同步),新增 `ColorTokens.info` 与 WCAG 公开函数
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处

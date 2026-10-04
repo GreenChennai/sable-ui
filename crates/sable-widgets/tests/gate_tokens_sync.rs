@@ -12,17 +12,17 @@
 //!
 //! # 扫描面(显式化,GATE-03 纪律③)
 //!
-//! - 仅比对 JSON 中的 `color`(深/浅全量 18 键)、`spacing`(6)、`radius`(4)、
+//! - 仅比对 JSON 中的 `color`(深/浅全量 19 键)、`spacing`(6)、`radius`(4)、
 //!   `elevation`(L0~L4:blur/offsetY/alpha/color)、`state-layer`(深/浅 × 5)、
-//!   `motion.duration`(4 档)、`motion.spring`(3 档 × 3 参数);
-//! - 顶层键集合也受检:出现 `typography`/`font` 等未落地表 → 红(TOK-08
-//!   本轮刻意不含字号/字体,防"提前造假");
+//!   `motion.duration`(4 档)、`motion.spring`(3 档 × 3 参数)、`typography`
+//!   (font-family 2 + text-size 7 × {size,lineHeight,weight},TOK-02);
+//! - 顶层键集合也受检:出现七表之外未落地的表 → 红;
 //! - 颜色以 `#RRGGBBAA` 字符串入 JSON,经 gpui 的 `rgba → Hsla` 同一转换
 //!   与代码字面量逐位相等比对(与 tokens.rs 的构造路径一致,零浮点误差)。
 //!
 //! # 已知边界
 //!
-//! - JSON 数值按 f64 解析,与代码 f32 比对容差 1e-6(数量级 ≤ 400 的令牌
+//! - JSON 数值按 f64 解析,与代码 f32 比对容差 1e-6(数量级 ≤ 600 的令牌
 //!   值下远小于任何可感知差异;弹簧/时长为 f64 对 f64,精确相等);
 //! - 解析器只支持本文件用到的 JSON 子集(对象/字符串/数字,不含数组、
 //!   null、布尔),解析失败本身即红。
@@ -32,8 +32,9 @@ use std::path::{Path, PathBuf};
 
 use gpui::Hsla;
 use sable_widgets::tokens::{
-    ColorTokens, ELEVATION_SHADOW_TINT, ELEVATIONS, Elevation, MotionTokens, RadiusTokens,
-    SPRING_BOUNCY, SPRING_SNAPPY, SPRING_SOFT, SpacingTokens, StateLayerTokens, rgba8_from_hsla,
+    ColorTokens, ELEVATION_SHADOW_TINT, ELEVATIONS, Elevation, MONO_FONT, MotionTokens,
+    RadiusTokens, SPRING_BOUNCY, SPRING_SNAPPY, SPRING_SOFT, SpacingTokens, StateLayerTokens,
+    TEXT_SIZES, UI_FONT, rgba8_from_hsla,
 };
 
 // ---------------------------------------------------------------------------
@@ -244,6 +245,8 @@ struct Expected {
     state_light: Vec<(&'static str, f32)>,
     durations: Vec<(&'static str, f64)>,
     springs: Vec<(&'static str, [f64; 3])>,
+    fonts: Vec<(&'static str, &'static str)>,
+    text_sizes: Vec<(&'static str, [f64; 3])>,
 }
 
 impl Expected {
@@ -268,6 +271,7 @@ impl Expected {
                 ("danger", t.danger),
                 ("warning", t.warning),
                 ("success", t.success),
+                ("info", t.info),
             ]
         }
         fn state_pairs(s: StateLayerTokens) -> Vec<(&'static str, f32)> {
@@ -338,6 +342,20 @@ impl Expected {
                     ],
                 ),
             ],
+            fonts: vec![("ui", UI_FONT), ("mono", MONO_FONT)],
+            text_sizes: TEXT_SIZES
+                .iter()
+                .map(|(name, ts)| {
+                    (
+                        *name,
+                        [
+                            f64::from(ts.size),
+                            f64::from(ts.line_height),
+                            f64::from(ts.weight),
+                        ],
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -353,7 +371,7 @@ fn compare_expected(exp: &Expected, json_text: &str) -> Vec<String> {
         }
     };
 
-    // 顶层键集合:六表 + $ 元键;未落地的表(字号/字体)出现即红
+    // 顶层键集合:七表 + $ 元键;未落地的表出现即红
     if let Json::Obj(pairs) = &json {
         let allowed = [
             "color",
@@ -362,6 +380,7 @@ fn compare_expected(exp: &Expected, json_text: &str) -> Vec<String> {
             "elevation",
             "state-layer",
             "motion",
+            "typography",
         ];
         for (k, _) in pairs {
             if k.starts_with('$') {
@@ -369,7 +388,7 @@ fn compare_expected(exp: &Expected, json_text: &str) -> Vec<String> {
             }
             if !allowed.contains(&k.as_str()) {
                 bad.push(format!(
-                    "顶层出现未落地表 `{k}`(TOK-08 本轮仅六表;字号/字体 = TOK-02 下一批,不得提前补造)"
+                    "顶层出现未落地表 `{k}`(TOK-08/TOK-02 本轮共七表;新表须连门禁一起落)"
                 ));
             }
         }
@@ -561,6 +580,91 @@ fn compare_expected(exp: &Expected, json_text: &str) -> Vec<String> {
         Err(e) => bad.push(format!("motion.spring:{e}")),
     }
 
+    // typography(TOK-02):font-family 2 键 + text-size 7 档 × 3 值;
+    // 键集合双向完全一致(缺键/多键都红)
+    let typography = match get(&json, "typography") {
+        Ok(t) => t,
+        Err(e) => {
+            bad.push(format!("typography:{e}"));
+            return bad;
+        }
+    };
+    match get(typography, "font-family") {
+        Ok(fonts) => {
+            if let Json::Obj(json_pairs) = fonts {
+                let mut json_keys: Vec<&str> = json_pairs
+                    .iter()
+                    .map(|(k, _)| k.as_str())
+                    .filter(|k| !k.starts_with('$'))
+                    .collect();
+                json_keys.sort_unstable();
+                let mut want: Vec<&str> = exp.fonts.iter().map(|(k, _)| *k).collect();
+                want.sort_unstable();
+                if json_keys != want {
+                    bad.push(format!(
+                        "typography.font-family:键集合不一致(JSON {json_keys:?} != 代码 {want:?})"
+                    ));
+                }
+            }
+            for (key, code_v) in &exp.fonts {
+                let at = format!("typography.font-family.{key}");
+                match get(fonts, key).and_then(leaf).and_then(as_str) {
+                    Ok(v) => {
+                        if v != *code_v {
+                            bad.push(format!("{at}:JSON {v:?} != 代码 {code_v:?}"));
+                        }
+                    }
+                    Err(e) => bad.push(format!("{at}:{e}")),
+                }
+            }
+        }
+        Err(e) => bad.push(format!("typography.font-family:{e}")),
+    }
+    match get(typography, "text-size") {
+        Ok(sizes) => {
+            if let Json::Obj(json_pairs) = sizes {
+                let mut json_keys: Vec<&str> = json_pairs
+                    .iter()
+                    .map(|(k, _)| k.as_str())
+                    .filter(|k| !k.starts_with('$'))
+                    .collect();
+                json_keys.sort_unstable();
+                let mut want: Vec<&str> = exp.text_sizes.iter().map(|(k, _)| *k).collect();
+                want.sort_unstable();
+                if json_keys != want {
+                    bad.push(format!(
+                        "typography.text-size:键集合不一致(JSON {json_keys:?} != 代码 {want:?})"
+                    ));
+                }
+            }
+            for (key, code_v) in &exp.text_sizes {
+                let at = format!("typography.text-size.{key}");
+                let val = match get(sizes, key).and_then(leaf) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        bad.push(format!("{at}:{e}"));
+                        continue;
+                    }
+                };
+                for (field, code_n) in [
+                    ("size", code_v[0]),
+                    ("lineHeight", code_v[1]),
+                    ("weight", code_v[2]),
+                ] {
+                    match get(val, field).and_then(as_num) {
+                        Ok(v) => {
+                            if (v - code_n).abs() > 1e-6 {
+                                bad.push(format!("{at}.{field}:JSON {v} != 代码 {code_n}"));
+                            }
+                        }
+                        Err(e) => bad.push(format!("{at}.{field}:{e}")),
+                    }
+                }
+            }
+        }
+        Err(e) => bad.push(format!("typography.text-size:{e}")),
+    }
+
     bad
 }
 
@@ -614,13 +718,23 @@ fn tokens_json_matches_tokens_rs_value_by_value() {
 }
 
 #[test]
-fn tokens_json_has_no_unlanded_tables() {
-    // 本轮六表之外不得出现字号/字体(TOK-02 下一批,别造假)
+fn tokens_json_typography_table_landed_no_future_tables() {
+    // TOK-02 已落 typography 表:必须存在且含 font-family/text-size 两键;
+    // 仍属未来的表出现即红(防"提前造假"复发)
     let json = real_json();
-    for banned in ["typography", "font", "font-size", "fontSize", "type"] {
+    let root = parse_json(&json).expect("真实 JSON 必须可解析");
+    let typography = get(&root, "typography")
+        .unwrap_or_else(|e| panic!("TOK-02 后 JSON 必有 typography 表:{e}"));
+    for key in ["font-family", "text-size"] {
+        assert!(
+            get(typography, key).is_ok(),
+            "typography.{key} 必须存在(TOK-02)"
+        );
+    }
+    for banned in ["icon", "icons", "density", "breakpoint", "component"] {
         assert!(
             !json.contains(&format!("\"{banned}\"")),
-            "JSON 出现未落地表 \"{banned}\":TOK-08 本轮不含字号/字体表"
+            "JSON 出现未落地表 \"{banned}\":新表必须连代码与门禁一起落地"
         );
     }
 }
@@ -633,12 +747,12 @@ fn tokens_json_has_no_unlanded_tables() {
 fn tc_gate_tokens_01_mutating_json_value_is_red() {
     let original = real_json();
     assert!(compare(&original).is_empty(), "前置:原版必须全绿");
-    let cases: [(&str, &str, &str); 7] = [
+    let cases: [(&str, &str, &str); 10] = [
         ("color.dark.surface-2", "\"#313136FF\"", "\"#313137FF\""),
         (
             "color.light.text-secondary",
-            "\"#6B6B6BFF\"",
-            "\"#6B6B6CFF\"",
+            "\"#646464FF\"",
+            "\"#646465FF\"",
         ),
         (
             "spacing.sm",
@@ -660,6 +774,22 @@ fn tc_gate_tokens_01_mutating_json_value_is_red() {
             "motion.spring.snappy.damping",
             "\"damping\": 28.0",
             "\"damping\": 27.0",
+        ),
+        // typography(TOK-02)侧:字号值与字体族名
+        (
+            "typography.text-size.caption.size",
+            "\"size\": 11, \"lineHeight\": 16, \"weight\": 400",
+            "\"size\": 12, \"lineHeight\": 16, \"weight\": 400",
+        ),
+        (
+            "typography.text-size.title.lineHeight",
+            "\"size\": 15, \"lineHeight\": 22, \"weight\": 600",
+            "\"size\": 15, \"lineHeight\": 23, \"weight\": 600",
+        ),
+        (
+            "typography.font-family.mono",
+            "\"JetBrains Mono\"",
+            "\"JetBrains Mono NL\"",
         ),
     ];
     for (path, from, to) in cases {
@@ -693,10 +823,22 @@ fn tc_gate_tokens_01_code_side_drift_is_red() {
         l: orig.l + 0.01,
         ..orig
     };
+    // typography 侧同理:偏移 display 档字号,证明该表也是双向对拍
+    let ts_at = exp
+        .text_sizes
+        .iter()
+        .position(|(k, _)| *k == "display")
+        .expect("期望侧必有 display 档");
+    exp.text_sizes[ts_at].1[0] += 1.0;
     let bad = compare_expected(&exp, &real_json());
     assert!(
         bad.iter().any(|m| m.contains("color.dark.surface-2")),
         "代码侧单侧漂移必须红:{bad:?}"
+    );
+    assert!(
+        bad.iter()
+            .any(|m| m.contains("typography.text-size.display.size")),
+        "typography 代码侧单侧漂移必须红:{bad:?}"
     );
 }
 
@@ -751,6 +893,50 @@ fn tc_ani_spring_01_spring_tiers_match_json() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// TC-TOK-TYPE-01:七档排版逐值断言(TOK-02,报告 §5.4 表)
+// 代码 truth(tokens.rs TextSize)== 报告规格 == JSON typography 表
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tc_tok_type_01_seven_text_sizes_match_spec_and_json() {
+    // 层 1:代码常量 == 报告 §5.4 规格(20/28/600 …)
+    let spec: [(&str, [f64; 3]); 7] = [
+        ("display", [20.0, 28.0, 600.0]),
+        ("title", [15.0, 22.0, 600.0]),
+        ("body-strong", [13.0, 20.0, 600.0]),
+        ("body", [13.0, 20.0, 400.0]),
+        ("label", [12.0, 18.0, 500.0]),
+        ("caption", [11.0, 16.0, 400.0]),
+        ("mono", [12.0, 18.0, 400.0]),
+    ];
+    assert_eq!(TEXT_SIZES.len(), spec.len(), "必须恰七档");
+    for ((name, ts), (want, values)) in TEXT_SIZES.iter().zip(spec) {
+        assert_eq!(*name, want, "档名与序 = 报告表");
+        assert_eq!(
+            (
+                f64::from(ts.size),
+                f64::from(ts.line_height),
+                f64::from(ts.weight)
+            ),
+            (values[0], values[1], values[2]),
+            "{name} 与报告 §5.4 三值不符"
+        );
+        assert!(ts.line_height >= ts.size, "{name} 行高 ≥ 字号(CJK 安全)");
+        assert!(
+            (400.0..=600.0).contains(&ts.weight),
+            "{name} 字重必须在随包字重集合 400/500/600 内"
+        );
+    }
+    // 层 2:代码常量 == JSON typography.text-size(经全量比对器,数值路径)
+    let exp = Expected::from_code();
+    let bad = compare_expected(&exp, &real_json());
+    assert!(bad.is_empty(), "typography 代码↔JSON 漂移:{bad:?}");
+    // 层 3:字体族令牌与 JSON font-family 一致(ui=Inter,mono=JetBrains Mono)
+    assert_eq!(UI_FONT, "Inter");
+    assert_eq!(MONO_FONT, "JetBrains Mono");
 }
 
 // ---------------------------------------------------------------------------

@@ -493,6 +493,7 @@ impl ThemeTransition {
             danger: l(a.danger, b.danger),
             warning: l(a.warning, b.warning),
             success: l(a.success, b.success),
+            info: l(a.info, b.info),
         }
     }
 }
@@ -555,8 +556,16 @@ mod transition_tests {
             mid.border_strong.a > from.border_strong.a && mid.border_strong.a < to.border_strong.a,
             "border_strong 中间透明度应介于两端"
         );
-        // accent 跨主题同值(品牌色共用):插值零漂移
-        assert_eq!(mid.accent, from.accent);
+        // accent 浅色为对比度加深值(TOK-03):跨主题插值单调介于两端
+        // (不再零漂移——品牌蓝相保持、明度按主题调校)
+        assert!(
+            mid.accent.l > from.accent.l.min(to.accent.l)
+                && mid.accent.l < from.accent.l.max(to.accent.l),
+            "accent 中间亮度应介于两端:{} ∈ ({},{})",
+            mid.accent.l,
+            from.accent.l,
+            to.accent.l
+        );
     }
 
     // 注:reduced_motion 全局开关有并行测试竞态窗口(flip/interact 同款已知),

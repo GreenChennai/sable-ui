@@ -55,6 +55,9 @@ pub mod curve_editor;
 pub mod effect_stack;
 #[cfg(feature = "anim")]
 pub mod flip;
+/// 字体随包(TOK-02):Inter/JetBrains Mono 嵌入与 gpui 文本系统注册,
+/// fallback 链声明与真机走查步骤见模块 doc;无 feature 门控(纯资产,零新依赖)。
+pub mod fonts;
 #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
 pub mod gradient_editor;
 #[cfg(all(feature = "inspector", feature = "color", feature = "theme"))]
@@ -100,6 +103,7 @@ pub mod prelude {
     };
     #[cfg(feature = "anim")]
     pub use crate::flip::FlipTracker;
+    pub use crate::fonts::install as install_fonts;
     #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
     pub use crate::gradient_editor::GradientEditor;
     #[cfg(all(feature = "inspector", feature = "color", feature = "theme"))]
@@ -134,8 +138,8 @@ pub mod prelude {
     pub use crate::timeline_view::TimelineView;
     #[cfg(feature = "theme")]
     pub use crate::tokens::{
-        ColorTokens, ELEVATIONS, Elevation, MotionTokens, RadiusTokens, SPRING_BOUNCY,
-        SPRING_SNAPPY, SPRING_SOFT, SpacingTokens, SpringPreset, StateLayerTokens, control_height,
-        h_flex, v_flex,
+        ColorTokens, ELEVATIONS, Elevation, MONO_FONT, MotionTokens, RadiusTokens, SPRING_BOUNCY,
+        SPRING_SNAPPY, SPRING_SOFT, SpacingTokens, SpringPreset, StateLayerTokens, TEXT_SIZES,
+        TextSize, UI_FONT, control_height, h_flex, v_flex,
     };
 }

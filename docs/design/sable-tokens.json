@@ -1,6 +1,6 @@
 {
   "$schema": "https://tr.designtokens.org/format/",
-  "$description": "sable-ui 设计令牌真相源(TOK-08,迭代审查报告 2026-10-04 §5.3)。与本文件逐值同步的代码真相:crates/sable-widgets/src/tokens.rs;门禁:crates/sable-widgets/tests/gate_tokens_sync.rs(TC-GATE-TOKENS-01/TC-ANI-SPRING-01)——改任一侧必须同轮改另一侧。范围:color(深/浅全量)/spacing/radius/elevation/state-layer/motion(时长四档+弹簧三档);字号/字体表(TOK-02)属下一批,刻意不含,不得提前补造。深色表面值来自报告 §5.3.1 中性阶梯 N0~N12,浅色为独立调校(非反相)。颜色一律 #RRGGBBAA。",
+  "$description": "sable-ui 设计令牌真相源(TOK-08,迭代审查报告 2026-10-04 §5.3)。与本文件逐值同步的代码真相:crates/sable-widgets/src/tokens.rs;门禁:crates/sable-widgets/tests/gate_tokens_sync.rs(TC-GATE-TOKENS-01/TC-ANI-SPRING-01)——改任一侧必须同轮改另一侧。范围:color(深/浅全量)/spacing/radius/elevation/state-layer/motion(时长四档+弹簧三档)/typography(字体族+七档字号,TOK-02)。深色表面值来自报告 §5.3.1 中性阶梯 N0~N12,浅色为独立调校(非反相)。颜色一律 #RRGGBBAA。TOK-03(2026-10-04)按 WCAG AA 门禁当场改值:深色弱文字档改亮、浅色弱文字档/accent/danger/warning 加深,未达标旧值见 tokens.rs 注释;浅色 accent 加深后不再与深色同值(品牌蓝相保持)。",
   "color": {
     "dark": {
       "surface-0": { "$type": "color", "$value": "#0E0E10FF", "$description": "N0 画布外/应用底" },
@@ -12,15 +12,16 @@
       "border-strong": { "$type": "color", "$value": "#FFFFFF1F", "$description": "white 12%" },
       "text-strong": { "$type": "color", "$value": "#FFFFFFFF", "$description": "N12 标题/数值" },
       "text-primary": { "$type": "color", "$value": "#FFFFFFEB", "$description": "white 92% 正文默认" },
-      "text-secondary": { "$type": "color", "$value": "#9A9AA4FF", "$description": "N10 次文字" },
-      "text-tertiary": { "$type": "color", "$value": "#6E6E78FF", "$description": "N9 弱文字" },
-      "text-disabled": { "$type": "color", "$value": "#FFFFFF52", "$description": "white 32%" },
-      "text-placeholder": { "$type": "color", "$value": "#FFFFFF47", "$description": "white 28% 最弱档" },
+      "text-secondary": { "$type": "color", "$value": "#A6A6B0FF", "$description": "次文字(TOK-03,旧 #9A9AA4 凸起面 4.6:1 腾带)" },
+      "text-tertiary": { "$type": "color", "$value": "#9C9CA4FF", "$description": "弱文字(TOK-03,旧 #6E6E78 仅 2.6:1)" },
+      "text-disabled": { "$type": "color", "$value": "#FFFFFF8A", "$description": "white 54%(TOK-03 报告口径 ≥4.5:1,旧 white 32% 仅 2.9:1)" },
+      "text-placeholder": { "$type": "color", "$value": "#FFFFFF86", "$description": "white 52% 最弱档(TOK-03,旧 white 28% 仅 2.4:1)" },
       "accent": { "$type": "color", "$value": "#4F9FFFFF" },
       "accent-muted": { "$type": "color", "$value": "#4F9FFF33", "$description": "accent 20%(历史选中底,新代码走 state-layer)" },
-      "danger": { "$type": "color", "$value": "#F24822FF" },
+      "danger": { "$type": "color", "$value": "#FF704CFF", "$description": "删除/溢出(TOK-03,旧 #F24822 凸起面 3.5:1)" },
       "warning": { "$type": "color", "$value": "#FFC700FF" },
-      "success": { "$type": "color", "$value": "#14AE5CFF" }
+      "success": { "$type": "color", "$value": "#17B45EFF", "$description": "成功(TOK-03,旧 #14AE5C 凸起面 4.46:1 差线)" },
+      "info": { "$type": "color", "$value": "#4FC3FFFF", "$description": "信息(TOK-03 批次新增功能色)" }
     },
     "light": {
       "surface-0": { "$type": "color", "$value": "#F7F7F8FF", "$description": "应用底(独立调校)" },
@@ -32,15 +33,16 @@
       "border-strong": { "$type": "color", "$value": "#00000029", "$description": "black 16%" },
       "text-strong": { "$type": "color", "$value": "#000000FF", "$description": "纯黑 标题/数值" },
       "text-primary": { "$type": "color", "$value": "#1B1B1FFF" },
-      "text-secondary": { "$type": "color", "$value": "#6B6B6BFF" },
-      "text-tertiary": { "$type": "color", "$value": "#8A8A90FF" },
-      "text-disabled": { "$type": "color", "$value": "#A0A0A5FF" },
-      "text-placeholder": { "$type": "color", "$value": "#ACACB2FF", "$description": "比禁用更弱(更浅)" },
-      "accent": { "$type": "color", "$value": "#4F9FFFFF", "$description": "品牌色跨主题共用" },
-      "accent-muted": { "$type": "color", "$value": "#4F9FFF1F", "$description": "accent 12%(历史)" },
-      "danger": { "$type": "color", "$value": "#D93025FF" },
-      "warning": { "$type": "color", "$value": "#8F6700FF" },
-      "success": { "$type": "color", "$value": "#0E7C42FF" }
+      "text-secondary": { "$type": "color", "$value": "#646464FF", "$description": "次文字(TOK-03,旧 #6B6B6B 凸起面 4.7:1 腾带)" },
+      "text-tertiary": { "$type": "color", "$value": "#696969FF", "$description": "弱文字(TOK-03,旧 #8A8A90 仅 3.0:1)" },
+      "text-disabled": { "$type": "color", "$value": "#6B6B70FF", "$description": "TOK-03 报告口径 ≥4.5:1(旧 #A0A0A5 仅 2.3:1)" },
+      "text-placeholder": { "$type": "color", "$value": "#6D6D72FF", "$description": "比禁用更弱(TOK-03,旧 #ACACB2 仅 2.0:1)" },
+      "accent": { "$type": "color", "$value": "#2264C8FF", "$description": "品牌蓝加深过 AA(TOK-03,旧 #4F9FFF 白底 2.7:1;与深色不再同值)" },
+      "accent-muted": { "$type": "color", "$value": "#2264C81F", "$description": "accent 12%(历史)" },
+      "danger": { "$type": "color", "$value": "#C32A1FFF", "$description": "TOK-03(旧 #D93025 凸起面 4.2:1)" },
+      "warning": { "$type": "color", "$value": "#8A6200FF", "$description": "浅底加深(TOK-03,旧 #8F6700 4.5:1 加余量)" },
+      "success": { "$type": "color", "$value": "#0E7C42FF" },
+      "info": { "$type": "color", "$value": "#0C669DFF", "$description": "信息(TOK-03 批次新增功能色)" }
     }
   },
   "spacing": {
@@ -94,6 +96,22 @@
       "snappy": { "$type": "spring", "$value": { "stiffness": 400.0, "damping": 28.0, "mass": 1.0 } },
       "soft": { "$type": "spring", "$value": { "stiffness": 180.0, "damping": 22.0, "mass": 1.0 } },
       "bouncy": { "$type": "spring", "$value": { "stiffness": 300.0, "damping": 15.0, "mass": 1.0 } }
+    }
+  },
+  "typography": {
+    "$description": "报告 §5.4 排版系统(TOK-02):字体族随包注册(fonts.rs,Inter + JetBrains Mono,OFL-1.1),七档字号/行高/字重与 tokens.rs TextSize 逐值同步;mono 档配等宽族承载 tabular-nums 语义。",
+    "font-family": {
+      "ui": { "$type": "font", "$value": "Inter", "$description": "UI_FONT;fallback 链声明在 fonts.rs(UI → 系统 CJK)" },
+      "mono": { "$type": "font", "$value": "JetBrains Mono", "$description": "MONO_FONT;数值/十六进制" }
+    },
+    "text-size": {
+      "display": { "$type": "typography", "$value": { "size": 20, "lineHeight": 28, "weight": 600 }, "$description": "启动器标题/空态主标题" },
+      "title": { "$type": "typography", "$value": { "size": 15, "lineHeight": 22, "weight": 600 }, "$description": "对话框/面板组标题" },
+      "body-strong": { "$type": "typography", "$value": { "size": 13, "lineHeight": 20, "weight": 600 }, "$description": "分组头/选中项" },
+      "body": { "$type": "typography", "$value": { "size": 13, "lineHeight": 20, "weight": 400 }, "$description": "默认正文" },
+      "label": { "$type": "typography", "$value": { "size": 12, "lineHeight": 18, "weight": 500 }, "$description": "字段标签/图层行" },
+      "caption": { "$type": "typography", "$value": { "size": 11, "lineHeight": 16, "weight": 400 }, "$description": "状态栏/tooltip 副行" },
+      "mono": { "$type": "typography", "$value": { "size": 12, "lineHeight": 18, "weight": 400 }, "$description": "十六进制/数值,tabular-nums" }
     }
   }
 }

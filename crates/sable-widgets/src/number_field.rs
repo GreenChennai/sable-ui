@@ -86,10 +86,11 @@ use crate::binding::Binding;
 use crate::interact::{self, HoverState};
 use crate::theme::theme;
 use crate::tokens::{
-    FONT_SIZE_BODY, HEIGHT_COMPACT, RadiusTokens, SpacingTokens, control_height, h_flex,
+    HEIGHT_COMPACT, MONO_FONT, RadiusTokens, SpacingTokens, TextSize, control_height, h_flex,
 };
 
-/// 面板正文的估行高(11~12px 字号,数值用等宽观感)。
+/// 控内布局估行高(12px 等宽数值的紧凑估;高度派生用下限,与
+/// [`TextSize::MONO`] 的排版行高 18 无冲突——控件高度走 [`control_height`])。
 const LINE_HEIGHT_PX: f32 = 14.0;
 /// 控件的垂直内边距。
 const V_PADDING_PX: f32 = 4.0;
@@ -97,6 +98,14 @@ const V_PADDING_PX: f32 = 4.0;
 const SCROLL_LINE_PX: f32 = 24.0;
 /// 编辑态光标条宽(1px 竖线,token 取 accent 色)。
 const CARET_WIDTH_PX: f32 = 1.0;
+
+/// 数值显示字体族(mono 族令牌,TOK-02 等宽数字):展示/编辑两态的所有
+/// 文本都经 render 挂此族——等宽字形天然满足 tabular-nums 语义,拖动时
+/// 字符不逐个跳动。TC-TOK-TYPE-02 的断言点(渲染路径与令牌单点绑定)。
+#[must_use]
+pub fn value_font_family() -> &'static str {
+    MONO_FONT
+}
 
 /// 数值框(有状态 Entity):`cx.new(|_| NumberField::new(binding).range(0.0, 100.0))`。
 pub struct NumberField {
@@ -586,7 +595,7 @@ impl Render for NumberField {
             .clone();
 
         // 展示文本:编辑态 = buffer 分段;展示态 = 值 + 单位
-        // (tabular-nums 等宽数字字体随字体 token 化挂接 = M2,分册四 §6)
+        // TOK-02 接线:等宽族 + TextSize::MONO 三值(M2 的"字体 token 化"已落)
         let display = match &editing {
             Some(buffer) => {
                 let (left, right) = buffer.segments();
@@ -649,7 +658,9 @@ impl Render for NumberField {
                 colors.border_subtle
             })
             .bg(bg)
-            .text_size(px(FONT_SIZE_BODY))
+            .text_size(px(TextSize::MONO.size))
+            .font_family(value_font_family())
+            .font_weight(gpui::FontWeight(TextSize::MONO.weight))
             .text_color(if dragging || editing.is_some() {
                 colors.text_primary
             } else {
@@ -974,6 +985,18 @@ mod tests {
     fn control_height_fills_tier_floor() {
         // 14 行高 + 8 padding = 22,恰好紧凑档下限
         assert_eq!(NumberField::control_height(), HEIGHT_COMPACT);
+    }
+
+    /// TC-TOK-TYPE-02(TOK-02):数值文本渲染族 = mono 族令牌。渲染路径
+    /// (render 的 `font_family(value_font_family())`)与 tokens 单点绑定;
+    /// 族名值本身由 JSON typography 表经 TC-TOK-TYPE-01 对拍锁定。
+    #[test]
+    fn tc_tok_type_02_number_field_value_text_uses_mono_family() {
+        assert_eq!(value_font_family(), crate::tokens::MONO_FONT);
+        assert_eq!(value_font_family(), "JetBrains Mono");
+        // 数值档三值(mono 档):render 的 text_size/font_weight 消费同源
+        assert_eq!(TextSize::MONO.size, 12.0);
+        assert_eq!(TextSize::MONO.weight, 400.0);
     }
 
     // —— v1.0 编辑态:buffer 状态机(任务 3.3 测试清单)——
