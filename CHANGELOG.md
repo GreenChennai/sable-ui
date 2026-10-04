@@ -12,6 +12,40 @@
   项,卡体为"半透明底 + 高光内边"等效档(docs/11 对照表)
 - story 第 9 分组:三配色 Neon Card 实机演示(粉紫对标默认/青蓝/金橙)
 - widgets 新增内部依赖边 widgets → sable-paint(向下,离屏自绘底座;手册 §2.1 待补记)
+- **GPU 设备丢失恢复接线**(RBT-01,迭代审查报告 2026-10-04):`sable-paint::gpu_frame::GpuFrameRenderer`
+  生产帧入口——资源按 `(generation, resource)` 配对缓存,每帧经 `render_with_recovery`
+  幂等闭包;首次设备丢失→重建重试(代数自增),二连败→`PaintError::GpuDeviceLostFatal`
+  (宿主契约:自动保存→切 cpu-render→提示用户);`SABLE_GPU_BACKEND` 运行期后端覆盖
+  (dx12/vulkan/gl/auto,识别失败显式告警);TC-GATE-GPU-01 生产调用点静态门禁 +
+  可注入恢复状态机测试(真机冒烟 `#[ignore]` 通过)。此前 GpuGuard 全仓零调用方
+- **sable-dock 壳态持久化契约**(RBT-02):`persist_layout`/`load_layout`——原子写
+  (复用 foundation::persistence)、坏文件→默认布局+显式回退+warn、版本 v1+迁移桩、
+  `LoadedLayout::{Restored, Fallback}`;旧 `load_layout(area,…)` 更名 `restore_layout`;
+  workspace.rs 载明宿主契约(壳态落盘必须经本契约)。此前布局落盘完全由宿主自理
+- **门禁四件**(GATE-01/04/08/09 + docs/12):TC-GATE-PANIC-01 全 workspace 生产段
+  零 `unwrap/expect/panic!/unreachable` 静态门禁(反例单测齐备);GATE-04 硬编码色
+  门禁(`crates/*/src` 除 tokens/theme 零颜色字面量,反例单测);CI 增 cargo tree
+  许可红线(出现 `vb_*`/`cutforge-*` 节点即红)、CHANGELOG 门禁(源码变更必须伴随
+  CHANGELOG 修改)、独立 cargo-deny job(deny.toml,allow 清单按全 lock 树实测预演);
+  docs/12 载明三条纪律(宣称即证据/门禁反面测试/扫描面显式化)与门禁清单
+
+### Changed
+- **Timeline/Clip 加载即校验**(RBT-07):反序列化路径统一守卫——speed 有限且 >0、
+  in≤out,坏数据结构化拒收(`VideoError::InvalidClip`),修复 speed=0/负/NaN/inf 可经
+  `.sable` 静默注入;`set_speed(±inf)` 由静默 Ok 改为 Err;新增 `Clip::validate`/
+  `Timeline::validate` 公开校验入口(两入口同一谓词)
+- **Timeline 不变量 release 生效**(RBT-08):全部结构修改收尾经 `finish_mutation`
+  校验(非法操作显式 Err),`debug_assert!(is_valid)` 降为成功路径的 debug 额外校验;
+  闭合波纹删除下溢与切割起点加法回绕的 release 静默回绕
+- 文档诚实化(DOC-01/02/03/04):docs/00/03/04/05/06、release-checklist 中把已实现的
+  主题/令牌/动画/命中测试/选中框/钢笔/图层面板/检查器/基准等从"未开始/占位"订正为
+  已实现(附模块路径);黄金基线场景数 5→6 订正
+
+### Fixed
+- **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处
+  `expect` 全部清偿为结构化错误路径(`ok_or(CoreError::…)`/`try_into()`/insert 返回值
+  复用),另摸底清偿 widgets anim/gesture 2 处;合法输入行为不变
+- paint 关闭 cpu feature 时的 effects.rs 未用导入告警(`--no-default-features` 全绿)
 
 ## [4.0.0] - 2026-10-02
 
