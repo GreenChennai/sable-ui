@@ -47,6 +47,9 @@ pub mod anim;
 pub mod binding;
 #[cfg(all(feature = "color", feature = "theme"))]
 pub mod color;
+/// 基础控件层(迭代审查报告 §5.6 批 1,CMP-01:Button/TextField/Select/… 此前全缺)。
+#[cfg(all(feature = "controls", feature = "theme"))]
+pub mod controls;
 #[cfg(all(feature = "curve-editor", feature = "theme"))]
 pub mod curve_editor;
 /// 效果栈面板(V2.0 T4;inspector 特性链带来 number-field→anim,interact 的
@@ -76,9 +79,6 @@ pub mod neon_card;
 pub mod number_field;
 #[cfg(all(feature = "inspector", feature = "theme"))]
 pub mod property_row;
-/// 基础控件层(迭代审查报告 §5.6 批 1,CMP-01:Button/TextField/Select/… 此前全缺)。
-#[cfg(all(feature = "controls", feature = "theme"))]
-pub mod controls;
 #[cfg(feature = "theme")]
 pub mod theme;
 #[cfg(all(feature = "timeline", feature = "theme"))]
