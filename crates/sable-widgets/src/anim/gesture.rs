@@ -71,9 +71,13 @@ impl GestureTracker {
             if len <= 1 {
                 break; // 至少保留刚按入的样本
             }
-            let newest = self.samples.back().expect("len >= 2 已检查").t_ms;
-            let oldest = self.samples.front().expect("len >= 2 已检查").t_ms;
-            if len <= WINDOW_SAMPLES && newest - oldest <= WINDOW_MS {
+            // len >= 2 时 back/front 理应都存在;按 RB-01(可失败路径零 panic)
+            // 用模式匹配直取,极端情况下直接退出循环,不设"必然命中"假设。
+            let (Some(newest), Some(oldest)) = (self.samples.back(), self.samples.front()) else {
+                break;
+            };
+            let (newest_t, oldest_t) = (newest.t_ms, oldest.t_ms);
+            if len <= WINDOW_SAMPLES && newest_t - oldest_t <= WINDOW_MS {
                 break;
             }
             self.samples.pop_front();

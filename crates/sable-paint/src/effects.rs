@@ -61,6 +61,7 @@ use kurbo::{Affine, BezPath, PathEl, Point};
 use sable_foundation::effects::{EffectEntry, EffectSpec};
 use sable_foundation::scene::Rgba8;
 
+#[cfg(feature = "cpu")]
 use crate::sink::PaintSink;
 
 /// 效果等级 env 变量名(分册六 §6.5 命名纪律:`SABLE_` 前缀)。
@@ -228,14 +229,16 @@ impl ShadowCache {
         self.entries.get(&key).cloned()
     }
 
-    /// 插入(或覆盖同 key 并把它刷新为最新)。
-    pub fn insert(&mut self, key: u64, pixels: Vec<u8>) {
+    /// 插入(或覆盖同 key 并把它刷新为最新),返回刚存入的 `Arc`
+    /// (调用方可直接使用,无需再 `get` 一轮)。
+    pub fn insert(&mut self, key: u64, pixels: Vec<u8>) -> Arc<Vec<u8>> {
+        let stored = Arc::new(pixels);
         if self.entries.contains_key(&key) {
             // 覆盖语义:刷新插入序,替换内容
             self.order.retain(|&k| k != key);
             self.order.push_back(key);
-            self.entries.insert(key, Arc::new(pixels));
-            return;
+            self.entries.insert(key, Arc::clone(&stored));
+            return stored;
         }
         if self.entries.len() >= self.capacity {
             if let Some(oldest) = self.order.pop_front() {
@@ -243,7 +246,8 @@ impl ShadowCache {
             }
         }
         self.order.push_back(key);
-        self.entries.insert(key, Arc::new(pixels));
+        self.entries.insert(key, Arc::clone(&stored));
+        stored
     }
 
     /// 便捷入口:命中直接返回;未命中渲染后入缓存(FIFO 驱逐随之发生)。
@@ -261,9 +265,8 @@ impl ShadowCache {
             return hit;
         }
         let pixels = render_shadow_rgba(path, transform, params, width, height);
-        self.insert(key, pixels);
-        // 刚插入必在表中(容量 ≥ 1 已在上文保证驱逐后仍留有空间)
-        self.get(key).expect("insert 后同 key 必命中")
+        // insert 直接交回刚存入的 Arc,消除"insert 后 get 必命中"假设(RB-01)
+        self.insert(key, pixels)
     }
 }
 

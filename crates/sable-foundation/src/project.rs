@@ -101,11 +101,12 @@ pub fn load_project(path: &Path) -> CoreResult<ProjectData> {
     if bytes[..SABLE_MAGIC_LEN] != *SABLE_MAGIC {
         return Err(CoreError::InvalidMagic);
     }
-    let header_version = u32::from_le_bytes(
-        bytes[SABLE_MAGIC_LEN..HEADER_LEN]
-            .try_into()
-            .expect("切片长度已校验为 4 字节"),
-    );
+    // 上文已校验 bytes.len() >= HEADER_LEN = SABLE_MAGIC_LEN + 4,此切片
+    // 恒为 4 字节;仍按 RB-01 走结构化出口,不设"必然成功"假设。
+    let header_bytes: [u8; 4] = bytes[SABLE_MAGIC_LEN..HEADER_LEN]
+        .try_into()
+        .map_err(|_| CoreError::Deserialization("头部版本字段不是 4 字节".into()))?;
+    let header_version = u32::from_le_bytes(header_bytes);
     if header_version > SABLE_VERSION {
         return Err(CoreError::UnsupportedVersion {
             found: header_version,

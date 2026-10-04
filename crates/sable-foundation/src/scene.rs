@@ -312,11 +312,9 @@ impl Scene {
         let id = self.nodes.insert(node);
         match parent {
             Some(p) => {
-                // 存在性已在上文校验
-                let parent_node = self
-                    .nodes
-                    .get_mut(p)
-                    .expect("parent 存在性已在校验分支确认");
+                // 存在性已在上文校验(slotmap 插入不会使既有 key 失效);
+                // 仍按 RB-01 走结构化出口,不设"必然命中"假设。
+                let parent_node = self.nodes.get_mut(p).ok_or(CoreError::ParentNotFound(p))?;
                 parent_node.children.push(id);
             }
             None => self.roots.push(id),
@@ -353,10 +351,9 @@ impl Scene {
         let id = self.nodes.insert(node);
         match parent {
             Some(p) => {
-                let parent_node = self
-                    .nodes
-                    .get_mut(p)
-                    .expect("parent 存在性已在校验分支确认");
+                // 父节点存在性已在上文 len 计算时校验(slotmap 插入不会使
+                // 既有 key 失效);按 RB-01 走结构化出口,不设"必然命中"假设。
+                let parent_node = self.nodes.get_mut(p).ok_or(CoreError::ParentNotFound(p))?;
                 parent_node.children.insert(index, id);
             }
             None => self.roots.insert(index, id),
@@ -369,10 +366,8 @@ impl Scene {
         let (parent, index) = self.position(id)?;
         match parent {
             Some(p) => {
-                let parent_node = self
-                    .nodes
-                    .get_mut(p)
-                    .expect("position() 已确认父节点存在且挂着 id");
+                // position() 已确认父节点存在且挂着 id;按 RB-01 走结构化出口。
+                let parent_node = self.nodes.get_mut(p).ok_or(CoreError::ParentNotFound(p))?;
                 parent_node.children.remove(index);
             }
             None => {
@@ -451,10 +446,9 @@ impl Scene {
             .ok_or(CoreError::OrphanNode(subtree.root))?;
         match subtree.parent {
             Some(p) => {
-                let parent_node = self
-                    .nodes
-                    .get_mut(p)
-                    .expect("parent 存在性已在校验分支确认");
+                // 父节点存在性已在本函数开头校验(slotmap 插入不会使既有
+                // key 失效);按 RB-01 走结构化出口,不设"必然命中"假设。
+                let parent_node = self.nodes.get_mut(p).ok_or(CoreError::ParentNotFound(p))?;
                 parent_node.children.insert(subtree.index, new_root);
             }
             None => self.roots.insert(subtree.index, new_root),
@@ -518,10 +512,9 @@ impl Scene {
         let attach = index.unwrap_or(len_after);
         match new_parent {
             Some(p) => {
-                let pn = self
-                    .nodes
-                    .get_mut(p)
-                    .expect("new_parent 存在性已在校验分支确认");
+                // new_parent 存在性已在上文校验(摘除用的是 old_parent,
+                // 不影响 new_parent 的 key);按 RB-01 走结构化出口。
+                let pn = self.nodes.get_mut(p).ok_or(CoreError::ParentNotFound(p))?;
                 pn.children.insert(attach, id);
             }
             None => self.roots.insert(attach, id),
