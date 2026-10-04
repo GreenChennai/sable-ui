@@ -20,12 +20,12 @@ allow = [
     "0BSD",
     "Unlicense",
     "MPL-2.0",
-    "MPL-2.0-or-later",
     "NCSA",
 ]
 # 依据(2026-10-04 全 lock 树实测预演):adler2/enum-iterator=0BSD,
 # aho-corasick/memchr/byteorder 等=Unlicense OR MIT,dwrote/zvariant/smartstring
-# =MPL-2.0(wgpu/directx 与 gpui Linux 栈),libfuzzer-sys=NCSA,
+# =MPL-2.0(wgpu/directx 与 gpui Linux 栈;"+" 后缀由 cargo-deny 归一,勿写
+# "-or-later" 形态,配置解析不认),libfuzzer-sys=NCSA,
 # wit-bindgen 族=Apache-2.0 WITH LLVM-exception。红线 GPL/LGPL/AGPL 仍不在列。
 
 [bans]
