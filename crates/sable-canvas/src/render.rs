@@ -519,9 +519,9 @@ fn hash_paint(h: &mut std::collections::hash_map::DefaultHasher, paint: &Paint) 
     }
 }
 
-/// PERF-05:内容指纹(见 [`hash_paint`])。
+/// PERF-05/CMP-09:内容指纹(见 [`hash_paint`])——缩略图缓存键同源。
 #[cfg(feature = "cpu")]
-fn node_content_fingerprint(content: &NodeContent) -> u64 {
+pub fn node_content_fingerprint(content: &NodeContent) -> u64 {
     use kurbo::PathEl;
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -636,6 +636,35 @@ fn hash_effect_entries(
 /// PERF-05:离屏光栅结果缓存键。覆盖全部决定输出的输入:内容指纹、效果栈、
 /// LOD、变换(total 含视口与节点变换)、透明度、屏幕尺寸与窗口几何。
 /// 悬停/动画类输入不在键内(它们不经效果路径)。
+/// CMP-09:节点缩略图——离屏 `size×size` 光栅该节点内容(透明底、内容
+/// 0.9×fit 居中、LOD Full),与主渲染共用 [`draw_node_content_at_lod`]
+/// 单点。像素缓存由调用方按 [`node_content_fingerprint`] 持有(内容不变
+/// 零重渲);上屏经 `gpui_element::rgba_to_render_image` 单点。
+#[cfg(feature = "cpu")]
+pub fn render_node_thumbnail(scene: &Scene, id: NodeId, size: u16) -> Option<Vec<u8>> {
+    use sable_paint::cpu::CpuRenderer;
+
+    let bbox = crate::text::node_world_bbox_measured(scene, id)?;
+    let node = scene.node(id)?;
+    let size = f64::from(size.max(1));
+    // fit 居中:内容包围盒 → 0.9×画布内接框
+    let w = (bbox.x1 - bbox.x0).max(1e-6);
+    let h = (bbox.y1 - bbox.y0).max(1e-6);
+    let scale = (size * 0.9 / w).min(size * 0.9 / h);
+    let tx = size / 2.0 - scale * (bbox.x0 + bbox.x1) / 2.0;
+    let ty = size / 2.0 - scale * (bbox.y0 + bbox.y1) / 2.0;
+    let mut renderer = CpuRenderer::new(size as u16, size as u16, [0, 0, 0, 0]);
+    draw_node_content_at_lod(
+        renderer.sink(),
+        &node.content,
+        DetailLevel::Full,
+        bbox,
+        Affine::translate((tx, ty)) * Affine::scale(scale),
+        node.opacity,
+    );
+    Some(renderer.finish())
+}
+
 #[cfg(feature = "cpu")]
 fn effects_raster_key(params: &EffectRasterParams, screen_size: (f64, f64)) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -1810,6 +1839,33 @@ mod tests {
                 }];
             }
             scene
+        }
+
+        /// CMP-09:缩略图管线——内容 fit 居中(中心红、角透明)、
+        /// 指纹稳定(内容不变键不变)、内容变键变。
+        #[test]
+        fn cmp_09_thumbnail_pipeline_and_fingerprint() {
+            let mut scene = Scene::new();
+            let id = scene
+                .add_node(None, "红", rect_content(16.0, 16.0, 48.0, 48.0, red()))
+                .expect("节点");
+            let thumb = render_node_thumbnail(&scene, id, 32).expect("路径节点必有缩略图");
+            assert_eq!(thumb.len(), 32 * 32 * 4);
+            let center = 4 * (16 * 32 + 16);
+            assert_eq!(
+                [thumb[center], thumb[center + 1], thumb[center + 2]],
+                [255, 0, 0]
+            );
+            let corner = 0;
+            assert_eq!(thumb[corner + 3], 0, "fit 居中:角落透明");
+
+            // 指纹:内容不变键不变;内容变键变(缓存失效判据)
+            let f1 = node_content_fingerprint(&scene.node(id).expect("在").content);
+            let f2 = node_content_fingerprint(&scene.node(id).expect("在").content);
+            assert_eq!(f1, f2);
+            scene.node_mut(id).expect("在").opacity = 0.5;
+            let f3 = node_content_fingerprint(&scene.node(id).expect("在").content);
+            assert_eq!(f1, f3, "opacity 不属内容指纹(渲染键另含)");
         }
 
         /// TC-PERF-SHADOW-01(PERF-05):静止场景二次渲染全命中零光栅化,

@@ -172,7 +172,10 @@ pub mod prelude {
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::value_overlay::{value_overlay, value_overlay_style};
     #[cfg(all(feature = "curve-editor", feature = "theme"))]
-    pub use crate::curve_editor::CurvePreview;
+    pub use crate::curve_editor::{
+        CurveEditor, CurvePreview, add_key, hit_key, key_at_pointer, move_key, remove_key,
+        sample_curve,
+    };
     #[cfg(all(feature = "inspector", feature = "theme"))]
     pub use crate::effect_stack::{
         EffectStackCallbacks, EffectStackPanel, EffectStackSpec, add_presets, demo_entries,

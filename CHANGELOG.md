@@ -139,6 +139,16 @@
   + feature 门控一致性(逐 crate features↔lib.rs cfg 交叉核对);
   `NumberField::unit`/`RowSpec::Number.unit` 改 `SharedString`
   (CMP-13,builder `impl Into` 兼容旧调用,展示缓存改借用入参)
+- **ANI-03 曲线编辑器交互版**(`CurveEditor`,受控 Entity):拖 key(钳制+
+  t_ms 稳定重排)、双击加键、右键删键;状态机全纯函数(`hit_key`/`add_key`/
+  `move_key`/`remove_key`/`key_at_pointer`);曲线绘制**共享
+  `sable_video::curve::evaluate` 单一真相**(采样即播放器求值);
+  TC-ANI-CURVE-01(采样逐点一致)/TC-ANI-CURVE-02(快照可撤销)
+- **CMP-09 缩略图管线**:`canvas::render::render_node_thumbnail`(离屏
+  fit 居中,与主渲染共用 draw_node_content_at_lod)+ `node_content_fingerprint`
+  公开(缓存键);层板占位色块 → 真缩略图(内容指纹缓存,节点缺失回落占位
+  绝不 panic——本项修复被 TC-GATE-PANIC-01 当场抓到一次 expect,门禁实证生效);
+  A11Y-05 门禁白名单登记 curve_editor 拖拽跟手(#8 直接操作语义)
 - 工程面:新 stable clippy(1.99 `collapsible_if` 扩展 if-let 嵌套捕获、
   `chunks_exact` 常量块建议 `as_chunks`)全仓批修(30+ 处 let-chain 化,
   行为零变化,718 测试全绿);ci.yml 新增 `msrv` 与 `public-api` 两个 job

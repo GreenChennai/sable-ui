@@ -29,6 +29,10 @@ use sable_widgets::anim::{Animated, Easing, set_reduced_motion};
 /// 白名单:文件 → 理由(动画入口存在但 reduced 判据在动画原语内部短路)。
 const WHITELIST: &[(&str, &str)] = &[
     (
+        "curve_editor.rs",
+        "拖拽跟手直接操作(报告 §4.3 #8 跟手优先):RAF 只为重绘指针位,无时间插值,reduced 下拖拽仍需跟手",
+    ),
+    (
         "controls/choice.rs",
         "选中进度经 Animated::value_at/is_running_at 求值(anim 内部 reduced 直通);\
          hover 进度经 HoverState(内部短路)",

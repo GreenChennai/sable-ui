@@ -37,7 +37,9 @@ sable-foundation.workspace = true
 # feature):金字塔向下依赖(widgets → paint 与 video/widgets → canvas →
 # paint → core 同向,workspace 内部 crate 而非外部依赖;story 效果页同款先例)
 sable-paint.workspace = true
-sable-canvas.workspace = true
+# CMP-09:层板缩略图经 canvas::render_node_thumbnail 离屏 + gpui_element
+# rgba_to_render_image 单点上屏(png/gpui features 拉入 image/gpui 面)
+sable-canvas = { workspace = true, features = ["png", "gpui"] }
 sable-video = { workspace = true, optional = true }
 # layer-panel 专用:NodeId(slotmap key)→ u64 作为 FlipTracker 的元素键(可选,
 # 随 layer-panel feature 进出,不加重基础编辑场景的依赖面)

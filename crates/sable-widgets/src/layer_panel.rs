@@ -81,6 +81,9 @@ pub type MoveDownFn = Rc<dyn Fn(NodeId, &mut App)>;
 
 /// 图层面板(有状态 Entity):
 /// `cx.new(|cx| LayerPanel::new(scene_entity).on_select(...).on_toggle_visible(...))`
+/// CMP-09 缩略图缓存:NodeId → (内容指纹, 已上屏帧)。
+type ThumbCache = Rc<RefCell<HashMap<NodeId, (u64, Option<std::sync::Arc<gpui::RenderImage>>)>>>;
+
 pub struct LayerPanel {
     /// 场景数据源(只读;修改走应用层回调)
     scene: Entity<Scene>,
@@ -98,6 +101,9 @@ pub struct LayerPanel {
     flip: Rc<RefCell<FlipTracker>>,
     /// A7:撤销脉冲表(节点 → 脉冲;查询即清理过期项,无驻留)
     pulses: Rc<RefCell<HashMap<NodeId, PulseState>>>,
+    /// CMP-09:缩略图缓存(键 = NodeId;值 = (内容指纹, 已上屏帧))。
+    /// 内容指纹变 → 重渲;容量 256,FIFO 清理(万级图层防驻留)。
+    thumbs: ThumbCache,
     /// A11Y-01:列表键盘导航焦点(容器 track_focus,↑↓/Enter 导航)
     focus: Option<FocusHandle>,
     /// A11Y-06:按压中的行(按下高亮,松开清除)
@@ -121,6 +127,7 @@ impl LayerPanel {
             hovered_node: None,
             flip: Rc::new(RefCell::new(FlipTracker::new())),
             pulses: Rc::new(RefCell::new(HashMap::new())),
+            thumbs: Rc::new(RefCell::new(HashMap::new())),
             focus: None,
             pressed_node: None,
             semantic: Semantic::new(),
@@ -263,6 +270,7 @@ impl Render for LayerPanel {
         let roots: Vec<NodeId> = self.scene.read(cx).iter_roots().collect();
         let selection = self.selection.clone();
         let scene = self.scene.clone();
+        let thumbs = self.thumbs.clone();
         let weak = cx.entity().downgrade();
         let flip = self.flip.clone();
         let pulses = self.pulses.clone();
@@ -453,13 +461,47 @@ impl Render for LayerPanel {
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, lock),
                     )
-                    // 缩略图占位色块(vello_cpu 缩略图 = M2)
-                    .child(
-                        div()
+                    // CMP-09:真缩略图(canvas::render_node_thumbnail 离屏,
+                    // 内容指纹缓存;内容不变零重渲)。渲染在闭包内,失败回落
+                    // surface_3 底(占位语义,内容绝不丢)。
+                    .child({
+                        let thumbs = thumbs.clone();
+                        let node_id = id;
+                        let (bg, img) = {
+                            let mut cache = thumbs.borrow_mut();
+                            // 节点缺失(竞态/剪枝)→ 占位底,绝不 panic(RB-01)
+                            let updated = scene.node(node_id).map(|node| {
+                                let fp =
+                                    sable_canvas::render::node_content_fingerprint(&node.content);
+                                let entry = cache.entry(node_id).or_insert((u64::MAX, None));
+                                if entry.0 != fp {
+                                    let rgba = sable_canvas::render::render_node_thumbnail(
+                                        scene, node_id, 16,
+                                    );
+                                    let image = rgba.and_then(|buf| {
+                                        sable_canvas::gpui_element::rgba_to_render_image(
+                                            buf, 16, 16,
+                                        )
+                                    });
+                                    *entry = (fp, image);
+                                }
+                                entry.1.clone()
+                            });
+                            match updated {
+                                Some(img) => (colors.surface_3, img),
+                                None => (colors.surface_3, None),
+                            }
+                        };
+                        let base = div()
                             .size(px(ARROW_VISUAL_PX))
                             .rounded(px(RadiusTokens::SM))
-                            .bg(colors.surface_3),
-                    )
+                            .bg(bg)
+                            .overflow_hidden();
+                        match img {
+                            Some(image) => base.child(gpui::img(image).size_full()),
+                            None => base,
+                        }
+                    })
                     // 名字 = 行选择热区(避免与眼睛/锁的事件冲突)
                     .child(
                         div()
