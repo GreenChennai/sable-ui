@@ -63,16 +63,20 @@ pub struct ExportReport {
     /// 下一个渐变 defs id 的序号(内部计数器:单调派生 `g0/g1/…`,
     /// 不外露;G26 起替代可碰撞的"defs 长度+名字节和"派生)。
     grad_next: usize,
+    /// RBT-03:因超过 [`MAX_EXPORT_DEPTH`] 被跳过的节点数(含其整棵子树
+    /// 不入 SVG;>0 即报告可观测,不静默、不崩)。
+    pub depth_exceeded_nodes: usize,
 }
 
 /// 场景 → SVG 字符串 + 导出报告(需要计数口径时用;纯字符串用
 /// [`export_svg`])。
 pub fn export_svg_with_report(scene: &Scene) -> (String, ExportReport) {
+    let _span = tracing::debug_span!("svg_export", nodes = scene.roots.len()).entered();
     let mut defs = String::new();
     let mut body = String::new();
     let mut report = ExportReport::default();
     for &root in &scene.roots {
-        export_node(scene, root, &mut body, &mut defs, &mut report);
+        export_node(scene, root, &mut body, &mut defs, &mut report, 0);
     }
     let defs = if defs.is_empty() {
         String::new()
@@ -90,13 +94,22 @@ pub fn export_svg(scene: &Scene) -> String {
     export_svg_with_report(scene).0
 }
 
+/// RBT-03:导出递归深度上限(与导入侧 `MAX_DEPTH` 同量级;超限子树跳过
+/// 并计入 [`ExportReport::depth_exceeded_nodes`]——结构化可观测,不崩)。
+const MAX_EXPORT_DEPTH: usize = 512;
+
 fn export_node(
     scene: &Scene,
     id: crate::scene::NodeId,
     body: &mut String,
     defs: &mut String,
     report: &mut ExportReport,
+    depth: usize,
 ) {
+    if depth > MAX_EXPORT_DEPTH {
+        report.depth_exceeded_nodes += 1;
+        return;
+    }
     let Some(node) = scene.node(id) else {
         return;
     };
@@ -117,7 +130,7 @@ fn export_node(
                 esc(&node.name)
             ));
             for &child in &node.children {
-                export_node(scene, child, body, defs, report);
+                export_node(scene, child, body, defs, report, depth + 1);
             }
             body.push_str("</g>");
             report.nodes += 1;

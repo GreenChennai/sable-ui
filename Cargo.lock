@@ -5793,6 +5793,7 @@ dependencies = [
  "serde_json",
  "slotmap",
  "thiserror 2.0.21",
+ "tracing",
  "usvg 0.48.1",
 ]
 

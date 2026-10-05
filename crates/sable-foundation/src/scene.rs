@@ -660,18 +660,37 @@ impl Scene {
         }
         let world = parent_xform * node.transform;
         out.push((id, world));
-        for &child in &node.children {
-            self.walk(child, world, out);
+        // RBT-04:显式栈迭代(树经校验 API 构建无环,深度可达十万级;
+        // 递归会栈溢出,显式栈永不)。
+        let mut stack: Vec<(NodeId, Affine)> =
+            node.children.iter().rev().map(|&c| (c, world)).collect();
+        while let Some((cid, cworld)) = stack.pop() {
+            if let Some(cn) = self.nodes.get(cid) {
+                if !cn.visible {
+                    continue;
+                }
+                let cw = cworld * cn.transform;
+                out.push((cid, cw));
+                // 逆序入栈 → LIFO 弹出即原 children 顺序(底→顶)
+                for &cc in cn.children.iter().rev() {
+                    stack.push((cc, cw));
+                }
+            }
         }
     }
 
     /// 递归摘除:先子后父 push(无妨,恢复时按映射重链)。
     fn collect_subtree(&mut self, id: NodeId, out: &mut Vec<(NodeId, Node)>) {
-        if let Some(node) = self.nodes.remove(id) {
-            for &child in &node.children {
-                self.collect_subtree(child, out);
+        // RBT-04:显式栈前序摘除(深度十万级不栈溢出)。恢复按 id 重链,
+        // 顺序无关——见方法上注"先子后父 push(无妨)"。
+        let mut stack: Vec<NodeId> = vec![id];
+        while let Some(cur) = stack.pop() {
+            if let Some(node) = self.nodes.remove(cur) {
+                for &child in &node.children {
+                    stack.push(child);
+                }
+                out.push((cur, node));
             }
-            out.push((id, node));
         }
     }
 
@@ -712,23 +731,29 @@ impl Scene {
     /// 结构化比较:同位置子树逐字段比较(children 按下标配对递归;
     /// 不比较 parent/children 里的具体 id——remove/undo 循环会重映射)。
     fn subtree_eq(&self, a: NodeId, other: &Scene, b: NodeId) -> bool {
-        let (Some(na), Some(nb)) = (self.nodes.get(a), other.nodes.get(b)) else {
-            return false;
-        };
-        na.name == nb.name
-            && na.transform == nb.transform
-            && na.visible == nb.visible
-            && na.locked == nb.locked
-            && na.opacity == nb.opacity
-            && na.blend_mode == nb.blend_mode
-            && na.effects == nb.effects
-            && na.content == nb.content
-            && na.children.len() == nb.children.len()
-            && na
-                .children
-                .iter()
-                .zip(nb.children.iter())
-                .all(|(&ca, &cb)| self.subtree_eq(ca, other, cb))
+        // RBT-04:显式栈成对比较(同位子树逐字段;深树不递归)。
+        let mut stack: Vec<(NodeId, NodeId)> = vec![(a, b)];
+        while let Some((ca, cb)) = stack.pop() {
+            let (Some(na), Some(nb)) = (self.nodes.get(ca), other.nodes.get(cb)) else {
+                return false;
+            };
+            if !(na.name == nb.name
+                && na.transform == nb.transform
+                && na.visible == nb.visible
+                && na.locked == nb.locked
+                && na.opacity == nb.opacity
+                && na.blend_mode == nb.blend_mode
+                && na.effects == nb.effects
+                && na.content == nb.content
+                && na.children.len() == nb.children.len())
+            {
+                return false;
+            }
+            for (&x, &y) in na.children.iter().zip(nb.children.iter()) {
+                stack.push((x, y));
+            }
+        }
+        true
     }
 }
 

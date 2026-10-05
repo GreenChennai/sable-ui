@@ -66,9 +66,9 @@ jobs:
             echo "$changed_src"
             exit 1
           fi
-      - name: test(单线程确定性;并行竞态见 layer_tree/anim 注释)
-        env:
-          RUST_TEST_THREADS: 1
+      # COUP-10/RBT-09:reduced_motion 改 thread_local 后并行测试无竞态,
+      # 解除 RUST_TEST_THREADS=1(2026-10-04 本机串行+并行双绿实测)。
+      - name: test(并行;竞态已由 RBT-09 thread_local 根除)
         run: cargo test --workspace
       - name: build (release)
         run: cargo build --release
@@ -89,6 +89,22 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: check(全 feature)
         run: cargo check --workspace --all-features
+
+  # 公共 API 快照(COUP-02):breaking 变更必须伴随快照更新并升 minor。
+  # 门面 crate(sable)全 feature 面;nightly 是 cargo-public-api 的 rustdoc JSON 要求。
+  public-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-public-api
+      - name: 快照 diff(docs/api-snapshot/sable.txt)
+        run: |
+          cargo public-api -p sable --all-features > docs/api-snapshot/sable.txt
+          if ! git diff --exit-code docs/api-snapshot/sable.txt; then
+            echo "::error::公共 API 变化未同步快照——更新 docs/api-snapshot/sable.txt 并按语义升版本"
+            exit 1
+          fi
 
   # feature 矩阵(07 报告 P1-1):防"默认路径绿、旁路路径烂"。
   # 纯 foundation 面测试(svg/fuzz 冒烟)不依赖 gpui,可在 ubuntu 直接跑;

@@ -35,6 +35,8 @@
 //! 像素求值链路在 sable-paint(分册七):`effects::apply_effects_rgba` 逐条
 //! 应用本模块定义的 [`EffectSpec`],渲染调度见 sable-canvas `render`。
 
+pub mod budget;
+pub mod cancel;
 pub mod command;
 pub mod effects;
 pub mod error;

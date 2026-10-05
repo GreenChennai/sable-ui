@@ -106,6 +106,17 @@
   收口 `sable_canvas::gpui_element::rgba_to_render_image/premultiplied_rgba_to_render_image`
   单点 + TC-GATE-DUP-02 静态门禁(PERF-11,video_editor/story 已迁移,image 直接依赖移除);
   PERF-08 预算测试(本地 #[ignore] 口径)与 PERF-09/10 处置登记 docs/12 §3.5
+- **内核鲁棒性与解耦**(第 8 组):场景遍历 `walk`/`collect_subtree`/`subtree_eq`
+  改**显式栈迭代**(RBT-04,十万级深链不栈溢出,底→顶序不变);SVG 导出深度帽
+  512(`ExportReport::depth_exceeded_nodes` 计数可观测,RBT-03);畸形 `.sable`
+  字节流 proptest 512 例零 panic(RBT-12);命中测试几何不变量 proptest
+  (内部⟺命中/顶优先/锁定跳过,GATE-07);`reduced_motion` 改 **thread_local**
+  (RBT-09/COUP-10:并行测试竞态根除,**CI 解除 RUST_TEST_THREADS=1**);
+  `CancelToken`/`Deadline` 协作式取消原语(RBT-10)+ `MemoryBudget` 分域
+  FIFO 驱逐预算器(RBT-13)+ render_scene/svg/project `tracing` span(RBT-11);
+  行数天花板门禁(2800 行,禁恶化,GATE-02)+ 依赖金字塔 Cargo.toml 真实键
+  解析断言(COUP-01);**公共 API 快照门禁**(COUP-02:docs/api-snapshot/sable.txt
+  + CI nightly cargo-public-api diff job,breaking 变更必须同步快照)
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处

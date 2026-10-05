@@ -37,13 +37,13 @@
 //! 2. `Animated` 的 `*_at(now)` 显式时间版本为主入口,`value()`/`set()`/`is_running()`
 //!    是 `Instant::now()` 的便捷封装(唯一保留的 `Instant::now()`,历史 API)。
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "timeline")]
 pub mod bridge;
 pub mod color;
 pub mod easing;
+pub mod entry;
 pub mod gesture;
 pub mod lerp;
 pub mod scheduler;
@@ -60,19 +60,22 @@ pub use scroll::ScrollPhysics;
 pub use spring::Spring;
 pub use timeline::{AnimationTimeline, Segment, TimelineEntry};
 
-/// A8 全局开关(`false` = 正常动画)。`Relaxed`:单布尔,无跨变量排序需求,
-/// 最终可见即可(下一帧生效)。
-static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
+// A8 开关(`false` = 正常动画)。RBT-09:改 **thread_local**——UI 渲染
+// 与 set_reduced_motion 都发生在主线程,语义不变;测试线程各自隔离,
+// 并行测试不再竞态(COUP-10:解除 CI 单线程的前提)。
+thread_local! {
+    static REDUCED_MOTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-/// 开启/关闭"减弱动态效果"(A8)。幂等;进程级全局,由宿主(dock 层)在
-/// 启动时按系统设置调用。
+/// 开启/关闭"减弱动态效果"(A8)。幂等;宿主(dock 层)在启动时按系统
+/// 设置调用(须在 UI 主线程;跨线程值不共享)。
 pub fn set_reduced_motion(on: bool) {
-    REDUCED_MOTION.store(on, Ordering::Relaxed);
+    REDUCED_MOTION.with(|f| f.set(on));
 }
 
 /// 当前是否处于"减弱动态效果"(A8)。为真时一切 value_at 直通终值。
 pub fn reduced_motion() -> bool {
-    REDUCED_MOTION.load(Ordering::Relaxed)
+    REDUCED_MOTION.with(|f| f.get())
 }
 
 /// 一个动画值:组件持有它,每帧读 [`Animated::value`](分册六 §4.2)。

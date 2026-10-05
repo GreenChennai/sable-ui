@@ -91,6 +91,18 @@ pub fn save_project(path: &Path, scene: &Scene, history: &History) -> CoreResult
 /// 4. 数据体 MessagePack 损坏 → [`CoreError::Deserialization`];
 /// 5. 数据体版本过新 → 同 3(头部损坏但数据体完好时的兜底)。
 pub fn load_project(path: &Path) -> CoreResult<ProjectData> {
+    let started = std::time::Instant::now();
+    let result = load_project_inner(path);
+    tracing::debug!(
+        path = %path.display(),
+        ok = result.is_ok(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "project_load"
+    );
+    result
+}
+
+fn load_project_inner(path: &Path) -> CoreResult<ProjectData> {
     let bytes = fs::read(path)?;
     if bytes.len() < HEADER_LEN {
         return Err(CoreError::Deserialization(format!(

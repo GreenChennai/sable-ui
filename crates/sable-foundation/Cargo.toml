@@ -18,6 +18,9 @@ serde.workspace = true
 rmp-serde.workspace = true
 usvg = { version = "0.48", optional = true }
 thiserror.workspace = true
+# RB-11:关键路径结构化日志(svg/project 长任务的 span 与耗时;非 UI 依赖,
+# foundation 依赖金字塔不受影响)
+tracing.workspace = true
 
 [features]
 # SVG 互通(docs/08 V2.0 T1):usvg 解析/自研序列化;默认关,门禁单测开启

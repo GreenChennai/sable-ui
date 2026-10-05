@@ -168,6 +168,13 @@ pub fn render_scene(
     sink: &mut dyn PaintSink,
     opts: &RenderOpts,
 ) {
+    // RB-11:关键路径结构化日志(节点数/屏幕尺寸;宿主装配 subscriber 才可见)
+    let _span = tracing::debug_span!(
+        "render_scene",
+        screen = ?opts.screen_size,
+        selection = opts.selection.len(),
+    )
+    .entered();
     let vp = viewport.world_to_viewport();
     let size_known = opts.screen_size.0 > 0.0 && opts.screen_size.1 > 0.0;
     let visible = size_known.then(|| visible_world_rect(viewport, opts.screen_size));
