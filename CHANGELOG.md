@@ -124,6 +124,14 @@
   行数天花板门禁(2800 行,禁恶化,GATE-02)+ 依赖金字塔 Cargo.toml 真实键
   解析断言(COUP-01);**公共 API 快照门禁**(COUP-02:docs/api-snapshot/sable.txt
   + CI nightly cargo-public-api diff job,breaking 变更必须同步快照)
+- **高阶组件与打包**(第 9 组,§5.6 批 3):`Badge` 四变体(pill 圆角+caption)、
+  `Card`(hairline+LG 圆角+L2 材质)、`Slider`(受控+拖拽/键盘/双击复位,
+  纯函数状态机 `slider_key`/`value_at_x`)、`ValueOverlay`(L4 浮动数值条);
+  CMP-12 删除空声明 feature `node-graph`;TOK-10 布局助手迁 `layout.rs`
+  (`tokens::h_flex/v_flex` 路径 re-export 兼容);DOC-05 动画 14 项接线状态
+  注记、DOC-06 README 英文段补齐(组件清单/状态/诚实边界)、DOC-07 CI 增
+  MSRV 1.85 校验 job(优于钉 rust-toolchain.toml);修 ci.yml public-api job
+  的 install-action 引用(@v2 + tool 参数)
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处
