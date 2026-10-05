@@ -47,8 +47,10 @@
 // 被拒。
 #![deny(unsafe_code)]
 
+pub mod collapse;
 pub mod error;
 pub mod persistence;
+pub mod theme_bridge;
 #[cfg(feature = "window-backdrop")]
 pub mod window_effects;
 pub mod workspace;
