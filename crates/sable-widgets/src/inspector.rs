@@ -46,7 +46,7 @@ pub enum RowSpec {
         /// 基础步长
         step: f64,
         /// 单位后缀("px"/"°"/"%")
-        unit: &'static str,
+        unit: SharedString,
     },
     /// 颜色行(Solid 域;渐变取首色标预览,完整渐变编辑用 GradientEditor)
     Color {
@@ -87,7 +87,7 @@ struct NumberSlot {
     label: SharedString,
     range: (f64, f64),
     step: f64,
-    unit: &'static str,
+    unit: SharedString,
     field: Entity<NumberField>,
 }
 
@@ -169,11 +169,11 @@ impl InspectorPanel {
                     } => {
                         let prev = old_rows.and_then(|r| r.get(ri)).and_then(|m| match m {
                             RowModel::Number(s) => {
-                                Some((s.label.as_ref(), s.range, s.step, s.unit))
+                                Some((s.label.as_ref(), s.range, s.step, s.unit.as_ref()))
                             }
                             _ => None,
                         });
-                        if number_slot_matches(prev, &label, range, step, unit) {
+                        if number_slot_matches(prev, &label, range, step, &unit) {
                             // 复用:旧实体重定向绑定(焦点保留,拖拽/编辑缓冲取消)
                             if let Some(RowModel::Number(slot)) = old_rows.and_then(|r| r.get(ri)) {
                                 let field = slot.field.clone();
@@ -197,7 +197,7 @@ impl InspectorPanel {
                             NumberField::new(binding)
                                 .range(range.0, range.1)
                                 .step(step)
-                                .unit(unit)
+                                .unit(unit.clone())
                                 .element_id(id)
                         });
                         created += 1;
@@ -420,7 +420,7 @@ mod tests {
                     binding: count_binding,
                     range: (0.0, 100.0),
                     step: 1.0,
-                    unit: "px",
+                    unit: "px".into(),
                 },
                 RowSpec::Color {
                     label: "填充".into(),

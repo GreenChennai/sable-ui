@@ -160,7 +160,7 @@ pub struct NumberField {
     binding: Binding<f64>,
     range: (f64, f64),
     step: f64,
-    unit: &'static str,
+    unit: SharedString,
     /// 拖拽中:窗口 x 起点 + 起始值
     drag: Option<ScrubDrag>,
     /// 文本编辑态(v1.0 真编辑:buffer + 光标;`None` = 展示态)
@@ -187,11 +187,7 @@ pub struct NumberField {
 /// 为 Arc 计数,clone 是引用计数自增,不分配);未命中恰格式化一次。
 /// 键用 `to_bits()`:NaN 载荷与 ±0.0 各自区分,宁可多格式化一次也不误用
 /// 旧文本(0.0 与 -0.0 文本相同,多算一次无碍)。
-fn cached_display(
-    cache: &mut Option<(u64, SharedString)>,
-    value: f64,
-    unit: &'static str,
-) -> SharedString {
+fn cached_display(cache: &mut Option<(u64, SharedString)>, value: f64, unit: &str) -> SharedString {
     let bits = value.to_bits();
     if let Some((cached_bits, text)) = cache
         && *cached_bits == bits
@@ -374,7 +370,7 @@ impl NumberField {
             binding,
             range: (0.0, 100.0),
             step: 1.0,
-            unit: "",
+            unit: SharedString::default(),
             drag: None,
             editing: None,
             focus: None,
@@ -425,8 +421,10 @@ impl NumberField {
     }
 
     /// 单位后缀("px" / "°" / "%")。
-    pub fn unit(mut self, unit: &'static str) -> Self {
-        self.unit = unit;
+    /// 单位后缀(CMP-13:`impl Into<SharedString>`,运行时字符串可用;
+    /// 展示缓存键含值位形单位——单位 builder 后恒定,缓存仍正确)。
+    pub fn unit(mut self, unit: impl Into<SharedString>) -> Self {
+        self.unit = unit.into();
         self
     }
 
@@ -745,7 +743,7 @@ impl Render for NumberField {
             }
             None => {
                 let value = self.binding.get(cx);
-                let text = cached_display(&mut self.display_cache, value, self.unit);
+                let text = cached_display(&mut self.display_cache, value, &self.unit);
                 gpui::div().child(text).into_any_element()
             }
         };

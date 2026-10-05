@@ -27,7 +27,7 @@ fn budget_inspector_spec_build_1000_rows_under_25ms() {
             ),
             range: (0.0, 100.0),
             step: 1.0,
-            unit: "px",
+            unit: "px".into(),
         })
         .collect();
     let sections = [SectionSpec::new("预算", rows)];

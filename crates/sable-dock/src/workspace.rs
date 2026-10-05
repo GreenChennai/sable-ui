@@ -163,7 +163,7 @@ impl WorkspacePresets {
             if !left_panels.is_empty() {
                 area.set_left_dock(
                     tab_group(left_panels, &dock_area, window, cx),
-                    Some(px(260.)),
+                    Some(px(crate::collapse::DEFAULT_LEFT_W as f32)),
                     true,
                     window,
                     cx,
@@ -173,7 +173,7 @@ impl WorkspacePresets {
             if !right_panels.is_empty() {
                 area.set_right_dock(
                     tab_group(right_panels, &dock_area, window, cx),
-                    Some(px(300.)),
+                    Some(px(crate::collapse::DEFAULT_RIGHT_W as f32)),
                     true,
                     window,
                     cx,

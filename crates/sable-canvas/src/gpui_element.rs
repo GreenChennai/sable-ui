@@ -260,7 +260,7 @@ impl SableCanvas {
     ) {
         let cursor_screen = self.to_screen(event.position);
         // 触控板"行"→像素折算系数 24(与 Zed 惯例一致;精确滚动不受影响)
-        let delta_px = event.delta.pixel_delta(px(24.0));
+        let delta_px = event.delta.pixel_delta(px(SCROLL_STEP_PX));
         let delta = KVec2::new(f64::from(delta_px.x), f64::from(delta_px.y));
         input::on_scroll(
             &mut self.viewport,
@@ -271,6 +271,9 @@ impl SableCanvas {
         cx.notify();
     }
 }
+
+/// 滚轮步长 px(G-UI-F:尺寸常量单点)。
+const SCROLL_STEP_PX: f32 = 24.0;
 
 impl Render for SableCanvas {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

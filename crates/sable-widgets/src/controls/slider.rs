@@ -18,6 +18,8 @@ use crate::tokens::SpacingTokens;
 pub const TRACK_H_PX: f32 = 4.0;
 /// 手柄直径(px);行容器 py 外扩后命中 ≥24px(A11Y-03)。
 pub const HANDLE_D_PX: f32 = 14.0;
+/// 行上下命中外扩(G-UI-F:尺寸常量单点)。
+pub const SLIDER_HIT_PAD_PX: f32 = 5.0;
 
 /// 回调形态。
 pub type SliderChangeFn = Rc<dyn Fn(f64, &mut App)>;
@@ -208,7 +210,7 @@ impl Render for Slider {
         let row = div()
             .id(self.id.clone())
             .w_full()
-            .py(px(5.0)) // 命中外扩:5 + 轨道4 + 5 = 14?——手柄 14/2+5 ≥ 24 由 py5+handle14 组成
+            .py(px(SLIDER_HIT_PAD_PX)) // 命中外扩(A11Y-03:pad+手柄 ≥24px 热区)
             .track_focus(&focus)
             .on_key_down(cx.listener(Self::on_key))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))

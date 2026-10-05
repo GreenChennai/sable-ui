@@ -91,7 +91,7 @@ impl Render for NumberSection {
                 NumberField::new(demo_binding(&self.demo, i))
                     .range(range.0, range.1)
                     .step(*step)
-                    .unit(unit)
+                    .unit(*unit)
                     .element_id(ElementId::named_usize("story-number", i))
             });
             rows = rows.child(PropertyRow::new(*label).control(field));

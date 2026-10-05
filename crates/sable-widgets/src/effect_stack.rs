@@ -40,6 +40,9 @@ use gpui::{
 };
 use sable_foundation::effects::{EffectEntry, EffectSpec};
 
+/// 眼睛开关的视觉方块边(G-UI-F 常量单点;命中区另经 hit_slot 扩到 24)。
+const EYE_TOGGLE_VISUAL_PX: f32 = 10.0;
+
 use crate::controls::button::{Button, ButtonSize, button_element};
 use crate::interact::{self, Semantic, SemanticRole, semantic_slot};
 use crate::theme::theme;
@@ -467,7 +470,7 @@ fn eye_toggle(
     // 补白区可点;press 反馈 = 状态即翻,行内小位不做按压底)
     interact::hit_slot(
         div()
-            .size(px(10.0))
+            .size(px(EYE_TOGGLE_VISUAL_PX))
             .rounded(px(RadiusTokens::SM))
             .border_1()
             .border_color(if enabled {

@@ -38,6 +38,12 @@ use crate::tokens::{FONT_SIZE_CAPTION, RadiusTokens, SpacingTokens, v_flex};
 /// 标尺高度(时间码 11px 行高 + 刻度区 + 播放头把手位)。
 pub const RULER_HEIGHT_PX: f32 = 28.0;
 /// 轨道行高(NLE 常规档:clip 36px + 上下留白)。
+/// 播放头把手宽/高(G-UI-F 常量单点)。
+const PLAYHEAD_HANDLE_W_PX: f32 = 8.0;
+const PLAYHEAD_HANDLE_H_PX: f32 = 6.0;
+/// 胶片缩略图条单帧显示宽(SET_CLIP_THUMBS 契约侧同值)。
+const THUMB_TILE_W_PX: f32 = 52.0;
+
 pub const TRACK_HEIGHT_PX: f32 = 44.0;
 /// clip 拖拽的吸附容差(屏幕像素,分册四 §8)。
 pub const SNAP_TOLERANCE_PX: f64 = 8.0;
@@ -396,8 +402,8 @@ impl Render for TimelineView {
                 .absolute()
                 .left(pxv((playhead_x - 4.0).max(0.0)))
                 .top(px(0.0))
-                .w(px(8.0))
-                .h(px(6.0))
+                .w(px(PLAYHEAD_HANDLE_W_PX))
+                .h(px(PLAYHEAD_HANDLE_H_PX))
                 .rounded(px(2.0))
                 .bg(colors.danger),
         );
@@ -445,7 +451,7 @@ impl Render for TimelineView {
                                 |frame| {
                                     img(frame)
                                         .h_full()
-                                        .w(px(52.0))
+                                        .w(px(THUMB_TILE_W_PX))
                                         .flex_shrink_0()
                                         .object_fit(ObjectFit::Cover)
                                 },

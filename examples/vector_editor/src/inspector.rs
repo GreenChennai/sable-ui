@@ -133,7 +133,7 @@ fn number_row(
         ),
         range: (-1.0e5, 1.0e5),
         step: 1.0,
-        unit: "px",
+        unit: "px".into(),
     }
 }
 

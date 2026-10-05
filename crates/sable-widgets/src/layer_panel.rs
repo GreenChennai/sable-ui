@@ -37,6 +37,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// 眼睛/锁图标的视觉边(G-UI-F 常量单点;命中区另扩 24)。
+const EYE_VISUAL_PX: f32 = 10.0;
+/// 折叠箭头的视觉边(同上)。
+const ARROW_VISUAL_PX: f32 = 16.0;
+
 use gpui::{
     App, Context, ElementId, Entity, FocusHandle, Hsla, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement,
@@ -418,7 +423,7 @@ impl Render for LayerPanel {
                     .child(
                         interact::hit_slot(
                             div()
-                                .size(px(10.0))
+                                .size(px(EYE_VISUAL_PX))
                                 .rounded(px(RadiusTokens::SM))
                                 .border_1()
                                 .border_color(colors.text_secondary)
@@ -435,7 +440,7 @@ impl Render for LayerPanel {
                     .child(
                         interact::hit_slot(
                             div()
-                                .size(px(10.0))
+                                .size(px(EYE_VISUAL_PX))
                                 .rounded(px(RadiusTokens::SM))
                                 .border_1()
                                 .border_color(colors.text_disabled)
@@ -451,7 +456,7 @@ impl Render for LayerPanel {
                     // 缩略图占位色块(vello_cpu 缩略图 = M2)
                     .child(
                         div()
-                            .size(px(16.0))
+                            .size(px(ARROW_VISUAL_PX))
                             .rounded(px(RadiusTokens::SM))
                             .bg(colors.surface_3),
                     )

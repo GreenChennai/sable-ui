@@ -134,6 +134,11 @@
   的 install-action 引用(@v2 + tool 参数);**MSRV 修正为 1.88**(MSRV job 实证:
   锁定的 vello 0.10/parley 0.11 家族要求 1.88,1.85 声明与依赖树矛盾;
   workspace rust-version/CI/README 同步)
+- **G-UI-F/J 收口 + CMP-13**:`gate_ui_f_j.rs`——裸魔法尺寸扫描(px 数字
+  字面量,px(0..2) hairline/测试断言/cfg(test) 段豁免;违例 9 处抽 *_PX 常量)
+  + feature 门控一致性(逐 crate features↔lib.rs cfg 交叉核对);
+  `NumberField::unit`/`RowSpec::Number.unit` 改 `SharedString`
+  (CMP-13,builder `impl Into` 兼容旧调用,展示缓存改借用入参)
 - 工程面:新 stable clippy(1.99 `collapsible_if` 扩展 if-let 嵌套捕获、
   `chunks_exact` 常量块建议 `as_chunks`)全仓批修(30+ 处 let-chain 化,
   行为零变化,718 测试全绿);ci.yml 新增 `msrv` 与 `public-api` 两个 job
