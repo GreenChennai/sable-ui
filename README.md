@@ -111,7 +111,7 @@ video editing, on Windows first.
   dependency-pyramid one-way assertion, public-API snapshot diff, line-count
   ceiling, depth-capped SVG export & iterative scene walks (100k-deep trees),
   corrupt-project fuzzing, and per-domain memory budgeting.
-- **Status**: v4.1-unreleased. MSRV 1.85 (Rust 2024). Windows first; wgpu
+- **Status**: v4.1-unreleased. MSRV 1.88 (Rust 2024; vello/parley lockfile). Windows first; wgpu
   backends keep Linux in reach. Known gaps (honest): screen-reader semantics
   wait on the gpui accessibility tree (TD-01); GPU effect passes and the
   texture-atlas cache remain on the roadmap; IME walkthroughs need real

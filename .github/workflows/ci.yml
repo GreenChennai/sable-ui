@@ -114,8 +114,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
-      - name: check(MSRV 1.85;仅 lib 面,dev-deps 不锁旧版)
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: check(MSRV 1.88;仅 lib 面,dev-deps 不锁旧版)
         run: cargo check -j 2 --workspace --all-features --lib
 
   # feature 矩阵(07 报告 P1-1):防"默认路径绿、旁路路径烂"。

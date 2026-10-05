@@ -17,7 +17,9 @@ members = [
 [workspace.package]
 version = "4.0.0"
 edition = "2024"
-rust-version = "1.85"
+# MSRV 实测=1.88:vello 0.10/parley 0.11 家族(锁定策略,升级走"升级窗口")
+# 要求 1.88;1.85 的声明与锁定依赖树矛盾(2026-10-05 MSRV job 实证)。
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/GreenChennai/sable-ui"
 authors = ["GreenChennai"]

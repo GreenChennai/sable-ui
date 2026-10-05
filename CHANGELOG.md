@@ -131,7 +131,9 @@
   (`tokens::h_flex/v_flex` 路径 re-export 兼容);DOC-05 动画 14 项接线状态
   注记、DOC-06 README 英文段补齐(组件清单/状态/诚实边界)、DOC-07 CI 增
   MSRV 1.85 校验 job(优于钉 rust-toolchain.toml);修 ci.yml public-api job
-  的 install-action 引用(@v2 + tool 参数)
+  的 install-action 引用(@v2 + tool 参数);**MSRV 修正为 1.88**(MSRV job 实证:
+  锁定的 vello 0.10/parley 0.11 家族要求 1.88,1.85 声明与依赖树矛盾;
+  workspace rust-version/CI/README 同步)
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处
