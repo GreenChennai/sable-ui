@@ -19,7 +19,8 @@
 //!   `Window::focus_next`,按渲染序的 tab stop 环游) | ✅ |
 //! | 失焦(点击别处) | 渲染帧检测 `editing && !focused` → 自动提交(与 Enter 同路) | ✅ |
 //! | IME | [`EntityInputHandler`] 实现挂 `track_focus` 元素,`Window::handle_input`
-//!   在 paint 阶段注册(见下方"IME 钩子") | ✅ 接口全通 |
+//!   在 paint 阶段注册(见下方"IME 钩子");文本事件经
+//!   [`crate::input_method::InputMethodAdapter`] 单点路由(A11Y-08) | ✅ 接口全通(组合语义 = M2) |
 //!
 //! # 禁用态(TOK-07,报告 §5.9)
 //!
@@ -45,16 +46,23 @@
 //! 命令 `merge` 语义兜底(分册三 §2 拖动范式)。widgets 层不做 16ms 节流,
 //! 值未变化时跳过 set(PartialEq 短路)。
 //!
-//! # IME 钩子(2026-10 gpui 0.2.2 源码核实)
+//! # IME 钩子(2026-10 gpui 0.2.2 源码核实;A11Y-08 第 4 组收口)
 //!
 //! gpui 0.2.2 **有** `InputHandler` 平台文本输入 trait(`src/platform.rs:995`)
 //! 与视图侧 `EntityInputHandler`(`src/input.rs`)+ paint 阶段注册点
 //! `Window::handle_input`(`src/window.rs:3403`,内部断言 Paint 阶段——
 //! 故经 `canvas()` 元素的 paint 闭包挂载,而非 render/prepaint)。本组件
-//! 实现全部 8 个方法:中文/scientific 输入法文本经
-//! `replace_text_in_range` 进 buffer;候选窗定位返回控件 bounds
-//! (字符级定位 = M2;composing 高亮未追踪,预提交文本直插 buffer——
-//! **真机验证 = TG-03 项**,Windows DirectWrite IMM32 路径需真机回归)。
+//! 实现全部 8 个方法,文本事件**全部经
+//! [`crate::input_method::InputMethodAdapter`] 单点路由**——UTF-16 ↔ 字节
+//! 换算、区间归一、组合/提交分支与 TextField 同源(该模块 doc),本文件
+//! 不再持有第二份(旧私有 `utf16_to_byte`/`byte_to_utf16` 副本已删)。
+//!
+//! **真实边界(如实,不虚标)**:编辑器 v0.1 无选区、**组合(marked)区间
+//! 不追踪**——组合文本直插 buffer(Adapter 的 `ime_composition_update`
+//! 落 [`EditBuffer::insert`]),组合取消/组合态高亮在 NumberField 上
+//! **不可用**;`marked_text_range` 恒 `None`。中文输入法的候选/提交链路 =
+//! TC-A11Y-IME-01 **真机走查**(走查表 `docs/a11y-notes.md §5`,全部 ☐
+//! 待真机);完整组合语义随 NumberField 编辑器重构(M2)接入。
 //!
 //! # 焦点系统(gpui 0.2.2 源码核实)
 //!
@@ -90,7 +98,10 @@ use gpui::{
 
 use crate::anim::lerp_hsla;
 use crate::binding::Binding;
-use crate::interact::{self, HoverState};
+use crate::input_method::{
+    ImeEditTarget, ImeEvent, InputMethodAdapter, UTF16_ADAPTER, byte_to_utf16,
+};
+use crate::interact::{self, HoverState, Semantic, SemanticRole, semantic_slot};
 use crate::theme::theme;
 use crate::tokens::{
     ColorTokens, HEIGHT_COMPACT, MONO_FONT, RadiusTokens, SpacingTokens, TextSize, control_height,
@@ -164,6 +175,8 @@ pub struct NumberField {
     /// 禁用态(TOK-07):真 = 交互全门控(拖拽/滚轮/键盘/悬停动画)且视觉
     /// 走 [`disabled_visual`](仅前景降级,容器不变)
     disabled: bool,
+    /// A11Y-02 语义槽(可访问名;role 默认 TextField——编辑态即文本输入)
+    semantic: Semantic,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -344,6 +357,7 @@ impl NumberField {
             hover: HoverState::new(),
             element_id: None,
             disabled: false,
+            semantic: Semantic::new(),
         }
     }
 
@@ -648,6 +662,23 @@ impl NumberField {
     }
 }
 
+// A11Y-02 语义槽(label/role/semantic 三件;role 默认 TextField——编辑态
+// 即文本输入语义)。
+semantic_slot!(NumberField);
+
+impl NumberField {
+    /// 解析语义(A11Y-02):显式 `.label(...)` 优先;role 默认 TextField。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = Semantic::new();
+        let sem = match self.semantic.label() {
+            Some(text) => sem.with_label(text.clone()),
+            None => sem,
+        };
+        sem.with_role(self.semantic.role().unwrap_or(SemanticRole::TextField))
+    }
+}
+
 impl Render for NumberField {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.commit_if_blurred(window, cx);
@@ -797,12 +828,73 @@ impl Render for NumberField {
     }
 }
 
+/// 控件侧回调面(Adapter 路由的落点;A11Y-08 单点收敛):
+///
+/// - `ime_editable` = **编辑会话存在**(`editing.is_some()`)——禁用门控
+///   在组件入口先行(见 `replace_text_in_range`),此处不再重复判定;
+/// - `ime_composition_range()` 恒 `None`:组合区间不追踪(模块 doc"真实
+///   边界"),故 Adapter 的组合事件全部落直插路径——这是如实声明的能力
+///   边界,不是遗漏;
+/// - 无选区(选区 = M2),`ime_selection_range()` 恒 `None`。
+impl ImeEditTarget for NumberField {
+    fn ime_text(&self) -> Option<&str> {
+        Some(self.editing.as_ref()?.text())
+    }
+
+    fn ime_editable(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    fn ime_caret(&self) -> Option<usize> {
+        Some(self.editing.as_ref()?.caret())
+    }
+
+    fn ime_selection_range(&self) -> Option<std::ops::Range<usize>> {
+        None // 选区 = M2(EditBuffer 已留扩展位)
+    }
+
+    fn ime_composition_range(&self) -> Option<std::ops::Range<usize>> {
+        None // 组合区间不追踪(真实边界,模块 doc)
+    }
+
+    fn ime_insert(&mut self, text: &str) {
+        if let Some(buffer) = self.editing.as_mut() {
+            buffer.insert(text);
+        }
+    }
+
+    fn ime_replace_range(&mut self, range: std::ops::Range<usize>, text: &str) {
+        if let Some(buffer) = self.editing.as_mut() {
+            buffer.replace_range(range, text);
+        }
+    }
+
+    fn ime_composition_update(&mut self, new_text: &str, _caret_in_new_utf16: Option<usize>) {
+        // 直插语义(v0.1 边界):组合文本不追踪 marked,光标推进插入文本
+        self.ime_insert(new_text);
+    }
+
+    fn ime_composition_commit(&mut self, final_text: &str) {
+        self.ime_insert(final_text);
+    }
+
+    fn ime_composition_cancel(&mut self) -> bool {
+        false // 无组合区间可取消(边界同上)
+    }
+
+    fn ime_unmark(&mut self) -> bool {
+        false // 无标记可解除
+    }
+}
+
 /// IME / 平台文本输入(gpui 0.2.2 `EntityInputHandler`,见模块 doc"IME 钩子")。
 ///
-/// 范围语义:trait 文档以 **UTF-16** 计;数值 buffer 全 ASCII 时 UTF-16 下标
-/// 与字节下标一致,含 CJK 的中间态经 [`utf16_to_byte`](纯函数)换算。
-/// composing(预提交)文本 v0.1 直插 buffer、不追踪 marked 区间——真机
-/// 回归(TG-03)若发现双写,再引入 marked 追踪。
+/// 文本事件经 [`UTF16_ADAPTER`](crate::input_method 单点)路由:trait 文档
+/// 以 **UTF-16** 计,数值 buffer 全 ASCII 时 UTF-16 下标与字节下标一致,
+/// 含 CJK 的中间态由 Adapter 统一换算(本文件无第二份换算)。composing
+/// (预提交)文本 v0.1 直插 buffer、不追踪 marked 区间——真机走查
+/// (TC-A11Y-IME-01,`docs/a11y-notes.md §5`)若发现双写,再引入 marked
+/// 追踪(随 M2 编辑器重构)。
 impl EntityInputHandler for NumberField {
     fn text_for_range(
         &mut self,
@@ -811,13 +903,10 @@ impl EntityInputHandler for NumberField {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let buffer = self.editing.as_ref()?;
-        let text = buffer.text();
-        let start = utf16_to_byte(text, range_utf16.start)?;
-        let end = utf16_to_byte(text, range_utf16.end)?;
+        let (text, adjusted) = UTF16_ADAPTER.text_for_range_utf16(self, range_utf16)?;
         // adjusted_range 按 trait 契约回 UTF-16 口径
-        adjusted_range.replace(byte_to_utf16(text, start)..byte_to_utf16(text, end));
-        Some(text[start..end].to_string())
+        adjusted_range.replace(adjusted);
+        Some(text)
     }
 
     fn selected_text_range(
@@ -826,13 +915,9 @@ impl EntityInputHandler for NumberField {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<gpui::UTF16Selection> {
-        // v0.1 无选择区间:光标处空选择(IME 由此定位插入点)
-        let buffer = self.editing.as_ref()?;
-        let caret = byte_to_utf16(buffer.text(), buffer.caret());
-        Some(gpui::UTF16Selection {
-            range: caret..caret,
-            reversed: false,
-        })
+        // 无编辑态 = None;编辑态无选区 = 光标处空选择(IME 由此定位插入点)
+        let (range, reversed) = UTF16_ADAPTER.selection_utf16(self)?;
+        Some(gpui::UTF16Selection { range, reversed })
     }
 
     fn marked_text_range(
@@ -840,7 +925,13 @@ impl EntityInputHandler for NumberField {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<std::ops::Range<usize>> {
-        None // composing 区间未追踪(模块 doc:TG-03 真机项)
+        // 组合区间不追踪(真实边界,模块 doc;TC-A11Y-IME-01 真机项)→ None
+        UTF16_ADAPTER.marked_range_utf16(self)
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        // 无 marked 区间需要解除(模块 doc);Adapter Unmark 事件 no-op
+        UTF16_ADAPTER.route(self, ImeEvent::Unmark);
     }
 
     fn replace_text_in_range(
@@ -850,28 +941,23 @@ impl EntityInputHandler for NumberField {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.disabled {
+            // TOK-07 对齐:禁用即交互全门控,IME 路径同样拒收。(收敛前此
+            // 路径无门控——如实注明的行为修正,非兼容面;可编辑态语义不变)
+            return;
+        }
         // 平台未先经过 begin_editing 就发文本(极路径):以当前值播种 buffer
         if self.editing.is_none() {
             let value = self.binding.get(cx);
             self.editing = Some(EditBuffer::new(&format_value(value)));
         }
-        let Some(buffer) = self.editing.as_mut() else {
-            return;
-        };
-        match range_utf16 {
-            Some(range) => {
-                let (start, end) = (
-                    utf16_to_byte(buffer.text(), range.start).unwrap_or(buffer.caret()),
-                    utf16_to_byte(buffer.text(), range.end).unwrap_or(buffer.caret()),
-                );
-                let (start, end) = (start.min(end), start.max(end));
-                buffer.replace_range(start..end, text);
-            }
-            None => {
-                buffer.insert(text); // 无范围 = 在光标处插入
-            }
+        // None 区间 + 无组合(EditBuffer 恒无组合)→ Adapter 落光标处插入;
+        // Some 区间 → Adapter 归一后区间替换。与收敛前行为一致(极路径播种
+        // 保留),仅路由/换算收敛到单点。
+        let applied = UTF16_ADAPTER.route(self, ImeEvent::Commit { range_utf16, text });
+        if applied {
+            cx.notify();
         }
-        cx.notify();
     }
 
     fn replace_and_mark_text_in_range(
@@ -879,15 +965,30 @@ impl EntityInputHandler for NumberField {
         range_utf16: Option<std::ops::Range<usize>>,
         new_text: &str,
         _new_selected_range: Option<std::ops::Range<usize>>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // composing 文本直插(不追踪 marked);最终提交再走 replace_text_in_range
-        self.replace_text_in_range(range_utf16, new_text, window, cx);
-    }
-
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        // 无 marked 区间需要解除(模块 doc:TG-03)
+        if self.disabled {
+            return; // 同 replace_text_in_range(TOK-07 对齐)
+        }
+        if self.editing.is_none() {
+            let value = self.binding.get(cx);
+            self.editing = Some(EditBuffer::new(&format_value(value)));
+        }
+        // composing 文本直插(不追踪 marked,组合内光标偏移不适用——直插后
+        // 光标落插入文本之后);最终提交再走 replace_text_in_range。恒
+        // CompositionBegin:组合区间不追踪,"更新"语义由直插覆盖。
+        let applied = UTF16_ADAPTER.route(
+            self,
+            ImeEvent::CompositionBegin {
+                delete_range_utf16: range_utf16,
+                new_text,
+                caret_in_new_utf16: None,
+            },
+        );
+        if applied {
+            cx.notify();
+        }
     }
 
     fn bounds_for_range(
@@ -920,30 +1021,8 @@ fn single_char(key: &str) -> Option<char> {
     chars.next().is_none().then_some(ch)
 }
 
-/// UTF-16 下标 → char 边界字节下标(越界返回 `None`;落在多单元字符中间
-/// 时吸附到该字符的**后边界**;纯函数,IME 路径单测)。
-fn utf16_to_byte(text: &str, utf16_index: usize) -> Option<usize> {
-    let mut utf16 = 0usize;
-    for (byte, ch) in text.char_indices() {
-        if utf16 >= utf16_index {
-            return Some(byte);
-        }
-        utf16 += ch.len_utf16();
-        if utf16 > utf16_index {
-            // 下标落在本字符内部(如代理对中间):取其后边界
-            return Some(byte + ch.len_utf8());
-        }
-    }
-    (utf16 == utf16_index).then_some(text.len())
-}
-
-/// char 边界字节下标 → UTF-16 下标(越界钳到末尾;纯函数)。
-fn byte_to_utf16(text: &str, byte_index: usize) -> usize {
-    text[..byte_index.min(text.len())]
-        .chars()
-        .map(char::len_utf16)
-        .sum()
-}
+// UTF-16 ↔ 字节下标换算已收敛到 crate::input_method 单点(A11Y-08:
+// utf16_to_byte / byte_to_utf16,旧私有副本已删;测试经 use 引入)。
 
 /// 修饰键倍率(纯函数):**Alt 优先 ×0.1,其次 Shift ×10**(上游 NumField
 /// docs/upstream/02 §4.2 的 scrubby 公式同款)。
@@ -995,6 +1074,7 @@ pub fn format_value(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input_method::utf16_to_byte;
 
     /// TOK-07:builder 存位 + 禁用视觉单点(容器 = 静止态容器、前景 =
     /// text_disabled;TC-TOK-DISABLED-01 的组件侧主体验收在

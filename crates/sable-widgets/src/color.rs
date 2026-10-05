@@ -23,13 +23,14 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Bounds, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, Styled, Window, canvas, div,
-    point, px,
+    App, Bounds, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, Styled, Window,
+    canvas, div, point, px,
 };
 use sable_foundation::scene::Rgba8;
 
 use crate::binding::Binding;
+use crate::interact::{self, Semantic, SemanticRole, semantic_slot};
 use crate::theme::theme;
 use crate::tokens::{
     RadiusTokens, SpacingTokens, hsl_to_rgb, hsla_from_rgba8, lerp_rgba8, rgb_to_hsl, v_flex,
@@ -57,7 +58,12 @@ pub type ClickFn = Rc<dyn Fn(&mut App)>;
 pub struct ColorWell {
     color: Rgba8,
     on_click: Option<ClickFn>,
+    /// A11Y-02 语义槽(可访问名;role 默认 ColorWell)
+    semantic: Semantic,
 }
+
+// A11Y-02 语义槽(label/role/semantic 三件):色井可访问名缺省回落"颜色"。
+semantic_slot!(ColorWell);
 
 impl ColorWell {
     /// 展示一个 0~255 RGBA 色块。
@@ -65,6 +71,7 @@ impl ColorWell {
         ColorWell {
             color,
             on_click: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -73,11 +80,26 @@ impl ColorWell {
         self.on_click = Some(Rc::new(f));
         self
     }
+
+    /// 解析语义(A11Y-02):显式 `.label(...)` 优先,缺省 = "颜色";
+    /// role 默认 ColorWell。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = match self.semantic.label() {
+            Some(text) => Semantic::new().with_label(text.clone()),
+            None => Semantic::new().with_label("颜色"),
+        };
+        sem.with_role(self.semantic.role().unwrap_or(SemanticRole::ColorWell))
+    }
 }
 
 impl gpui::RenderOnce for ColorWell {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = &theme(cx).colors;
+        // A11Y-03:24px 方块 = 命中达标(XL 档);A11Y-06:可点击时 hover
+        // 提描边,按下即触发(取色即时开窗 = press 反馈,RenderOnce 不挂
+        // active 伪类);不可点(无回调)则纯展示、无任何交互态。
+        let hover_border = colors.border_strong;
         div()
             .size(px(SpacingTokens::XL)) // 24px 方块
             .rounded(px(RadiusTokens::SM))
@@ -85,9 +107,11 @@ impl gpui::RenderOnce for ColorWell {
             .border_color(colors.border_subtle)
             .bg(hsla_from_rgba8(self.color))
             .when_some(self.on_click, |el, click| {
-                el.on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _win, cx| {
-                    click(cx);
-                })
+                el.cursor_pointer()
+                    .hover(move |s| s.border_color(hover_border))
+                    .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _win, cx| {
+                        click(cx);
+                    })
             })
     }
 }
@@ -108,6 +132,10 @@ pub struct ColorWheel {
     /// 环/方盘的元素 bounds(prepaint 回写;命中换算基准)
     ring_bounds: Rc<Cell<Bounds<Pixels>>>,
     square_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// A11Y-01:键盘调色焦点(←→ 色相、↑↓ 明度,状态机 = [`color_step`])
+    focus: Option<FocusHandle>,
+    /// A11Y-02 语义槽(可访问名;role 默认 ColorPicker)
+    semantic: Semantic,
 }
 
 impl ColorWheel {
@@ -118,6 +146,8 @@ impl ColorWheel {
             drag: None,
             ring_bounds: Rc::new(Cell::new(Bounds::default())),
             square_bounds: Rc::new(Cell::new(Bounds::default())),
+            focus: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -202,19 +232,57 @@ impl ColorWheel {
     fn on_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         self.drag = None;
     }
+
+    /// 键盘调色(A11Y-01):←→ = 色相巡环、↑↓ = 明度(Shift 细档);状态机
+    /// = [`color_step`] 纯函数,修改经 binding 上报(与拖拽同一通道)。
+    fn on_color_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let fine = event.keystroke.modifiers.shift;
+        if let Some(next) = color_step(self.binding.get(cx), &event.keystroke.key, fine) {
+            if next != self.binding.get(cx) {
+                self.binding.set(next, cx);
+                cx.notify();
+            }
+        }
+    }
+}
+
+// A11Y-02 语义槽:可访问名缺省"颜色轮"、role 缺省 ColorPicker。
+semantic_slot!(ColorWheel);
+
+impl ColorWheel {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省 =
+    /// ("颜色轮", ColorPicker)。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = match self.semantic.label() {
+            Some(_) => self.semantic.clone(),
+            None => self.semantic.clone().with_label("颜色轮"),
+        };
+        let role = sem.role().unwrap_or(SemanticRole::ColorPicker);
+        sem.with_role(role)
+    }
 }
 
 impl Render for ColorWheel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         let (handle_color, handle_outline) = (t.canvas.anchor, t.canvas.selection);
         let current = self.binding.get(cx);
         let (hue, sat, val) = hsv_split(current);
         let ring_bounds = self.ring_bounds.clone();
         let square_bounds = self.square_bounds.clone();
+        // A11Y-01:键盘调色焦点(容器级 track_focus + tab_stop)+ 焦点环
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let focused = focus.is_focused(window);
 
-        v_flex()
+        let mut root = v_flex()
+            .relative()
             .gap(px(SpacingTokens::SM))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(Self::on_color_key))
             // —— 色相环 ——
             .child(
                 div()
@@ -286,7 +354,11 @@ impl Render for ColorWheel {
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up)),
             )
             // mouse move 挂在根容器:拖动中鼠标移出子元素仍持续收事件
-            .on_mouse_move(cx.listener(Self::on_move))
+            .on_mouse_move(cx.listener(Self::on_move));
+        if focused {
+            root = root.children(interact::focus_ring(t.colors.accent, RadiusTokens::MD));
+        }
+        root
     }
 }
 
@@ -422,6 +494,42 @@ fn paint_circle(
 
 // —— 纯函数(单测覆盖)——
 
+/// 键盘调色粗档(HSV 分量步长,1/255 域;Shift 细档 = 1)。
+pub const COLOR_STEP_COARSE: f32 = 8.0;
+/// 键盘调色细档(Shift;1/255 域)。
+pub const COLOR_STEP_FINE: f32 = 1.0;
+/// 键盘调色色相步长(度;←/→ 巡环)。
+pub const COLOR_HUE_STEP_DEG: f32 = 8.0;
+
+/// 键盘调色步进(纯函数,A11Y-01 色轮入 Tab 序的导航语义):←/→ = 色相
+/// ∓/± [`COLOR_HUE_STEP_DEG`]°(色相环巡,取模 1.0);↑/↓ = 明度 ±
+/// (`fine` = Shift 细档 1,粗档 8;域 0..1)。其余键 `None`。饱和度步进
+/// 属方盘拖拽语义,键盘不代管(如实边界)。
+#[must_use]
+pub fn color_step(color: Rgba8, key: &str, fine: bool) -> Option<Rgba8> {
+    let step = if fine {
+        COLOR_STEP_FINE
+    } else {
+        COLOR_STEP_COARSE
+    } / 255.0;
+    let (h, s, v) = hsv_split(color);
+    match key {
+        "left" => Some(hsv_join(
+            (h - COLOR_HUE_STEP_DEG / 360.0).rem_euclid(1.0),
+            s,
+            v,
+        )),
+        "right" => Some(hsv_join(
+            (h + COLOR_HUE_STEP_DEG / 360.0).rem_euclid(1.0),
+            s,
+            v,
+        )),
+        "up" => Some(hsv_join(h, s, (v + step).min(1.0))),
+        "down" => Some(hsv_join(h, s, (v - step).max(0.0))),
+        _ => None,
+    }
+}
+
 /// 元素局部坐标 → 色相 [0,1):沿屏幕逆时针(y 向下,取 -dy),
 /// 与 [`paint_hue_ring`] 的扇形角度定义一致(右 = 0,上 = 0.25)。
 pub fn hue_at(local: (f32, f32), center: (f32, f32)) -> f32 {
@@ -543,6 +651,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A11Y-01 色轮键盘导航(color_step 纯函数):←→ 色相巡环、↑↓ 明度
+    /// 粗/细档、其余键无意图;端点钳制不越界。
+    #[test]
+    fn color_step_arrows_hue_and_value() {
+        // 色相仅对有饱和度的颜色有意义(灰色 s=0,色相无定义,roundtrip 归 0)
+        let base = [200, 40, 60, 255];
+        let (h0, s0, v0) = hsv_split(base);
+        // → :色相 +8°
+        // 注:hsv_join → hsv_split 是近似 roundtrip(通道 ±2/255,见
+        // hsv_roundtrip 容差),折算色相误差可达数度——断言用 0.03(≈10.8°)
+        // 容差,方向与量级由 ±8° 步长远大于误差保证。
+        // 环距(0..0.5):wrap 量取最短弧,近 0 即步进正确
+        let arc = |d: f32| d.rem_euclid(1.0).min(1.0 - d.rem_euclid(1.0));
+        let right = color_step(base, "right", false).expect("right 有意图");
+        let (h1, s1, v1) = hsv_split(right);
+        assert!(
+            arc(h1 - h0 - COLOR_HUE_STEP_DEG / 360.0) < 0.03,
+            "色相 +8°(roundtrip 容差内),得 {}",
+            arc(h1 - h0 - COLOR_HUE_STEP_DEG / 360.0)
+        );
+        assert!((s1 - s0).abs() < 0.05 && (v1 - v0).abs() < 0.05, "只动色相");
+        // ← :色相 -8°(巡环)
+        let left = color_step(base, "left", false).expect("left 有意图");
+        let (h2, _, _) = hsv_split(left);
+        assert!(
+            arc(h2 - h0 + COLOR_HUE_STEP_DEG / 360.0) < 0.03,
+            "色相 -8°(roundtrip 容差内),得 {}",
+            arc(h2 - h0 + COLOR_HUE_STEP_DEG / 360.0)
+        );
+        // ↑ :明度升;↓ :明度降(粗档 8/255)
+        let up = color_step(base, "up", false).expect("up 有意图");
+        let (_, _, v_up) = hsv_split(up);
+        assert!(
+            (v_up - v0 - COLOR_STEP_COARSE / 255.0).abs() < 1e-3,
+            "明度 +8/255"
+        );
+        let down = color_step(base, "down", false).expect("down 有意图");
+        let (_, _, v_down) = hsv_split(down);
+        assert!(
+            (v_down - v0 + COLOR_STEP_COARSE / 255.0).abs() < 1e-3,
+            "明度 -8/255"
+        );
+        // Shift 细档 = 1/255
+        let fine = color_step(base, "up", true).expect("fine 有意图");
+        let (_, _, v_fine) = hsv_split(fine);
+        assert!(
+            (v_fine - v0 - COLOR_STEP_FINE / 255.0).abs() < 1e-3,
+            "细档 1/255"
+        );
+        // 明度端点钳制:白再升不越界、黑再降不越界
+        let white = [255, 255, 255, 255];
+        assert_eq!(color_step(white, "up", false), Some(white));
+        let black = [0, 0, 0, 255];
+        assert_eq!(color_step(black, "down", false), Some(black));
+        // 其余键无意图
+        assert_eq!(color_step(base, "enter", false), None);
+        assert_eq!(color_step(base, "a", false), None);
     }
 
     #[test]

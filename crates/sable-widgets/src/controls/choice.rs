@@ -59,8 +59,8 @@ use crate::anim::{Animated, Easing, lerp_hsla};
 use crate::interact::{self, HoverState, InteractState, disabled_foreground, state_layer};
 use crate::theme::theme;
 use crate::tokens::{
-    ColorTokens, ELEVATION_SHADOW_TINT, HEIGHT_DEFAULT, RadiusTokens, SpacingTokens, TextSize,
-    UI_FONT, contrast_ratio, control_height, h_flex,
+    ColorTokens, HEIGHT_DEFAULT, RadiusTokens, SpacingTokens, TextSize, UI_FONT, contrast_ratio,
+    control_height, h_flex,
 };
 
 // ---------------------------------------------------------------------------
@@ -87,16 +87,6 @@ const SWITCH_TRACK_H_PX: f32 = 16.0;
 const SWITCH_KNOB_D_PX: f32 = 12.0;
 /// Radio 圆点满径(px;选中进度 1.0 时)。
 const RADIO_DOT_D_PX: f32 = 8.0;
-/// 焦点环 accent 描边宽(px,报告 §5.3.3:focus 1.5)。
-const RING_BORDER_PX: f32 = 1.5;
-/// 焦点环外扩(px,报告 §5.3.3:accent 环在控件外缘之外)。
-const RING_OUTSET_PX: f32 = 2.5;
-/// 焦点环内侧隔离环外扩(px):贴控件外缘 1px。
-const RING_ISOLATION_OUTSET_PX: f32 = 1.0;
-/// 焦点环内侧隔离环不透明度(报告 §5.3.3 内侧 40% 隔离;色 =
-/// [`ELEVATION_SHADOW_TINT`],alpha 经元素 opacity 落地,无颜色字面量)。
-const RING_ISOLATION_OPACITY: f32 = 0.4;
-
 /// 选择控件变体(组件渲染与键盘意图的共同参数)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChoiceKind {
@@ -275,33 +265,11 @@ pub fn hit_height() -> f32 {
     )
 }
 
-/// 焦点环两层(报告 §5.3.3,A11Y 批次的组件侧落点;choice/tabs 共用):
-/// 内层 = 贴控件外缘 1px 黑 40% 隔离环([`ELEVATION_SHADOW_TINT`] + 元素
-/// opacity),外层 = accent 1.5px 环。两层均为绝对定位描边 div,由调用方
-/// 挂在 `relative` 容器内(画在内容下层)。
-pub(crate) fn focus_ring_layers(accent: Hsla, radius: f32) -> [AnyElement; 2] {
-    [
-        div()
-            .absolute()
-            .inset(px(-RING_ISOLATION_OUTSET_PX))
-            .border_1()
-            .border_color(ELEVATION_SHADOW_TINT)
-            .opacity(RING_ISOLATION_OPACITY)
-            .rounded(px(radius))
-            .into_any_element(),
-        div()
-            .absolute()
-            .inset(px(-RING_OUTSET_PX))
-            .border(px(RING_BORDER_PX))
-            .border_color(accent)
-            .rounded(px(radius))
-            .into_any_element(),
-    ]
-}
-
-/// 焦点环 children(有环才追加;`radius` 随变体取 [`ring_radius_for`])。
+/// 焦点环(报告 §5.3.3,A11Y 批次):实现单点在
+/// [`crate::interact::focus_ring`](内层隔离环 + accent 外描边两层),本组件
+/// 只是消费方;`radius` 随变体取 [`ring_radius_for`]。
 fn ring_children(ring: Option<Hsla>, radius: f32) -> impl IntoIterator<Item = AnyElement> {
-    ring.map(|accent| focus_ring_layers(accent, radius))
+    ring.map(|accent| crate::interact::focus_ring(accent, radius))
         .into_iter()
         .flatten()
 }
@@ -389,10 +357,33 @@ impl Choice {
         self.checked
     }
 
-    /// 标签文本(可选;`TextSize::LABEL` 排版档)。
+    /// 标签文本(可选;`TextSize::LABEL` 排版档)。**可见标签即可访问名**
+    /// (A11Y-02:读屏名称槽与视觉文本单源,gpui 0.2.2 无语义树、存态消费
+    /// 待 TD-01,见 [`crate::interact::Semantic`])。
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
         self
+    }
+
+    /// 语义槽(A11Y-02,只读访问):label = 可见标签;role 由 kind 映射
+    /// (Checkbox/Switch/Radio,[`Self::semantic_role`])。
+    #[must_use]
+    pub fn semantic(&self) -> crate::interact::Semantic {
+        let sem = crate::interact::Semantic::new().with_role(self.semantic_role());
+        match &self.label {
+            Some(text) => sem.with_label(text.clone()),
+            None => sem,
+        }
+    }
+
+    /// 组件类型 → 语义角色映射(A11Y-02):Checkbox/Switch/Radio。
+    #[must_use]
+    pub fn semantic_role(&self) -> crate::interact::SemanticRole {
+        match self.kind {
+            ChoiceKind::Checkbox => crate::interact::SemanticRole::Checkbox,
+            ChoiceKind::Switch => crate::interact::SemanticRole::Switch,
+            ChoiceKind::Radio => crate::interact::SemanticRole::Radio,
+        }
     }
 
     /// 禁用态(TOK-07):交互全门控(点击/键盘/悬停动画),视觉仅前景降级、

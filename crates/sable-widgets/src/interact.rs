@@ -30,6 +30,21 @@
 //! [`PulseState::progress_at`] 一律 [`reduced_motion`] 短路:进度直通 0/1、
 //! 脉冲整体省略、运行态恒假(UI 停止请求帧)。
 //!
+//! # 可访问性(第 4 组 A11Y 批次,报告 §4.3/§5.10)
+//!
+//! 本模块同时是无障碍落地的**单点老家**:
+//! - A11Y-01 焦点环:[`focus_ring`](两层环唯一实现,choice/tabs/select/
+//!   text_field 共用)+ [`focus_ring_spec`](深浅主题纯函数裁决)+
+//!   [`focus_region`](F6 面板区环游选择,键位绑定属宿主壳);
+//! - A11Y-01 列表键盘导航:[`list_nav`](图层行/树行/效果行共用状态机)、
+//!   [`timeline_seek_step`](时间轴 seek)、[`gradient_stop_nav`](色标);
+//! - A11Y-02 语义接口:[`SemanticRole`] / [`Semantic`](存态) +
+//!   [`attach_semantics`](渲染层唯一挂接点)。**gpui 0.2.2 无语义树 API**
+//!   (crate 无 `_accessibility` 模块、无 accesskit 依赖,源码核实)——
+//!   label/role 目前为库侧存态,读屏消费待 TD-01 升级窗口,如实声明、
+//!   不虚标;走查表契约见 `docs/a11y-notes.md`;
+//! - A11Y-03 命中区:[`MIN_HIT_PX`] + [`hit_size`] / [`hit_slot`]。
+//!
 //! # 分册六 §4.3 清单 14 项逐项落点(08-A7 验收表)
 //!
 //! 组件层(本文件集)已承接的项在"接线"列给出具体 API;不属于组件层的
@@ -80,7 +95,7 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use gpui::Hsla;
+use gpui::{Div, FocusHandle, Hsla, IntoElement, ParentElement, SharedString, Styled, div, px};
 
 use crate::anim::{Easing, reduced_motion};
 
@@ -251,6 +266,392 @@ pub fn hover_tint(base: Hsla) -> Hsla {
 pub fn pressed_tint(base: Hsla) -> Hsla {
     tint(base, PRESSED_LIGHTNESS_DELTA)
 }
+
+// ---------------------------------------------------------------------------
+// A11Y-03:命中区下限(报告 §4.3/§5.10;视觉可小、命中必须 ≥24px)
+// ---------------------------------------------------------------------------
+
+/// 命中区下限(px,A11Y-03:桌面可用性 24px 红线)。视觉尺寸可小于它
+/// (眼睛/锁 10px、色标芯片 12px、IconButton 20px),但**可点热区**必须
+/// ≥ 本值——经 [`hit_size`](外扩)或 [`hit_slot`](透明热区容器)落地。
+pub const MIN_HIT_PX: f32 = 24.0;
+
+/// 命中区尺寸(纯函数,TC-A11Y-HIT-01 的被测单点):`max(视觉值, 24)`。
+/// 视觉已 ≥ 24(Choice 命中行 26、ColorWell 24)原样返回;不足则抬到
+/// [`MIN_HIT_PX`]——调用方把返回值用在**热区容器**上,视觉本体尺寸不变
+/// (命中区扩容允许视觉不变)。
+#[must_use]
+pub fn hit_size(visual_px: f32) -> f32 {
+    if visual_px.is_finite() {
+        visual_px.max(MIN_HIT_PX)
+    } else {
+        MIN_HIT_PX
+    }
+}
+
+/// 透明命中容器(A11Y-03,`hit_size` 的装配落点):把小于 24px 的视觉件
+/// 包进 ≥24px 的方形热区(视觉居中、热区透明)。事件监听(`on_mouse_down`
+/// 等)由调用方挂在**返回的容器**上——补白区点击同样生效;视觉本体
+/// (参数 div)只负责画。
+#[must_use]
+pub fn hit_slot(visual: Div) -> Div {
+    div()
+        .size(px(MIN_HIT_PX))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(visual)
+}
+
+// ---------------------------------------------------------------------------
+// A11Y-01:焦点环单点(报告 §5.3.3/§5.10.1;原 choice.rs 私有件的提升)
+// ---------------------------------------------------------------------------
+
+/// 焦点环 accent 描边宽(px,报告 §5.3.3:focus 1.5)。
+pub const RING_BORDER_PX: f32 = 1.5;
+/// 焦点环外扩(px,报告 §5.3.3:accent 环在控件外缘之外)。
+pub const RING_OUTSET_PX: f32 = 2.5;
+/// 焦点环内侧隔离环外扩(px):贴控件外缘 1px。
+pub const RING_ISOLATION_OUTSET_PX: f32 = 1.0;
+/// 焦点环内侧隔离环不透明度(报告 §5.3.3 内侧 40% 隔离;色 =
+/// [`crate::tokens::ELEVATION_SHADOW_TINT`],alpha 经元素 opacity 落地,
+/// 无颜色字面量)。
+pub const RING_ISOLATION_OPACITY: f32 = 0.4;
+
+/// 焦点环样式规格(纯数据;[`focus_ring_spec`] 的输出,TC-A11Y-RING-01
+/// 的断言面——元素树不可内省,几何/颜色裁决独立为纯函数可测)。
+#[cfg(feature = "theme")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FocusRingSpec {
+    /// 外环颜色(= 主题 accent 令牌)
+    pub ring_color: Hsla,
+    /// 外环描边宽([`RING_BORDER_PX`])
+    pub ring_border_px: f32,
+    /// 外环外扩([`RING_OUTSET_PX`])
+    pub ring_outset_px: f32,
+    /// 内侧隔离环颜色(= [`crate::tokens::ELEVATION_SHADOW_TINT`])
+    pub isolation_color: Hsla,
+    /// 内侧隔离环不透明度([`RING_ISOLATION_OPACITY`])
+    pub isolation_opacity: f32,
+    /// 内侧隔离环外扩([`RING_ISOLATION_OUTSET_PX`])
+    pub isolation_outset_px: f32,
+}
+
+/// 焦点环样式裁决(纯函数,深浅两主题各出一套,TC-A11Y-RING-01):外环 =
+/// 主题 accent;隔离环 = 全局阴影色调令牌(深浅同值);几何常量跨主题
+/// 一致(可辨识性,WCAG 2.4.7 焦点可见的组件侧落地)。
+#[cfg(feature = "theme")]
+#[must_use]
+pub fn focus_ring_spec(colors: &crate::tokens::ColorTokens) -> FocusRingSpec {
+    FocusRingSpec {
+        ring_color: colors.accent,
+        ring_border_px: RING_BORDER_PX,
+        ring_outset_px: RING_OUTSET_PX,
+        isolation_color: crate::tokens::ELEVATION_SHADOW_TINT,
+        isolation_opacity: RING_ISOLATION_OPACITY,
+        isolation_outset_px: RING_ISOLATION_OUTSET_PX,
+    }
+}
+
+/// 焦点环两层(报告 §5.3.3,A11Y-01 的**单点实现**;choice/tabs/select/
+/// text_field 及新组件共用——禁止组件各画各的环):内层 = 贴控件外缘
+/// 1px 黑 40% 隔离环,外层 = accent 1.5px 环。两层均为绝对定位描边 div,
+/// 由调用方挂在 `relative` 容器内(画在内容下层)。
+#[cfg(feature = "theme")]
+pub fn focus_ring(accent: Hsla, radius: f32) -> [gpui::AnyElement; 2] {
+    [
+        div()
+            .absolute()
+            .inset(px(-RING_ISOLATION_OUTSET_PX))
+            .border_1()
+            .border_color(crate::tokens::ELEVATION_SHADOW_TINT)
+            .opacity(RING_ISOLATION_OPACITY)
+            .rounded(px(radius))
+            .into_any_element(),
+        div()
+            .absolute()
+            .inset(px(-RING_OUTSET_PX))
+            .border(px(RING_BORDER_PX))
+            .border_color(accent)
+            .rounded(px(radius))
+            .into_any_element(),
+    ]
+}
+
+/// F6 区环游的纯下标步进([`focus_region`] 的被测单点):`len` 区、当前
+/// 下标(`None` = 无当前),向后 +1、向前 -1,端点回绕成环;无当前时向后
+/// 取 0、向前取尾。`len = 0` → `None`。
+#[must_use]
+fn region_step(len: usize, current: Option<usize>, forward: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(match current {
+        Some(ix) => {
+            if forward {
+                (ix + 1) % len
+            } else {
+                (ix + len - 1) % len
+            }
+        }
+        None if forward => 0,
+        None => len - 1,
+    })
+}
+
+/// F6 面板区循环(纯选择函数,A11Y-01 的宿主契约助手):`regions` 为面板
+/// 区焦点句柄表(宿主壳注册),返回下一个应聚焦的句柄——`forward` 向后
+/// (F6)、`!forward` 向前(Ctrl+F6),端点回绕成环;`current` 不在表内
+/// (或 `None`)时取首/尾。**绑定键位属宿主壳**(键位注册表单源纪律),
+/// 本函数只做环游选择,宿主拿到返回值后 `handle.focus(window)`。
+#[must_use]
+pub fn focus_region(
+    regions: &[FocusHandle],
+    current: Option<&FocusHandle>,
+    forward: bool,
+) -> Option<FocusHandle> {
+    let current_ix = current.and_then(|cur| regions.iter().position(|h| h == cur));
+    region_step(regions.len(), current_ix, forward).and_then(|ix| regions.get(ix).cloned())
+}
+
+// ---------------------------------------------------------------------------
+// A11Y-01:列表键盘导航(报告 §5.10.2;状态机纯函数 + 组件接线)
+// ---------------------------------------------------------------------------
+
+/// 列表键盘导航意图([`list_nav`] 的输出)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListNavIntent {
+    /// 移动高亮/选择到该下标(已钳制;同值 = 已在端点)
+    Move(usize),
+    /// 激活当前项(Enter:翻转可见/锁/启用等,语义由列表件定义)
+    Activate,
+    /// 退出列表(Esc:宿主决定回落焦点;无浮层的列表件可忽略)
+    Escape,
+}
+
+/// 列表键盘导航状态机(纯函数,唯一导航语义单点):`up`/`down` 相邻移动
+/// (端点钳制不回绕)、`home`/`end` 跳端、`enter` 激活、`escape` 退出;
+/// 其余键无意图(`None`)。空表恒 `None`。图层行/树行/效果栈行共用
+/// (TC-A11Y-NAV-01 的被测单点)。
+#[must_use]
+pub fn list_nav(highlighted: usize, count: usize, key: &str) -> Option<ListNavIntent> {
+    if count == 0 {
+        return None;
+    }
+    let last = count - 1;
+    match key {
+        "up" => Some(ListNavIntent::Move(highlighted.saturating_sub(1))),
+        "down" => Some(ListNavIntent::Move(highlighted.saturating_add(1).min(last))),
+        "home" => Some(ListNavIntent::Move(0)),
+        "end" => Some(ListNavIntent::Move(last)),
+        "enter" => Some(ListNavIntent::Activate),
+        "escape" => Some(ListNavIntent::Escape),
+        _ => None,
+    }
+}
+
+/// 时间轴键盘 seek 步进(纯函数,A11Y-01 时间轴入 Tab 序的导航语义):
+/// `left`/`right` = ∓/± `step_ms`(步长由调用方取 [`crate::timeline_view::
+/// nice_tick_step_ms`] 等既有档,不另立手感系数)、`home` = 0、`end` =
+/// 时长末尾;结果一律钳入 `[0, duration_ms]`。其余键 `None`。
+#[must_use]
+pub fn timeline_seek_step(
+    playhead_ms: u64,
+    step_ms: u64,
+    duration_ms: u64,
+    key: &str,
+) -> Option<u64> {
+    let clamped = |v: u64| v.min(duration_ms);
+    match key {
+        "left" => Some(clamped(playhead_ms.saturating_sub(step_ms))),
+        "right" => Some(clamped(playhead_ms.saturating_add(step_ms))),
+        "home" => Some(0),
+        "end" => Some(duration_ms),
+        _ => None,
+    }
+}
+
+/// 渐变编辑器色标键盘导航(纯函数,A11Y-01 色标入 Tab 序的导航语义):
+/// `left`/`right` = 相邻色标(端点钳制)、`home`/`end` = 首/末色标;
+/// 未选中时 `left` 落首标、`right` 落次标(从 0 起步)。空表/其余键 `None`。
+#[must_use]
+pub fn gradient_stop_nav(selected: Option<usize>, count: usize, key: &str) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let last = count - 1;
+    let current = selected.map_or(0, |s| s.min(last));
+    match key {
+        "left" => Some(current.saturating_sub(1)),
+        "right" => Some(current.saturating_add(1).min(last)),
+        "home" => Some(0),
+        "end" => Some(last),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A11Y-02:语义接口层(gpui 0.2.2 无语义树,见下——库侧存态 + 挂接点)
+// ---------------------------------------------------------------------------
+
+/// 组件语义角色(A11Y-02 库侧枚举;**gpui 0.2.2 无语义树 API**——crate 内
+/// 无 `_accessibility` 模块、Cargo 无 accesskit 依赖、`Interactivity` 无
+/// role/label 字段,2026-10 源码核实,与旧版 docs/a11y-notes.md 记载的
+/// "自带 AccessKit 骨架"不符)。本枚举按 AccessKit/WCAG 常用角色建面,
+/// 供宿主与测试引用;TD-01(gpui 升级)出现语义树后,在
+/// [`attach_semantics`] 单点映射为原生 role。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SemanticRole {
+    /// 按钮(Button/触发钮)
+    Button,
+    /// 图标按钮(可访问名 = label 槽/tooltip)
+    IconButton,
+    /// 文本输入(NumberField/TextField 编辑态)
+    TextField,
+    /// 勾选框
+    Checkbox,
+    /// 开关
+    Switch,
+    /// 单选钮
+    Radio,
+    /// 下拉选择
+    Select,
+    /// 页签(单个页签页)
+    Tab,
+    /// 滑杆(时间轴/连续量)
+    Slider,
+    /// 列表项(图层行/效果行/树行)
+    ListItem,
+    /// 列表容器(图层面板/效果栈)
+    List,
+    /// 分组容器(检查器/属性行)
+    Group,
+    /// 色井(点击开取色器)
+    ColorWell,
+    /// 取色器(色轮/渐变编辑器)
+    ColorPicker,
+    /// 滚动区
+    ScrollRegion,
+    /// 装饰件(读屏应跳过;NeonCard 等)
+    Decoration,
+}
+
+impl SemanticRole {
+    /// 角色的稳定标识串(诊断/未来映射用)。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SemanticRole::Button => "button",
+            SemanticRole::IconButton => "icon-button",
+            SemanticRole::TextField => "text-field",
+            SemanticRole::Checkbox => "checkbox",
+            SemanticRole::Switch => "switch",
+            SemanticRole::Radio => "radio",
+            SemanticRole::Select => "select",
+            SemanticRole::Tab => "tab",
+            SemanticRole::Slider => "slider",
+            SemanticRole::ListItem => "list-item",
+            SemanticRole::List => "list",
+            SemanticRole::Group => "group",
+            SemanticRole::ColorWell => "color-well",
+            SemanticRole::ColorPicker => "color-picker",
+            SemanticRole::ScrollRegion => "scroll-region",
+            SemanticRole::Decoration => "decoration",
+        }
+    }
+}
+
+/// 组件语义槽(A11Y-02 库侧存态):可访问名(label)+ 角色(role)。
+///
+/// **如实边界**:gpui 0.2.2 无语义树,label/role 目前只**存态**(宿主可读、
+/// 测试可断言、读屏器暂时不可消费)。TD-01 升级出语义树后,渲染层在
+/// [`attach_semantics`] 单点把本结构落成原生语义节点——届时各组件已带的
+/// `.label()`/`.role()` 槽零改动接通,读屏走查表见 `docs/a11y-notes.md`。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Semantic {
+    label: Option<SharedString>,
+    role: Option<SemanticRole>,
+}
+
+impl Semantic {
+    /// 空语义槽。
+    #[must_use]
+    pub fn new() -> Self {
+        Semantic::default()
+    }
+
+    /// 设置可访问名。
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// 设置角色。
+    #[must_use]
+    pub fn with_role(mut self, role: SemanticRole) -> Self {
+        self.role = Some(role);
+        self
+    }
+
+    /// 可访问名(组件显式 `.label(...)` 的存态)。
+    #[must_use]
+    pub fn label(&self) -> Option<&SharedString> {
+        self.label.as_ref()
+    }
+
+    /// 角色(组件显式 `.role(...)` 的存态)。
+    #[must_use]
+    pub fn role(&self) -> Option<SemanticRole> {
+        self.role
+    }
+
+    /// 解析角色:显式 `.role(...)` 优先,否则回落组件类型默认值。
+    #[must_use]
+    pub fn resolved_role(&self, fallback: SemanticRole) -> SemanticRole {
+        self.role.unwrap_or(fallback)
+    }
+}
+
+/// 语义挂接点(A11Y-02 渲染层**单点**):全部组件渲染根经此透传——当前
+///(gpui 0.2.2)为恒等透传;TD-01 升级出语义树后,唯一需要改的本函数:
+/// 在此把 `semantic` 落成原生节点再返回。**禁止**组件绕开本点自行挂语义
+/// (单点收口,防升级时漏改)。
+pub fn attach_semantics<E: IntoElement>(element: E, _semantic: &Semantic) -> gpui::AnyElement {
+    element.into_any_element()
+}
+
+/// 组件语义槽 builder 三件套(`label`/`role`/`semantic` 访问器)的收口
+/// 宏:字段名统一 `semantic: Semantic`(由使用方在结构体声明)。按钮族
+/// 等可见文本即可访问名的组件,另覆写 `resolved` 语义见各自模块。
+macro_rules! semantic_slot {
+    ($ty:ty) => {
+        #[allow(missing_docs)]
+        impl $ty {
+            /// 可访问名(A11Y-02 语义槽;gpui 0.2.2 无语义树,存态待 TD-01
+            /// 接通,见 [`Semantic`](crate::interact::Semantic))。
+            #[must_use]
+            pub fn label(mut self, label: impl Into<gpui::SharedString>) -> Self {
+                self.semantic = std::mem::take(&mut self.semantic).with_label(label);
+                self
+            }
+
+            /// 语义角色覆写(默认值 = 组件类型映射,见各模块 doc)。
+            #[must_use]
+            pub fn role(mut self, role: crate::interact::SemanticRole) -> Self {
+                self.semantic = std::mem::take(&mut self.semantic).with_role(role);
+                self
+            }
+
+            /// 语义槽只读访问(宿主/测试断言面)。
+            #[must_use]
+            pub fn semantic(&self) -> &crate::interact::Semantic {
+                &self.semantic
+            }
+        }
+    };
+}
+pub(crate) use semantic_slot;
 
 /// 组件事件边界的毫秒时钟(进程纪元 = 首次调用时刻)。事件回调(gpui 的
 /// on_hover 等)不携带时间戳,组件把它喂给 [`HoverState`] / [`PulseState`] /
@@ -629,5 +1030,146 @@ mod tests {
         let b = now_ms();
         assert!(b >= a, "now_ms 单调不减");
         assert!(a.is_finite());
+    }
+
+    // -----------------------------------------------------------------------
+    // 第 4 组 A11Y 批次(报告 §4.3/§5.10)
+    // -----------------------------------------------------------------------
+
+    /// TC-A11Y-RING-01:focus ring 深浅两主题样式断言(纯函数)。外环 =
+    /// 各主题 accent;隔离环 = 阴影色调令牌(两主题同值);几何常量跨主题
+    /// 一致、与报告 §5.3.3 规格(1.5px 外描边 + 内侧隔离环)逐项相等。
+    #[cfg(feature = "theme")]
+    #[test]
+    fn tc_a11y_ring_01_focus_ring_spec_both_themes() {
+        for colors in [
+            crate::tokens::ColorTokens::dark(),
+            crate::tokens::ColorTokens::light(),
+        ] {
+            let spec = focus_ring_spec(&colors);
+            assert_eq!(spec.ring_color, colors.accent, "外环 = 主题 accent");
+            assert_eq!(spec.isolation_color, crate::tokens::ELEVATION_SHADOW_TINT);
+            assert_eq!(spec.ring_border_px, 1.5, "报告 §5.3.3:accent 描边 1.5px");
+            assert_eq!(spec.ring_outset_px, 2.5, "外环在控件外缘之外");
+            assert_eq!(spec.isolation_outset_px, 1.0, "隔离环贴控件外缘");
+            assert!((spec.isolation_opacity - 0.4).abs() < 1e-6, "内侧隔离 40%");
+        }
+        // 深浅两主题的外环必须互异(可辨识断言不能靠同色凑数)
+        let dark = focus_ring_spec(&crate::tokens::ColorTokens::dark());
+        let light = focus_ring_spec(&crate::tokens::ColorTokens::light());
+        assert_ne!(dark.ring_color, light.ring_color, "两主题 accent 不同");
+        assert_eq!(dark.ring_border_px, light.ring_border_px, "几何跨主题一致");
+    }
+
+    /// TC-A11Y-HIT-01:命中区尺寸纯函数断言(A11Y-03 逐组件列值)。视觉
+    /// 尺寸可小,`hit_size` 一律抬到 ≥24px;已达标者原样返回。
+    #[test]
+    fn tc_a11y_hit_01_hit_size_per_component() {
+        // 逐组件(视觉 → 命中):
+        assert_eq!(
+            hit_size(10.0),
+            24.0,
+            "layer_panel/layer_tree 眼睛/锁 10 → 24"
+        );
+        assert_eq!(hit_size(12.0), 24.0, "layer_tree 折叠箭头 12 → 24");
+        assert_eq!(hit_size(12.0), 24.0, "渐变编辑器色标芯片 12 → 24");
+        assert_eq!(hit_size(20.0), 24.0, "IconButton Icon20 热区 20 → 24");
+        assert_eq!(hit_size(22.0), 24.0, "Button Compact 高 22 → 24");
+        assert_eq!(hit_size(24.0), 24.0, "IconButton Icon24 已达标原样");
+        assert_eq!(hit_size(26.0), 26.0, "Choice 命中行 26 已达标原样");
+        assert_eq!(hit_size(28.0), 28.0, "面板行 28 已达标原样");
+        // 下限常量与防御
+        assert_eq!(MIN_HIT_PX, 24.0);
+        assert_eq!(hit_size(f32::NAN), 24.0, "非有限入参回落下限");
+        assert_eq!(hit_size(0.0), 24.0);
+        // 透明热区容器:24px 方形(几何装配由渲染层消费,此处锁常量口径)
+        assert_eq!(hit_size(MIN_HIT_PX), MIN_HIT_PX);
+    }
+
+    /// TC-A11Y-NAV-01(键盘闭环的状态层):仅键盘完成"选中图层 → 改属性 →
+    /// 确认"闭环——列表导航选中目标行、激活翻转可见(Enter)、经数值步进
+    /// 改属性(委托 NumberField 同款语义:↑ ↓ 步进)、Enter/Tab 确认提交。
+    /// 全程纯函数状态层,不经 GUI。
+    #[test]
+    fn tc_a11y_nav_01_keyboard_select_edit_confirm_closed_loop() {
+        use ListNavIntent as Nav;
+        // 场景:3 行图层,初始选中第 0 行、可见性 [真, 真, 真]
+        let count = 3;
+        let mut selected: usize = 0;
+        let mut visible = [true; 3];
+        let mut value = 10.0_f64;
+
+        // Tab 进入列表(容器 track_focus 宿主侧),↓ 两次选中第 2 行
+        assert_eq!(list_nav(selected, count, "down"), Some(Nav::Move(1)));
+        assert_eq!(list_nav(1, count, "down"), Some(Nav::Move(2)));
+        selected = 2;
+        // Enter 激活 = 翻转可见(列表件的激活语义)
+        assert_eq!(list_nav(selected, count, "enter"), Some(Nav::Activate));
+        visible[selected] = !visible[selected];
+        assert!(!visible[2], "键盘激活翻转可见");
+        // ↑ 回到第 1 行改属性(数值 +1 步进,NumberField 同款;Shift = ×10)
+        assert_eq!(list_nav(selected, count, "up"), Some(Nav::Move(1)));
+        selected = 1;
+        value += 1.0;
+        // 端点钳制:第 1 行继续 ↑ 到顶不回绕
+        assert_eq!(list_nav(selected, count, "up"), Some(Nav::Move(0)));
+        selected = 0;
+        // Home/End 跳端
+        assert_eq!(list_nav(selected, count, "end"), Some(Nav::Move(2)));
+        assert_eq!(list_nav(2, count, "home"), Some(Nav::Move(0)));
+        // 确认提交(Enter/Tab 语义由编辑器承担;此处锁终值)
+        let committed = value;
+        assert_eq!(committed, 11.0, "闭环终值 = 选中行改属性后提交");
+        // Esc 退出列表(宿主回落焦点的契约信号)
+        assert_eq!(list_nav(selected, count, "escape"), Some(Nav::Escape));
+        // 边界:空表无导航;其余键无意图
+        assert_eq!(list_nav(0, 0, "down"), None);
+        assert_eq!(list_nav(0, count, "left"), None);
+        assert_eq!(list_nav(0, count, "a"), None);
+        // 端点:末行 down 钳末行,首行 up 钳首行
+        assert_eq!(list_nav(2, count, "down"), Some(Nav::Move(2)));
+        assert_eq!(list_nav(0, count, "up"), Some(Nav::Move(0)));
+    }
+
+    /// F6 面板区环游(纯下标步进;句柄匹配壳 [`focus_region`] 的
+    /// `position` 查找):向后/向前、端点回绕、无当前取首/尾、空表 None。
+    /// 键位绑定属宿主壳(库不绑键)。
+    #[test]
+    fn focus_region_cycles_and_wraps() {
+        assert_eq!(region_step(3, Some(0), true), Some(1));
+        assert_eq!(region_step(3, Some(2), true), Some(0), "向后端点回绕");
+        assert_eq!(region_step(3, Some(0), false), Some(2), "向前端点回绕");
+        assert_eq!(region_step(3, Some(1), false), Some(0));
+        assert_eq!(region_step(3, None, true), Some(0), "无当前向后取首");
+        assert_eq!(region_step(3, None, false), Some(2), "无当前向前取尾");
+        assert_eq!(region_step(0, None, true), None, "空表");
+        assert_eq!(region_step(1, Some(0), true), Some(0), "单区自环");
+        assert_eq!(region_step(1, None, false), Some(0));
+    }
+
+    /// TC-A11Y-LABEL-01 的运行时半边(静态扫描半边在
+    /// tests/gate_a11y_label.rs):Semantic 槽的存态与解析语义。
+    #[test]
+    fn semantic_slot_stores_label_and_role() {
+        let sem = Semantic::new()
+            .with_label("导出")
+            .with_role(SemanticRole::Button);
+        assert_eq!(sem.label().map(SharedString::as_ref), Some("导出"));
+        assert_eq!(sem.role(), Some(SemanticRole::Button));
+        assert_eq!(
+            sem.resolved_role(SemanticRole::IconButton),
+            SemanticRole::Button
+        );
+        // 未显式给角色:回落组件类型默认
+        let bare = Semantic::new();
+        assert_eq!(bare.label(), None);
+        assert_eq!(
+            bare.resolved_role(SemanticRole::TextField),
+            SemanticRole::TextField
+        );
+        // 角色标识串稳定(未来映射原生 role 的对照面)
+        assert_eq!(SemanticRole::Button.as_str(), "button");
+        assert_eq!(SemanticRole::ListItem.as_str(), "list-item");
+        assert_eq!(SemanticRole::Decoration.as_str(), "decoration");
     }
 }

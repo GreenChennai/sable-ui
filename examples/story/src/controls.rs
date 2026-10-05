@@ -98,7 +98,10 @@ impl ControlsSection {
                 Button::new("story-btn-dis-ghost", "Ghost 禁用")
                     .variant(ButtonVariant::Ghost)
                     .disabled(true),
-                Button::new("story-btn-dis-ref", "启用对照").variant(ButtonVariant::Secondary),
+                Button::new("story-btn-dis-ref", "启用对照")
+                    .variant(ButtonVariant::Secondary)
+                    // A11Y-02 演示:语义槽覆写可访问名(视觉文本不变)
+                    .label("启用对照按钮"),
             ]
             .into_iter()
             .map(|b| cx.new(|_| b))

@@ -21,14 +21,16 @@ use std::rc::Rc;
 
 use gpui::DefiniteLength;
 use gpui::{
-    App, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Render, Styled, Window, canvas, div, px,
+    App, Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, Styled, Window, canvas,
+    div, px,
 };
 use sable_foundation::scene::{GradientStop, Paint, Rgba8};
 
 use crate::binding::Binding;
 use crate::color::ColorWell;
 use crate::controls::button::{Button, ButtonSize, button_element};
+use crate::interact::{self, Semantic, SemanticRole, semantic_slot};
 use crate::theme::theme;
 use crate::tokens::{RadiusTokens, SpacingTokens, h_flex, lerp_rgba8, v_flex};
 
@@ -50,6 +52,10 @@ pub struct GradientEditor {
     drag: Option<(usize, f64, f32)>,
     /// 色标条的元素 bounds(prepaint 回写;拖拽换算像素 → offset 用)
     strip_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    /// A11Y-01:色标条键盘焦点(←→/Home/End 选色标,Delete 删选中)
+    focus: Option<FocusHandle>,
+    /// A11Y-02 语义槽(可访问名;role 默认 ColorPicker)
+    semantic: Semantic,
 }
 
 impl GradientEditor {
@@ -60,6 +66,8 @@ impl GradientEditor {
             selected: None,
             drag: None,
             strip_bounds: Rc::new(Cell::new(gpui::Bounds::default())),
+            focus: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -153,15 +161,54 @@ impl GradientEditor {
     fn on_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         self.drag = None;
     }
+
+    /// 色标条键盘导航(A11Y-01):←→/Home/End 移动选中(状态机 =
+    /// [`interact::gradient_stop_nav`] 纯函数),Delete/Backspace 删选中
+    /// (保底 2 个色标的守卫在 [`Self::remove_selected`])。
+    fn on_strip_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        if key == "delete" || key == "backspace" {
+            self.remove_selected(window, cx);
+            return;
+        }
+        let count = stops_of(&self.paint(cx)).len();
+        if let Some(next) = interact::gradient_stop_nav(self.selected, count, key) {
+            self.selected = Some(next);
+            cx.notify();
+        }
+    }
+}
+
+// A11Y-02 语义槽:可访问名缺省"渐变"、role 缺省 ColorPicker。
+semantic_slot!(GradientEditor);
+
+impl GradientEditor {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省 =
+    /// ("渐变", ColorPicker)。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = match self.semantic.label() {
+            Some(_) => self.semantic.clone(),
+            None => self.semantic.clone().with_label("渐变"),
+        };
+        let role = sem.role().unwrap_or(SemanticRole::ColorPicker);
+        sem.with_role(role)
+    }
 }
 
 impl Render for GradientEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         let paint = self.paint(cx);
         let stops = stops_of(&paint);
         let selected = self.selected;
         let strip_bounds = self.strip_bounds.clone();
+        // A11Y-01:色标条键盘焦点(容器级 track_focus + tab_stop)
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let strip_focused = focus.is_focused(window);
 
         // 预览条:24 段手动插值色块
         let mut preview = h_flex()
@@ -181,7 +228,7 @@ impl Render for GradientEditor {
             );
         }
 
-        // 色标条:相对容器 + 绝对定位芯片(百分比 left)
+        // 色标条:相对容器 + 绝对定位芯片(百分比 left);A11Y-01 键盘焦点
         let mut strip = div()
             .relative()
             .h(px(STRIP_H_PX))
@@ -199,23 +246,36 @@ impl Render for GradientEditor {
                 .size_full(),
             )
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
-            .on_mouse_move(cx.listener(Self::on_move));
+            .on_mouse_move(cx.listener(Self::on_move))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(Self::on_strip_key));
         for (i, stop) in stops.iter().enumerate() {
             let is_sel = selected == Some(i);
-            let chip = div()
+            // A11Y-03:视觉 12px、命中 ≥24px(热区 = 24px 方形热区容器,芯片
+            // 居中;监听挂热区);A11Y-06:悬停 = 提描边,选中 = accent 描边
+            // (按下即进入拖拽/选中,press 视觉 = 选中描边)
+            let hover_border = t.colors.accent.opacity(0.55);
+            let chip_visual = if is_sel {
+                div()
+                    .size(px(STOP_CHIP_W_PX))
+                    .rounded(px(RadiusTokens::SM))
+                    .border_1()
+                    .border_color(t.colors.accent)
+                    .bg(crate::tokens::hsla_from_rgba8(stop.color))
+            } else {
+                div()
+                    .size(px(STOP_CHIP_W_PX))
+                    .rounded(px(RadiusTokens::SM))
+                    .border_1()
+                    .border_color(t.colors.border_strong)
+                    .bg(crate::tokens::hsla_from_rgba8(stop.color))
+                    .hover(move |s| s.border_color(hover_border))
+            };
+            let chip = interact::hit_slot(chip_visual)
                 .absolute()
                 .left(DefiniteLength::Fraction(stop.offset.clamp(0.0, 1.0)))
-                .top(px(3.0))
-                .size(px(STOP_CHIP_W_PX))
-                .ml(px(-STOP_CHIP_W_PX / 2.0))
-                .rounded(px(RadiusTokens::SM))
-                .border_1()
-                .border_color(if is_sel {
-                    t.colors.accent
-                } else {
-                    t.colors.border_strong
-                })
-                .bg(crate::tokens::hsla_from_rgba8(stop.color))
+                .top(px(0.0))
+                .ml(px(-interact::MIN_HIT_PX / 2.0))
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -224,6 +284,11 @@ impl Render for GradientEditor {
                     }),
                 );
             strip = strip.child(chip);
+        }
+        // A11Y-01:色标条焦点环(accent,interact 单点)
+        let mut strip = strip;
+        if strip_focused {
+            strip = strip.children(interact::focus_ring(t.colors.accent, RadiusTokens::SM));
         }
 
         // 工具行:加/删色标 + 选中色标的颜色展示(取色浮窗 = M2)

@@ -48,12 +48,11 @@ use gpui::{
 };
 
 use crate::anim::{Animated, Easing};
-use crate::controls::choice::focus_ring_layers;
-use crate::interact::{InteractState, state_layer};
+use crate::interact::{InteractState, Semantic, semantic_slot, state_layer};
 use crate::theme::theme;
 use crate::tokens::{
-    HEIGHT_DEFAULT, MotionTokens, RadiusTokens, SpacingTokens, TextSize, UI_FONT, control_height,
-    h_flex,
+    ColorTokens, HEIGHT_DEFAULT, MotionTokens, RadiusTokens, SpacingTokens, TextSize, UI_FONT,
+    control_height, h_flex,
 };
 
 // 页签/下划线几何为具名常量(非令牌表的组件本体尺寸,同 choice.rs 惯例)。
@@ -74,6 +73,31 @@ pub fn tab_height() -> f32 {
         TextSize::LABEL.line_height,
         SpacingTokens::XS,
     )
+}
+
+/// 页签三态配色(纯函数,A11Y-06 · TC-A11Y-TRISTATE-01 的断言面):
+/// 返回 `(底色, 文字色)`。选中 = 强文字、底透明(选中指示由 accent 下划线
+/// 承担);悬停(仅未选中页签)= state-layer 中性叠加 + 主文字;静止 =
+/// 次级文字。press 为瞬时选中(页签点击即换序),不做按压底色。
+#[must_use]
+pub fn tab_colors(
+    colors: &ColorTokens,
+    is_selected: bool,
+    is_hovered: bool,
+) -> (gpui::Hsla, gpui::Hsla) {
+    let fg = if is_selected {
+        colors.text_strong
+    } else if is_hovered {
+        colors.text_primary
+    } else {
+        colors.text_secondary
+    };
+    let bg = if !is_selected && is_hovered {
+        state_layer(colors.surface_1, InteractState::Hover, colors.accent)
+    } else {
+        gpui::Hsla::transparent_black()
+    };
+    (bg, fg)
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +188,8 @@ pub struct Tabs {
     on_change: Option<TabChangeFn>,
     /// 元素 id(给出则溢出横向滚动)
     element_id: Option<ElementId>,
+    /// A11Y-02 语义槽(可访问名 = 标签条名称;页签名取可见文本)
+    semantic: Semantic,
 }
 
 /// 面板页签条(面板坞场景的 [`Tabs`] 别名:等宽页签 + accent 下划线滑动,
@@ -180,6 +206,7 @@ impl Tabs {
             focus: None,
             on_change: None,
             element_id: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -255,6 +282,10 @@ impl Tabs {
     }
 }
 
+// A11Y-02 语义槽(label/role/semantic 三件;role 默认 Tab——页签条以页签
+// 为语义单元,可见页签文本即各页签的可访问名)。
+semantic_slot!(Tabs);
+
 impl Render for Tabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &theme(cx).colors;
@@ -268,12 +299,16 @@ impl Render for Tabs {
             .clone();
         let focused = focus.is_focused(window);
 
-        // 页签(等宽 flex_1 + 最小宽;hover = 中性叠加即时切换;选中 = 强文字)
-        let hover_bg = state_layer(colors.surface_1, InteractState::Hover, colors.accent);
+        // 页签(等宽 flex_1 + 最小宽;三态 = tab_colors 纯函数,TC-A11Y-
+        // TRISTATE-01 断言面;hover = 中性叠加即时切换;选中 = 强文字 +
+        // 下划线,选中页签不再叠 hover)
         let on_change = self.on_change.clone();
         let mut content = h_flex().min_w_full().relative();
         for (i, label) in self.tabs.iter().enumerate() {
             let is_selected = i == selected;
+            // 静止/悬停两套配色都出自 tab_colors(hover 样式只挂未选中页签)
+            let (_, idle_fg) = tab_colors(colors, is_selected, false);
+            let (hover_bg, hover_fg) = tab_colors(colors, is_selected, true);
             let mut tab = h_flex()
                 .flex_1()
                 .min_w(px(TAB_MIN_WIDTH_PX))
@@ -286,16 +321,11 @@ impl Render for Tabs {
                 } else {
                     TextSize::LABEL.weight
                 }))
-                .text_color(if is_selected {
-                    colors.text_strong
-                } else {
-                    colors.text_secondary
-                })
+                .text_color(idle_fg)
                 .cursor_pointer()
                 .child(label.clone());
             if !is_selected {
-                let text_hover = colors.text_primary;
-                tab = tab.hover(move |style| style.bg(hover_bg).text_color(text_hover));
+                tab = tab.hover(move |style| style.bg(hover_bg).text_color(hover_fg));
             }
             if let Some(on_change) = on_change.clone() {
                 tab = tab.on_mouse_down(
@@ -333,7 +363,7 @@ impl Render for Tabs {
             .on_key_down(cx.listener(Self::on_key_down))
             .child(scroller);
         if focused {
-            root = root.children(focus_ring_layers(colors.accent, RadiusTokens::SM));
+            root = root.children(crate::interact::focus_ring(colors.accent, RadiusTokens::SM));
         }
 
         // 动画帧泵:下划线滑动中才续帧(静止零帧提交)
@@ -489,5 +519,39 @@ mod tests {
         assert!(empty.is_empty());
         assert_eq!(empty.selected_index(), 0);
         assert_eq!(tab_height(), 26.0, "派生制:max(26, 18+2×4) = 26");
+    }
+
+    /// TC-A11Y-TRISTATE-01(Tab 三态样式映射,纯函数):hover 可见且文字
+    /// 提档、press/选中走强文字 + 下划线、三态互异;语义槽 label/role 存态。
+    #[test]
+    fn tc_a11y_tristate_01_tab_colors_and_semantic_slot() {
+        for colors in [ColorTokens::dark(), ColorTokens::light()] {
+            let (idle_bg, idle_fg) = tab_colors(&colors, false, false);
+            let (hover_bg, hover_fg) = tab_colors(&colors, false, true);
+            let (sel_bg, sel_fg) = tab_colors(&colors, true, true);
+            // 静止:透明底 + 次级文字
+            assert_eq!(idle_bg.a, 0.0, "未选中静止底透明");
+            assert_eq!(idle_fg, colors.text_secondary);
+            // hover:state-layer 中性叠加 + 主文字(可见变化)
+            assert_ne!(hover_bg, idle_bg, "hover 底可见");
+            assert_eq!(hover_fg, colors.text_primary, "hover 文字提档");
+            // 选中:强文字;底透明(选中指示 = accent 下划线,几何另行承担)
+            assert_eq!(sel_fg, colors.text_strong);
+            assert_eq!(sel_bg.a, 0.0);
+            // 选中页签不叠 hover(选中/悬停配色互异)
+            assert_ne!(sel_fg, hover_fg);
+        }
+        // 语义槽(A11Y-02):label 存态、role 默认映射 + 覆写
+        let tabs = Tabs::new(["图层", "效果"]).label("面板页签");
+        assert_eq!(
+            tabs.semantic().label().map(|s| s.as_ref()),
+            Some("面板页签")
+        );
+        assert_eq!(tabs.semantic().role(), None, "未显式给角色");
+        let overridden = tabs.role(crate::interact::SemanticRole::List);
+        assert_eq!(
+            overridden.semantic().role(),
+            Some(crate::interact::SemanticRole::List)
+        );
     }
 }

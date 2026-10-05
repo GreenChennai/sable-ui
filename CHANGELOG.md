@@ -71,6 +71,18 @@
   TC-CMP-BTN-01/TF-01/SEL-01/CHOICE-01/TABS-01/TIP-01/02/SCROLL-01 全部落地;
   CMP-11 四处私有按钮 helper 收口归零(TC-GATE-DUP-01 静态门禁防复发);
   删除 gpui-component 死依赖(COUP-08);story 增"基础按钮"分组
+- **可访问性主体**(A11Y-01/02/03/05/06/04/08,第 4 组):`interact::focus_ring` 单点 +
+  全部可交互组件入 Tab 序(track_focus,ScrollArea/TimelineView/GradientEditor/ColorWheel/
+  两图层面板本批补),列表 ↑↓+Enter 键盘导航、时间轴 ←→ 步进 seek、渐变条/色轮键盘操作;
+  语义接口层 `Semantic`/`SemanticRole`(16 角色)+ 全部 pub 组件 `.label/.role` 槽 +
+  `attach_semantics` 唯一挂接点——**gpui 0.2.2 经源码级核实无语义树 API,读屏如实录为
+  TD-01 升级项**,docs/a11y-notes 全文按实况改写(键盘可达性现在可走查);
+  命中区全面 ≥24px(10px 眼睛/锁/色标、12px 箭头、20/22px 图标/紧凑钮,视觉不变热区扩容);
+  reduced-motion 全仓帧泵入口审计 + `gate_a11y_reduced_motion` 静态门禁;
+  三态(hover/press/focus)全组件覆盖;`keymap` 绑定层(ActionSpec/KeymapRegistry/
+  chord_display 单源复用 tooltip/速查表生成)+ `input_method::InputMethodAdapter`
+  (TextField/NumberField IME 全部事件经 Adapter 单点路由,UTF-16 换算收敛,
+  NumberField 无组合态的真实边界如实标注;IME 真机走查 10 场景入库待真机)
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处

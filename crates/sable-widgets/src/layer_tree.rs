@@ -52,19 +52,20 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, ClickEvent, Context, ElementId, Entity, Hsla, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Window,
-    div, px, uniform_list,
+    App, ClickEvent, Context, ElementId, Entity, FocusHandle, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Window, div, px, uniform_list,
 };
 use sable_foundation::scene::{NodeId, Scene};
 use slotmap::Key;
 
-use crate::anim::lerp_hsla;
 use crate::controls::button::{ButtonVariant, IconButton, icon_button_element};
 use crate::flip::FlipTracker;
-use crate::interact::{self, HoverState, PulseState};
+use crate::interact::{
+    self, HoverState, ListNavIntent, PulseState, Semantic, SemanticRole, list_nav, semantic_slot,
+};
+use crate::layer_panel::layer_row_bg;
 use crate::theme::theme;
 use crate::tokens::{
     FONT_SIZE_BODY, FONT_SIZE_CAPTION, RadiusTokens, SpacingTokens, control_height, h_flex, v_flex,
@@ -217,6 +218,12 @@ pub struct LayerTreePanel {
     flip: Rc<RefCell<FlipTracker>>,
     /// A7:撤销脉冲表(节点 → 脉冲;查询即清理过期项,无驻留)
     pulses: Rc<RefCell<HashMap<NodeId, PulseState>>>,
+    /// A11Y-01:列表键盘导航焦点(容器 track_focus,↑↓/Enter 导航)
+    focus: Option<FocusHandle>,
+    /// A11Y-06:按压中的行(按下高亮,松开清除)
+    pressed_node: Option<NodeId>,
+    /// A11Y-02 语义槽(可访问名/角色;缺省"图层树"/List)
+    semantic: Semantic,
 }
 
 impl LayerTreePanel {
@@ -237,7 +244,36 @@ impl LayerTreePanel {
             hovered_node: None,
             flip: Rc::new(RefCell::new(FlipTracker::new())),
             pulses: Rc::new(RefCell::new(HashMap::new())),
+            focus: None,
+            pressed_node: None,
+            semantic: Semantic::new(),
         }
+    }
+
+    /// 列表键盘导航(A11Y-01,导航面 = 扁平化行序):↑↓ 移动选择(走
+    /// on_select 上报)、Enter 激活 = 翻转首选中行可见、Esc 交宿主。状态机
+    /// = [`list_nav`] 纯函数(与 LayerPanel 同一单点,TC-A11Y-NAV-01)。
+    fn on_list_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let rows = flatten_tree(self.scene.read(cx), &self.collapsed);
+        let current = self
+            .selection
+            .first()
+            .and_then(|id| rows.iter().position(|r| r.id == *id))
+            .unwrap_or(0);
+        match list_nav(current, rows.len(), &event.keystroke.key) {
+            Some(ListNavIntent::Move(ix)) => {
+                if let Some(row) = rows.get(ix) {
+                    (self.on_select)(row.id, false, cx);
+                }
+            }
+            Some(ListNavIntent::Activate) => {
+                if let Some(&id) = self.selection.first() {
+                    (self.on_toggle_visible)(id, cx);
+                }
+            }
+            Some(ListNavIntent::Escape) | None => {}
+        }
+        cx.notify();
     }
 
     /// A7 撤销脉冲(同 [`crate::layer_panel::LayerPanel::pulse_for`] 约定):
@@ -319,6 +355,13 @@ impl Render for LayerTreePanel {
         let weak = cx.entity().downgrade();
         let flip = self.flip.clone();
         let pulses = self.pulses.clone();
+        // A11Y-01:列表焦点(首帧惰性创建,tab_stop 进 Tab 环游)+ 按压快照
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let list_focused = focus.is_focused(window);
+        let pressed_node = self.pressed_node;
 
         // A7/A4 帧时钟与悬停快照(悬停互斥,单一进度值服务当前悬停行)
         let now = interact::now_ms();
@@ -386,7 +429,10 @@ impl Render for LayerTreePanel {
                     let panel = panel.clone();
                     move |ev: &MouseDownEvent, _win: &mut Window, cx: &mut App| {
                         let shift = ev.modifiers.shift;
-                        let _ = panel.update(cx, |this, cx| (this.on_select)(id, shift, cx));
+                        let _ = panel.update(cx, |this, cx| {
+                            this.pressed_node = Some(id); // A11Y-06 按压态
+                            (this.on_select)(id, shift, cx);
+                        });
                     }
                 };
                 let eye = {
@@ -452,6 +498,10 @@ impl Render for LayerTreePanel {
                 };
                 let t = theme(cx);
                 let colors = t.colors;
+                let pressed = pressed_node == Some(id);
+                let row_semantic = Semantic::new()
+                    .with_role(SemanticRole::ListItem)
+                    .with_label(name.clone());
                 let mut row = h_flex()
                     .id(ElementId::NamedInteger("tree-row".into(), key))
                     .w_full()
@@ -466,78 +516,69 @@ impl Render for LayerTreePanel {
                     } else {
                         Hsla::transparent_black()
                     })
-                    // TOK-04:选中 = state-layer(面板底上叠 accent 14%,深浅
-                    // 同比例);悬停 = state-layer(Hover)插值(叠白/黑随主题)
-                    .when(selected, |el| {
-                        el.bg(interact::state_layer(
-                            colors.surface_1,
-                            interact::InteractState::Selected,
-                            colors.accent,
-                        ))
-                    })
-                    .when(!selected && hover_p > 0.0, |el| {
-                        el.bg(lerp_hsla(
-                            Hsla::transparent_black(),
-                            interact::state_layer(
-                                colors.surface_1,
-                                interact::InteractState::Hover,
-                                colors.accent,
-                            ),
-                            hover_p,
-                        ))
-                    })
+                    // TOK-04 / A11Y-06:三态 = layer_row_bg 纯函数(与
+                    // LayerPanel 行同一单点)
+                    .bg(layer_row_bg(&colors, selected, pressed, hover_p))
                     // 嵌套缩进:每层 12px(T2 任务书)
                     .child(div().w(pxv(depth as f64 * f64::from(INDENT_PX))).h_full());
                 // 展开/折叠箭头(有子节点才有交互;叶子放同宽占位保持列对齐)
+                // A11Y-03:视觉 12px、命中 ≥24px(监听挂热区容器)
                 row = row.child(if has_children {
-                    div()
-                        .size(px(GLYPH_SIZE_PX))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(FONT_SIZE_CAPTION))
-                        .text_color(colors.text_secondary)
-                        .cursor_pointer()
-                        // ▸ 折叠 / ▾ 展开(几何图标占位,Lucide = M2)
-                        .child(if collapsed_contains(&collapsed, id) {
-                            "▸"
-                        } else {
-                            "▾"
-                        })
-                        .on_mouse_down(MouseButton::Left, arrow)
+                    interact::hit_slot(
+                        div()
+                            .size(px(GLYPH_SIZE_PX))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(FONT_SIZE_CAPTION))
+                            .text_color(colors.text_secondary)
+                            // ▸ 折叠 / ▾ 展开(几何图标占位,Lucide = M2)
+                            .child(if collapsed_contains(&collapsed, id) {
+                                "▸"
+                            } else {
+                                "▾"
+                            }),
+                    )
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, arrow)
                 } else {
                     div().size(px(GLYPH_SIZE_PX))
                 });
                 row = row
-                    // 眼睛:填充方块 = 可见 / 透明 = 隐藏(与 LayerPanel 同款)
+                    // 眼睛:填充方块 = 可见 / 透明 = 隐藏(与 LayerPanel 同款;
+                    // A11Y-03:视觉 10px、命中 ≥24px)
                     .child(
-                        div()
-                            .size(px(EYE_LOCK_SIZE_PX))
-                            .rounded(px(RadiusTokens::SM))
-                            .border_1()
-                            .border_color(colors.text_secondary)
-                            .bg(if visible {
-                                colors.text_secondary
-                            } else {
-                                Hsla::transparent_black()
-                            })
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, eye),
+                        interact::hit_slot(
+                            div()
+                                .size(px(EYE_LOCK_SIZE_PX))
+                                .rounded(px(RadiusTokens::SM))
+                                .border_1()
+                                .border_color(colors.text_secondary)
+                                .bg(if visible {
+                                    colors.text_secondary
+                                } else {
+                                    Hsla::transparent_black()
+                                }),
+                        )
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, eye),
                     )
-                    // 锁:填充 = 锁定
+                    // 锁:填充 = 锁定(A11Y-03 同上)
                     .child(
-                        div()
-                            .size(px(EYE_LOCK_SIZE_PX))
-                            .rounded(px(RadiusTokens::SM))
-                            .border_1()
-                            .border_color(colors.text_disabled)
-                            .bg(if locked {
-                                colors.warning
-                            } else {
-                                Hsla::transparent_black()
-                            })
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, lock),
+                        interact::hit_slot(
+                            div()
+                                .size(px(EYE_LOCK_SIZE_PX))
+                                .rounded(px(RadiusTokens::SM))
+                                .border_1()
+                                .border_color(colors.text_disabled)
+                                .bg(if locked {
+                                    colors.warning
+                                } else {
+                                    Hsla::transparent_black()
+                                }),
+                        )
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, lock),
                     )
                     // 名字 = 行选择热区(避免与眼睛/锁/箭头的事件冲突)
                     .child(
@@ -584,13 +625,17 @@ impl Render for LayerTreePanel {
                         cx,
                     ))
                     .on_hover(on_hover);
-                items.push(row.into_any_element());
+                // A11Y-02:行语义挂接(ListItem + 节点名;单点透传待 TD-01)
+                let row = interact::attach_semantics(row, &row_semantic);
+                items.push(row);
             }
             items
         })
         .flex_1()
         .min_h_0()
-        .bg(colors.surface_1);
+        .bg(colors.surface_1)
+        .track_focus(&focus)
+        .on_key_down(cx.listener(Self::on_list_key));
 
         // 悬停过渡 / 让位 / 脉冲任一在跑就续帧(动画运行才请求帧,静止零帧
         // 提交;脉冲表的过期项借本次遍历清理,不驻留)
@@ -601,13 +646,45 @@ impl Render for LayerTreePanel {
             window.request_animation_frame();
         }
 
+        // A11Y-01:焦点环画在列表区(容器级,两主题 accent,interact 单点)
+        let mut list_area = div().flex_1().min_h_0().relative().child(list);
+        if list_focused {
+            list_area = list_area.children(interact::focus_ring(colors.accent, RadiusTokens::SM));
+        }
+
         v_flex()
             .size_full()
             .gap(px(SpacingTokens::XS))
             .p(px(SpacingTokens::XS))
             .bg(colors.surface_1)
             .child(toolbar)
-            .child(list)
+            .child(list_area)
+            // A11Y-06:按压态松手即清
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    if this.pressed_node.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+    }
+}
+
+// A11Y-02 语义槽:面板可访问名缺省"图层树"、role 缺省 List。
+semantic_slot!(LayerTreePanel);
+
+impl LayerTreePanel {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省 =
+    /// ("图层树", List);行语义见 render 的 ListItem 挂接。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = match self.semantic.label() {
+            Some(_) => self.semantic.clone(),
+            None => self.semantic.clone().with_label("图层树"),
+        };
+        let role = sem.role().unwrap_or(SemanticRole::List);
+        sem.with_role(role)
     }
 }
 

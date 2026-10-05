@@ -27,7 +27,12 @@ pub struct CurvePreview {
     width: f32,
     /// 预览区高度(px)
     height: f32,
+    /// A11Y-02 语义槽(装饰性预览件;label 槽为门禁面)
+    semantic: crate::interact::Semantic,
 }
+
+// A11Y-02 语义槽:CurvePreview 是只读图形预览(非交互),role 缺省 Decoration。
+crate::interact::semantic_slot!(CurvePreview);
 
 impl CurvePreview {
     /// 指定缓动与尺寸的只读预览。
@@ -36,6 +41,7 @@ impl CurvePreview {
             easing,
             width,
             height,
+            semantic: crate::interact::Semantic::new(),
         }
     }
 }

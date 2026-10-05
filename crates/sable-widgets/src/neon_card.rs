@@ -186,7 +186,13 @@ pub struct NeonCardState {
     /// 入场起点;None = 未起跑(进度恒 1,无入场直显——[`tick`] 首调起跑)。
     enter_started_ms: Option<f64>,
     seed: u64,
+    /// A11Y-02 语义槽(装饰卡;label 槽为门禁面,role 缺省 Decoration)
+    semantic: crate::interact::Semantic,
 }
+
+// A11Y-02 语义槽:NeonCard 为装饰组件(读屏应跳过的纯视觉件),role 缺省
+// Decoration;TD-01 升级后语义树挂接时映射 presentation/ignored。
+crate::interact::semantic_slot!(NeonCardState);
 
 impl NeonCardState {
     /// 以确定性种子构造(粒子起终点/尺寸由种子派生,同种子逐位同帧)。
@@ -198,6 +204,7 @@ impl NeonCardState {
             hover_anim: None,
             enter_started_ms: None,
             seed,
+            semantic: crate::interact::Semantic::new(),
         }
     }
 

@@ -37,11 +37,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Context, ElementId, Entity, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, px,
-    uniform_list,
+    App, Context, ElementId, Entity, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, StatefulInteractiveElement,
+    Styled, Window, div, px, uniform_list,
 };
 use sable_foundation::scene::{NodeId, Scene};
 use slotmap::Key;
@@ -49,7 +48,10 @@ use slotmap::Key;
 use crate::anim::lerp_hsla;
 use crate::controls::button::{Button, button_element};
 use crate::flip::FlipTracker;
-use crate::interact::{self, HoverState, PulseState};
+use crate::interact::{
+    self, HoverState, InteractState, ListNavIntent, PulseState, Semantic, SemanticRole, list_nav,
+    semantic_slot,
+};
 use crate::theme::theme;
 use crate::tokens::{
     FONT_SIZE_BODY, FONT_SIZE_CAPTION, RadiusTokens, SpacingTokens, control_height, h_flex, v_flex,
@@ -91,6 +93,12 @@ pub struct LayerPanel {
     flip: Rc<RefCell<FlipTracker>>,
     /// A7:撤销脉冲表(节点 → 脉冲;查询即清理过期项,无驻留)
     pulses: Rc<RefCell<HashMap<NodeId, PulseState>>>,
+    /// A11Y-01:列表键盘导航焦点(容器 track_focus,↑↓/Enter 导航)
+    focus: Option<FocusHandle>,
+    /// A11Y-06:按压中的行(按下高亮,松开清除)
+    pressed_node: Option<NodeId>,
+    /// A11Y-02 语义槽(可访问名/角色;缺省"图层面板"/List)
+    semantic: Semantic,
 }
 
 impl LayerPanel {
@@ -108,7 +116,36 @@ impl LayerPanel {
             hovered_node: None,
             flip: Rc::new(RefCell::new(FlipTracker::new())),
             pulses: Rc::new(RefCell::new(HashMap::new())),
+            focus: None,
+            pressed_node: None,
+            semantic: Semantic::new(),
         }
+    }
+
+    /// 列表键盘导航(A11Y-01):↑↓ 移动选择(走 on_select 上报)、Enter
+    /// 激活 = 翻转首选中行可见、Esc 交宿主(无浮层面板不消费)。状态机 =
+    /// [`list_nav`] 纯函数(TC-A11Y-NAV-01 断言面)。
+    fn on_list_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let roots: Vec<NodeId> = self.scene.read(cx).iter_roots().collect();
+        let current = self
+            .selection
+            .first()
+            .and_then(|id| roots.iter().position(|r| r == id))
+            .unwrap_or(0);
+        match list_nav(current, roots.len(), &event.keystroke.key) {
+            Some(ListNavIntent::Move(ix)) => {
+                if let Some(&id) = roots.get(ix) {
+                    (self.on_select)(id, false, cx);
+                }
+            }
+            Some(ListNavIntent::Activate) => {
+                if let Some(&id) = self.selection.first() {
+                    (self.on_toggle_visible)(id, cx);
+                }
+            }
+            Some(ListNavIntent::Escape) | None => {}
+        }
+        cx.notify();
     }
 
     /// A7 撤销脉冲(分册六 §4.3 #7):command 撤销/重做后对受影响节点调用,
@@ -181,6 +218,37 @@ pub fn apply_select(current: &[NodeId], id: NodeId, shift: bool) -> Vec<NodeId> 
     }
 }
 
+/// 行底色三态(纯函数,A11Y-06 · TC-A11Y-TRISTATE-01 的 LayerRow 断言面):
+/// - 选中 = state-layer Selected(accent 14%,深浅同比例,悬停/按压不叠加);
+/// - 按下(未选中)= state-layer Pressed;
+/// - 悬停(未选中)= 透明 → state-layer Hover 按 120ms 进度插值
+///   ([`lerp_hsla`];减弱动态下进度直通);
+/// - 静止 = 全透明。焦点可视化为列表容器的焦点环(interact::focus_ring),
+///   不占行底色。
+#[must_use]
+pub fn layer_row_bg(
+    colors: &crate::tokens::ColorTokens,
+    selected: bool,
+    pressed: bool,
+    hover_progress: f64,
+) -> Hsla {
+    if selected {
+        return interact::state_layer(colors.surface_1, InteractState::Selected, colors.accent);
+    }
+    if pressed {
+        return interact::state_layer(colors.surface_1, InteractState::Pressed, colors.accent);
+    }
+    if hover_progress > 0.0 {
+        lerp_hsla(
+            Hsla::transparent_black(),
+            interact::state_layer(colors.surface_1, InteractState::Hover, colors.accent),
+            hover_progress,
+        )
+    } else {
+        Hsla::transparent_black()
+    }
+}
+
 impl Render for LayerPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
@@ -191,6 +259,13 @@ impl Render for LayerPanel {
         let weak = cx.entity().downgrade();
         let flip = self.flip.clone();
         let pulses = self.pulses.clone();
+        // A11Y-01:列表焦点(首帧惰性创建,tab_stop 进 Tab 环游)+ 按压快照
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let list_focused = focus.is_focused(window);
+        let pressed_node = self.pressed_node;
 
         // A7/A4 帧时钟与悬停快照(悬停互斥,单一进度值服务当前悬停行)
         let now = interact::now_ms();
@@ -281,7 +356,10 @@ impl Render for LayerPanel {
                     let panel = panel.clone();
                     move |ev: &MouseDownEvent, _win: &mut Window, cx: &mut App| {
                         let shift = ev.modifiers.shift;
-                        let _ = panel.update(cx, |this, cx| (this.on_select)(id, shift, cx));
+                        let _ = panel.update(cx, |this, cx| {
+                            this.pressed_node = Some(id); // A11Y-06 按压态
+                            (this.on_select)(id, shift, cx);
+                        });
                     }
                 };
                 let eye = {
@@ -312,6 +390,10 @@ impl Render for LayerPanel {
                 };
                 let t = theme(cx);
                 let colors = t.colors;
+                let pressed = pressed_node == Some(id);
+                let row_semantic = Semantic::new()
+                    .with_role(SemanticRole::ListItem)
+                    .with_label(name.clone());
                 let row = h_flex()
                     .id(ElementId::NamedInteger("layer-row".into(), key))
                     .w_full()
@@ -326,55 +408,43 @@ impl Render for LayerPanel {
                     } else {
                         Hsla::transparent_black()
                     })
-                    // TOK-04:选中 = state-layer(面板底上叠 accent 14%,深浅
-                    // 同比例);悬停 = state-layer(Hover)插值(叠白/黑随主题)
-                    .when(selected, |el| {
-                        el.bg(interact::state_layer(
-                            colors.surface_1,
-                            interact::InteractState::Selected,
-                            colors.accent,
-                        ))
-                    })
-                    .when(!selected && hover_p > 0.0, |el| {
-                        el.bg(lerp_hsla(
-                            Hsla::transparent_black(),
-                            interact::state_layer(
-                                colors.surface_1,
-                                interact::InteractState::Hover,
-                                colors.accent,
-                            ),
-                            hover_p,
-                        ))
-                    })
-                    // 眼睛:填充方块 = 可见 / 透明 = 隐藏
+                    // TOK-04 / A11Y-06:三态 = layer_row_bg 纯函数(选中 =
+                    // Selected,按压 = Pressed,悬停 = Hover 120ms 插值)
+                    .bg(layer_row_bg(&colors, selected, pressed, hover_p))
+                    // 眼睛:填充方块 = 可见 / 透明 = 隐藏(A11Y-03:视觉
+                    // 10px、命中 ≥24px,监听挂热区容器)
                     .child(
-                        div()
-                            .size(px(10.0))
-                            .rounded(px(RadiusTokens::SM))
-                            .border_1()
-                            .border_color(colors.text_secondary)
-                            .bg(if visible {
-                                colors.text_secondary
-                            } else {
-                                Hsla::transparent_black()
-                            })
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, eye),
+                        interact::hit_slot(
+                            div()
+                                .size(px(10.0))
+                                .rounded(px(RadiusTokens::SM))
+                                .border_1()
+                                .border_color(colors.text_secondary)
+                                .bg(if visible {
+                                    colors.text_secondary
+                                } else {
+                                    Hsla::transparent_black()
+                                }),
+                        )
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, eye),
                     )
-                    // 锁:填充 = 锁定
+                    // 锁:填充 = 锁定(A11Y-03 同上)
                     .child(
-                        div()
-                            .size(px(10.0))
-                            .rounded(px(RadiusTokens::SM))
-                            .border_1()
-                            .border_color(colors.text_disabled)
-                            .bg(if locked {
-                                colors.warning
-                            } else {
-                                Hsla::transparent_black()
-                            })
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, lock),
+                        interact::hit_slot(
+                            div()
+                                .size(px(10.0))
+                                .rounded(px(RadiusTokens::SM))
+                                .border_1()
+                                .border_color(colors.text_disabled)
+                                .bg(if locked {
+                                    colors.warning
+                                } else {
+                                    Hsla::transparent_black()
+                                }),
+                        )
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, lock),
                     )
                     // 缩略图占位色块(vello_cpu 缩略图 = M2)
                     .child(
@@ -399,13 +469,18 @@ impl Render for LayerPanel {
                             .on_mouse_down(MouseButton::Left, on_select),
                     )
                     .on_hover(on_hover);
-                rows.push(row.into_any_element());
+                // A11Y-02:行语义挂接(ListItem + 图层名;gpui 0.2.2 无语义树,
+                // 单点透传待 TD-01 接通)
+                let row = interact::attach_semantics(row, &row_semantic);
+                rows.push(row);
             }
             rows
         })
         .flex_1()
         .min_h_0()
-        .bg(colors.surface_1);
+        .bg(colors.surface_1)
+        .track_focus(&focus)
+        .on_key_down(cx.listener(Self::on_list_key));
 
         // 悬停过渡 / 让位 / 脉冲任一在跑就续帧(动画运行才请求帧,静止零帧
         // 提交;脉冲表的过期项借本次遍历清理,不驻留)
@@ -416,13 +491,46 @@ impl Render for LayerPanel {
             window.request_animation_frame();
         }
 
+        // A11Y-01:焦点环画在列表区(容器级,两主题 accent,interact 单点)
+        let mut list_area = v_flex().flex_1().min_h_0().relative().child(list);
+        if list_focused {
+            list_area = list_area.children(interact::focus_ring(colors.accent, RadiusTokens::SM));
+        }
+
         v_flex()
             .size_full()
             .gap(px(SpacingTokens::XS))
             .p(px(SpacingTokens::XS))
             .bg(colors.surface_1)
             .child(toolbar)
-            .child(list)
+            .child(list_area)
+            // A11Y-06:按压态松手即清(行内按下高亮,释放复位)
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _win, cx| {
+                    if this.pressed_node.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+    }
+}
+
+// A11Y-02 语义槽:面板可访问名缺省"图层面板"、role 缺省 List。
+semantic_slot!(LayerPanel);
+
+impl LayerPanel {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省 =
+    /// ("图层面板", List);行语义见 render 的 ListItem 挂接。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = self.semantic.clone();
+        let sem = match sem.label() {
+            Some(_) => sem,
+            None => sem.with_label("图层面板"),
+        };
+        let role = sem.role().unwrap_or(SemanticRole::List);
+        sem.with_role(role)
     }
 }
 
@@ -462,6 +570,46 @@ mod tests {
         );
         // 空选 + Shift = 单加
         assert_eq!(apply_select(&[], c, true), vec![c]);
+    }
+
+    /// TC-A11Y-TRISTATE-01(LayerRow 半边,纯函数):hover/press/selected
+    /// 三态互异且方向正确;selected 不受 hover/press 叠加(TOK-04)。
+    #[test]
+    fn tc_a11y_tristate_01_layer_row_bg_mapping() {
+        use crate::tokens::ColorTokens;
+        let transparent = Hsla::transparent_black();
+        for colors in [ColorTokens::dark(), ColorTokens::light()] {
+            let idle = layer_row_bg(&colors, false, false, 0.0);
+            let hover_full = layer_row_bg(&colors, false, false, 1.0);
+            let hover_mid = layer_row_bg(&colors, false, false, 0.5);
+            let pressed = layer_row_bg(&colors, false, true, 0.0);
+            let selected = layer_row_bg(&colors, true, false, 0.0);
+            // 静止全透明;hover 满档 = state-layer Hover(可见变化)
+            assert_eq!(idle, transparent, "静止行底透明");
+            assert_eq!(
+                hover_full,
+                interact::state_layer(
+                    colors.surface_1,
+                    interact::InteractState::Hover,
+                    colors.accent
+                )
+            );
+            // 插值单调:半程介于静止与满档之间
+            assert_ne!(hover_mid, idle);
+            assert_ne!(hover_mid, hover_full);
+            // press ≠ hover(叠加强度不同)
+            assert_ne!(pressed, hover_full, "press 区别于 hover");
+            // 选中 = state-layer Selected(不受 hover/press 叠加)
+            assert_eq!(
+                selected,
+                interact::state_layer(
+                    colors.surface_1,
+                    interact::InteractState::Selected,
+                    colors.accent
+                )
+            );
+            assert_eq!(layer_row_bg(&colors, true, true, 1.0), selected);
+        }
     }
 
     #[test]

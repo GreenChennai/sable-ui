@@ -65,6 +65,24 @@ impl PropertyRow {
         self
     }
 
+    /// 覆写行标签(**即可见标签**;A11Y-02:属性行的可访问名与视觉文本
+    /// 单源,gpui 0.2.2 无语义树、存态消费待 TD-01)。`new(label)` 已给
+    /// 初值,本方法供链式覆写。
+    #[must_use]
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    /// 语义(A11Y-02,只读):role = Group(行是容器,交互语义由右侧控件
+    /// 承担)、label = 行标签。
+    #[must_use]
+    pub fn semantic(&self) -> crate::interact::Semantic {
+        crate::interact::Semantic::new()
+            .with_role(crate::interact::SemanticRole::Group)
+            .with_label(self.label.clone())
+    }
+
     /// 实际行高(派生制):`max(26, 行高 16 + 2×6)` = 28。
     pub fn row_height() -> f32 {
         control_height(

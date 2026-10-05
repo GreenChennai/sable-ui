@@ -22,14 +22,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Entity, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Render, RenderImage,
+    App, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Render, RenderImage,
     StatefulInteractiveElement, Styled, StyledImage as _, Window, canvas, div, img, px,
 };
 use sable_video::model::{ClipId, Timeline, TrackKind};
 
 use gpui::prelude::FluentBuilder as _;
 
+use crate::interact::{self, Semantic, SemanticRole, semantic_slot};
 use crate::theme::theme;
 use crate::tokens::{FONT_SIZE_CAPTION, RadiusTokens, SpacingTokens, v_flex};
 
@@ -87,6 +88,10 @@ pub struct TimelineView {
     on_move_clip: MoveClipFn,
     on_drop_clip: DropClipFn,
     on_select_clip: SelectClipFn,
+    /// A11Y-01:键盘 seek 焦点(容器 track_focus,←→/Home/End)
+    focus: Option<FocusHandle>,
+    /// A11Y-02 语义槽(可访问名;role 默认 Slider——播放头连续量语义)
+    semantic: Semantic,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -114,6 +119,8 @@ impl TimelineView {
             on_move_clip: Rc::new(|_, _, _| {}),
             on_drop_clip: Rc::new(|_, _, _| {}),
             on_select_clip: Rc::new(|_, _| {}),
+            focus: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -162,6 +169,27 @@ impl TimelineView {
     }
 
     // —— 事件 ——
+
+    /// 键盘 seek(A11Y-01):←/→ = ±一个刻度档(nice_tick_step_ms,不另立
+    /// 手感系数)、Home/End = 首尾;步进语义 = [`interact::timeline_seek_step`]
+    /// 纯函数,修改经 on_seek 上报(与拖拽 scrub 同一通道)。
+    fn on_seek_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let (pps, duration_ms) = {
+            let tl = self.timeline.read(cx);
+            (tl.px_per_second, tl.duration())
+        };
+        let step_ms = nice_tick_step_ms(pps);
+        if let Some(next) = interact::timeline_seek_step(
+            self.playhead_ms,
+            step_ms,
+            duration_ms,
+            &event.keystroke.key,
+        ) {
+            self.playhead_ms = next;
+            (self.on_seek)(next, cx);
+            cx.notify();
+        }
+    }
 
     fn seek_to(&mut self, x_px: f64, cx: &mut Context<Self>) {
         let pps = self.timeline.read(cx).px_per_second;
@@ -284,7 +312,7 @@ impl TimelineView {
 }
 
 impl Render for TimelineView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         let colors = t.colors;
         let (pps, tracks) = {
@@ -455,6 +483,12 @@ impl Render for TimelineView {
                         } else {
                             colors.border_subtle
                         })
+                        // A11Y-06:clip 悬停态(未选中提描边;按下即选中/拖拽
+                        // 跟手 = press 反馈,逐帧重建行不做按压底)
+                        .when(!selected, |c| {
+                            let hover_border = colors.border_strong;
+                            c.hover(move |s| s.border_color(hover_border))
+                        })
                         .cursor_pointer()
                         .overflow_hidden()
                         .relative()
@@ -515,14 +549,44 @@ impl Render for TimelineView {
                 ),
             );
 
-        v_flex()
+        // A11Y-01:键盘 seek 焦点(容器级 track_focus + tab_stop)+ 焦点环
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let focused = focus.is_focused(window);
+        let mut root = v_flex()
+            .relative()
             .size_full()
             .overflow_hidden()
             .bg(colors.surface_0)
+            .track_focus(&focus)
+            .on_key_down(cx.listener(Self::on_seek_key))
             .child(body)
             // 根容器收 mouse move/up:拖动中出标尺/clip 仍持续
             .on_mouse_move(cx.listener(Self::on_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up));
+        if focused {
+            root = root.children(interact::focus_ring(colors.accent, RadiusTokens::SM));
+        }
+        root
+    }
+}
+
+// A11Y-02 语义槽:可访问名缺省"时间轴"、role 缺省 Slider(播放头连续量)。
+semantic_slot!(TimelineView);
+
+impl TimelineView {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省 =
+    /// ("时间轴", Slider)。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = match self.semantic.label() {
+            Some(_) => self.semantic.clone(),
+            None => self.semantic.clone().with_label("时间轴"),
+        };
+        let role = sem.role().unwrap_or(SemanticRole::Slider);
+        sem.with_role(role)
     }
 }
 

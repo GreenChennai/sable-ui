@@ -533,6 +533,32 @@ pub struct TooltipHost {
     viewport: Rect,
     clock: TooltipClock,
     provider: Option<TooltipContentFn>,
+    /// A11Y-02 语义槽(宿主自身为浮层宿主,非交互件;label 槽为门禁面)
+    semantic: crate::interact::Semantic,
+}
+
+// A11Y-02 语义槽:TooltipHost 是程序化浮层宿主(非交互件,不出现在 Tab
+// 序);label/role 为接口面,role 缺省 Decoration。
+crate::interact::semantic_slot!(TooltipHost);
+
+impl TooltipHost {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省回落
+    /// 当前显示中的 tooltip 名称、role = Decoration。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> crate::interact::Semantic {
+        let sem = match self.semantic.label() {
+            Some(text) => crate::interact::Semantic::new().with_label(text.clone()),
+            None => match &self.spec {
+                Some(spec) => crate::interact::Semantic::new().with_label(spec.label.clone()),
+                None => crate::interact::Semantic::new(),
+            },
+        };
+        let role = self
+            .semantic
+            .role()
+            .unwrap_or(crate::interact::SemanticRole::Decoration);
+        sem.with_role(role)
+    }
 }
 
 impl Default for TooltipHost {
@@ -550,6 +576,7 @@ impl TooltipHost {
             viewport: Rect::ZERO,
             clock: TooltipClock::new(),
             provider: None,
+            semantic: crate::interact::Semantic::new(),
         }
     }
 

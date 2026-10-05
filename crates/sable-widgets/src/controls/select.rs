@@ -71,8 +71,9 @@ use gpui::{
 
 use crate::anim::{Animated, Easing, lerp_hsla};
 use crate::controls::button::{ButtonSize, ButtonVariant, button_style};
-use crate::controls::choice::focus_ring_layers;
-use crate::interact::{self, HoverState, InteractState, state_layer};
+use crate::interact::{
+    self, HoverState, InteractState, Semantic, SemanticRole, semantic_slot, state_layer,
+};
 use crate::theme::{elevated, theme};
 use crate::tokens::{
     ColorTokens, HEIGHT_DEFAULT, MotionTokens, RadiusTokens, SpacingTokens, TextSize, UI_FONT,
@@ -257,6 +258,8 @@ pub struct Select {
     hover: HoverState,
     /// 触发钮窗口 bounds(paint 期 canvas 记录;翻边定位用)
     anchor_bounds: Option<gpui::Bounds<Pixels>>,
+    /// A11Y-02 语义槽(可访问名;缺省回落选中项/占位符)
+    semantic: Semantic,
 }
 
 impl Select {
@@ -278,6 +281,7 @@ impl Select {
             focus: None,
             hover: HoverState::new(),
             anchor_bounds: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -408,7 +412,7 @@ impl Select {
         cx.notify();
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.disabled {
             return; // TOK-07:禁用即交互门控
         }
@@ -435,6 +439,12 @@ impl Select {
             }
             SelectNav::Close => {
                 self.begin_close();
+                // A11Y-01 Esc 契约:关下拉、焦点还触发钮。触发钮与下拉共用
+                // 根句柄(焦点本就在其上),显式 focus 一次保证宿主侧焦点态
+                // 与视觉一致(浮层收起后键盘继续操作触发钮)。
+                if let Some(focus) = self.focus.clone() {
+                    window.focus(&focus);
+                }
                 cx.notify();
             }
             SelectNav::Highlight(index) => {
@@ -524,10 +534,10 @@ impl Render for Select {
             .child(div().truncate().child(label))
             .child(div().text_color(label_color).child(CHEVRON_GLYPH));
 
-        // L2 凸起 + 焦点环(环画在触发钮盒上,不圈下拉)
+        // L2 凸起 + 焦点环(环画在触发钮盒上,不圈下拉;环 = interact 单点)
         let mut trigger_box = div().relative().w_full().child(elevated(2, quad));
         if focused {
-            trigger_box = trigger_box.children(focus_ring_layers(colors.accent, style.radius));
+            trigger_box = trigger_box.children(interact::focus_ring(colors.accent, style.radius));
         }
 
         // 触发钮 bounds 记录钩子(翻边定位用;TextField 同款 paint 期采集)
@@ -691,6 +701,30 @@ fn single_char(key: &str) -> Option<char> {
     let mut chars = key.chars();
     let ch = chars.next()?;
     chars.next().is_none().then_some(ch)
+}
+
+// A11Y-02 语义槽(label/role/semantic 三件;role 默认 Button——下拉以触发
+// 钮为语义单元;可访问名缺省回落选中项/占位符,见 resolved_semantic)。
+semantic_slot!(Select);
+
+impl Select {
+    /// 解析语义(A11Y-02):显式 `.label(...)` 优先;缺省回落**当前选中项
+    /// 文本**,再回落占位符——触发钮可见文案即可访问名,单源。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        // 显式 `.label(...)` 优先;缺省回落选中项 → 占位符(触发钮可见文案
+        // 即可访问名,单源)
+        let explicit = self.semantic.label().cloned();
+        let fallback = self
+            .selected
+            .and_then(|i| self.options.get(i).cloned())
+            .or_else(|| self.placeholder.clone());
+        let mut sem = Semantic::new();
+        if let Some(text) = explicit.or(fallback) {
+            sem = sem.with_label(text);
+        }
+        sem.with_role(self.semantic.role().unwrap_or(SemanticRole::Button))
+    }
 }
 
 /// f64 动画值 → f32(GPU 域收口,button/panels 同款惯例)。
@@ -938,5 +972,35 @@ mod tests {
         assert_eq!(single_char("enter"), None);
         assert_eq!(single_char(""), None);
         assert_eq!(single_char("ab"), None);
+    }
+
+    /// A11Y-02 语义槽:label 覆写优先;缺省回落选中项 → 占位符;role 默认
+    /// Button、可覆写。
+    #[test]
+    fn semantic_slot_label_falls_back_to_selection_then_placeholder() {
+        let sel = Select::new("s", labels()).selected(1);
+        assert_eq!(
+            sel.resolved_semantic().label().map(|s| s.as_ref()),
+            Some("JPEG"),
+            "缺省回落选中项"
+        );
+        let fresh = Select::new("f", labels()).placeholder("选择格式…");
+        assert_eq!(
+            fresh.resolved_semantic().label().map(|s| s.as_ref()),
+            Some("选择格式…"),
+            "未选中回落占位符"
+        );
+        let named = Select::new("n", labels())
+            .label("导出格式")
+            .role(crate::interact::SemanticRole::Select);
+        assert_eq!(
+            named.resolved_semantic().label().map(|s| s.as_ref()),
+            Some("导出格式"),
+            "显式 label 优先于选中项"
+        );
+        assert_eq!(
+            named.resolved_semantic().role(),
+            Some(crate::interact::SemanticRole::Select)
+        );
     }
 }

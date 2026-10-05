@@ -46,16 +46,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Bounds, Context, ElementId, InteractiveElement as _, IntoElement, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Styled, Window, canvas, div, px,
+    AnyElement, Bounds, Context, ElementId, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render,
+    ScrollWheelEvent, StatefulInteractiveElement as _, Styled, Window, canvas, div, px,
 };
 
 use crate::anim::ScrollPhysics;
 use crate::anim::reduced_motion;
-use crate::interact::now_ms;
+use crate::interact::{self, Semantic, SemanticRole, now_ms, semantic_slot};
 use crate::theme::theme;
-use crate::tokens::{ColorTokens, MotionTokens};
+use crate::tokens::{ColorTokens, MotionTokens, RadiusTokens};
 
 // ---------------------------------------------------------------------------
 // 常量域(几何具名常量;颜色一律令牌;物理值一律 ScrollPhysics)
@@ -458,6 +458,10 @@ pub struct ScrollArea {
     hovered: bool,
     /// 本元素 painted bounds(布局期经 canvas 捕获;鼠标坐标 → 轨道坐标用)
     bounds: Rc<RefCell<Option<Bounds<Pixels>>>>,
+    /// A11Y-01:键盘滚动焦点(容器 track_focus;轴向对应的方向键滚动)
+    focus: Option<FocusHandle>,
+    /// A11Y-02 语义槽(可访问名;role 默认 ScrollRegion)
+    semantic: Semantic,
 }
 
 impl ScrollArea {
@@ -478,6 +482,8 @@ impl ScrollArea {
             fade: ScrollbarFade::new(),
             hovered: false,
             bounds: Rc::new(RefCell::new(None)),
+            focus: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -507,6 +513,35 @@ impl ScrollArea {
     #[must_use]
     pub fn scroll_offset(&self) -> f64 {
         self.state.offset()
+    }
+
+    /// 键盘滚动(A11Y-01):聚焦后按轴向消费方向键(竖向 ↑↓ / 横向 ←→),
+    /// 一次一行([`SCROLL_LINE_PX`];物理与滚轮同路 [`ScrollState::wheel_step`],
+    /// reduced_motion 由 ScrollPhysics 直通收敛)。Home/End = 滚到顶/底。
+    fn on_key_scroll(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let now = now_ms();
+        let (content, viewport) = (self.content_len(), self.viewport_len());
+        let step = f64::from(SCROLL_LINE_PX);
+        let vertical = self.axis == ScrollAxis::Vertical;
+        let intent = match key {
+            "up" if vertical => Some(step),
+            "down" if vertical => Some(-step),
+            "left" if !vertical => Some(step),
+            "right" if !vertical => Some(-step),
+            "home" => Some(f64::MAX / 4.0),
+            "end" => Some(-(f64::MAX / 4.0)),
+            _ => None,
+        };
+        if let Some(delta) = intent {
+            self.state.wheel_step(delta, now, content, viewport);
+            cx.notify();
+        }
     }
 
     fn content_len(&self) -> f64 {
@@ -747,12 +782,44 @@ impl Render for ScrollArea {
             root = root.child(track);
         }
 
+        // A11Y-01:键盘滚动焦点(tab_stop 进 Tab 环游)+ 焦点环
+        let focus = self
+            .focus
+            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let focused = focus.is_focused(window);
+        let mut root = root
+            .track_focus(&focus)
+            .on_key_down(cx.listener(Self::on_key_scroll));
+        if focused {
+            root = root
+                .relative()
+                .children(interact::focus_ring(colors.accent, RadiusTokens::SM));
+        }
+
         // 帧泵:滑行/回弹或淡变进行中才续帧(静止零帧提交,分册六 §4.4)
         if self.state.is_flowing(now) || self.fade.is_running_at(now) {
             window.request_animation_frame();
         }
 
         root
+    }
+}
+
+// A11Y-02 语义槽:可访问名缺省"滚动区"、role 缺省 ScrollRegion。
+semantic_slot!(ScrollArea);
+
+impl ScrollArea {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省 =
+    /// ("滚动区", ScrollRegion)。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = match self.semantic.label() {
+            Some(_) => self.semantic.clone(),
+            None => self.semantic.clone().with_label("滚动区"),
+        };
+        let role = sem.role().unwrap_or(SemanticRole::ScrollRegion);
+        sem.with_role(role)
     }
 }
 

@@ -40,7 +40,7 @@ use gpui::{
 use sable_foundation::effects::{EffectEntry, EffectSpec};
 
 use crate::controls::button::{Button, ButtonSize, button_element};
-use crate::interact;
+use crate::interact::{self, Semantic, SemanticRole, semantic_slot};
 use crate::theme::theme;
 use crate::tokens::{
     ColorTokens, FONT_SIZE_BODY, FONT_SIZE_CAPTION, FONT_SIZE_HEADING, RadiusTokens, SpacingTokens,
@@ -277,6 +277,29 @@ fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
 pub struct EffectStackPanel {
     spec: EffectStackSpec,
     cb: EffectStackCallbacks,
+    /// A11Y-02 语义槽(可访问名/角色;缺省回落标题/List)
+    semantic: Semantic,
+}
+
+// A11Y-02 语义槽(label/role/semantic 三件):面板可访问名缺省 = 面板标题,
+// role 缺省 List(逐行 ListItem 挂接见 render)。
+semantic_slot!(EffectStackPanel);
+
+impl EffectStackPanel {
+    /// 解析语义(A11Y-02):显式 `.label(...)`/`.role(...)` 优先,缺省 =
+    /// (spec 标题, List)。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let sem = match self.semantic.label() {
+            Some(_) => self.semantic.clone(),
+            None => Semantic::new().with_label(self.spec.label.clone()),
+        };
+        if self.semantic.role().is_some() {
+            return sem;
+        }
+        let role = SemanticRole::List;
+        sem.with_role(role)
+    }
 }
 
 impl EffectStackPanel {
@@ -404,6 +427,11 @@ impl RenderOnce for EffectStackPanel {
                         }),
                     cx,
                 ));
+            // A11Y-02:行语义挂接(ListItem + 效果名;单点透传待 TD-01)
+            let row_semantic = Semantic::new()
+                .with_role(SemanticRole::ListItem)
+                .with_label(effect_label(&entry.spec));
+            let row = interact::attach_semantics(row, &row_semantic);
             panel = panel.child(row);
         }
         panel
@@ -427,27 +455,31 @@ fn eye_toggle(
         interact::InteractState::Hover,
         colors.accent,
     );
-    div()
-        .size(px(10.0))
-        .flex_shrink_0()
-        .rounded(px(RadiusTokens::SM))
-        .border_1()
-        .border_color(if enabled {
-            colors.text_secondary
-        } else {
-            colors.text_disabled
-        })
-        .bg(if enabled {
-            colors.accent
-        } else {
-            Hsla::transparent_black()
-        })
-        .cursor_pointer()
-        .hover(move |style| style.bg(hover_bg))
-        .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _win, cx| {
-            on_toggle(cx)
-        })
-        .into_any_element()
+    // A11Y-03:视觉 10px、命中 ≥24px(hit_slot 透明热区;监听挂热区容器,
+    // 补白区可点;press 反馈 = 状态即翻,行内小位不做按压底)
+    interact::hit_slot(
+        div()
+            .size(px(10.0))
+            .rounded(px(RadiusTokens::SM))
+            .border_1()
+            .border_color(if enabled {
+                colors.text_secondary
+            } else {
+                colors.text_disabled
+            })
+            .bg(if enabled {
+                colors.accent
+            } else {
+                Hsla::transparent_black()
+            })
+            .hover(move |style| style.bg(hover_bg)),
+    )
+    .flex_shrink_0()
+    .cursor_pointer()
+    .on_mouse_down(MouseButton::Left, move |_ev: &MouseDownEvent, _win, cx| {
+        on_toggle(cx)
+    })
+    .into_any_element()
 }
 
 /// 便捷构造:`effect_stack_panel(&spec, &cb)`(规格与回调克隆进面板)。
@@ -458,6 +490,7 @@ pub fn effect_stack_panel(spec: &EffectStackSpec, cb: &EffectStackCallbacks) -> 
             label: spec.label.clone(),
         },
         cb: cb.clone(),
+        semantic: Semantic::new(),
     }
     .into_any_element()
 }

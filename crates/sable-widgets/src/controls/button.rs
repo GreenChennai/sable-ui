@@ -56,7 +56,10 @@ use gpui::{
 };
 
 use crate::anim::{Spring, lerp_hsla, reduced_motion};
-use crate::interact::{self, HoverState, InteractState, disabled_foreground, state_layer};
+use crate::interact::{
+    self, HoverState, InteractState, Semantic, SemanticRole, disabled_foreground, hit_size,
+    semantic_slot, state_layer,
+};
 use crate::theme::theme;
 use crate::tokens::{
     ColorTokens, HEIGHT_COMPACT, HEIGHT_DEFAULT, HEIGHT_LOOSE, RadiusTokens, SpacingTokens,
@@ -414,6 +417,8 @@ pub struct Button {
     press: Option<PressAnim>,
     hover: HoverState,
     focus: Option<FocusHandle>,
+    /// A11Y-02 语义槽(可访问名缺省 = 可见文本,见 resolved_semantic)
+    semantic: Semantic,
 }
 
 impl Button {
@@ -430,6 +435,7 @@ impl Button {
             press: None,
             hover: HoverState::new(),
             focus: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -518,6 +524,23 @@ impl Button {
     }
 }
 
+// A11Y-02 语义槽(label/role/semantic 三件):Button 可访问名缺省回落
+// 可见文本(见 resolved_semantic)。
+semantic_slot!(Button);
+
+impl Button {
+    /// 解析语义(A11Y-02):显式 `.label(...)` 优先,缺省 = 可见文本;
+    /// role 默认 [`SemanticRole::Button`]。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let mut sem = Semantic::new().with_label(self.label.clone());
+        if let Some(over) = self.semantic.label() {
+            sem = sem.with_label(over.clone());
+        }
+        sem.with_role(self.semantic.role().unwrap_or(SemanticRole::Button))
+    }
+}
+
 impl Render for Button {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
@@ -561,8 +584,15 @@ impl Render for Button {
 
         let height = style.height;
         let quad = button_quad(&style, self.icon.as_ref(), Some(&self.label), scale);
-        let mut root = button_root(self.id.clone(), quad, height, &focus, disabled)
-            .on_hover(cx.listener(Self::on_hover_changed));
+        let mut root = button_root(
+            self.id.clone(),
+            quad,
+            hit_size(height),
+            None,
+            &focus,
+            disabled,
+        )
+        .on_hover(cx.listener(Self::on_hover_changed));
         if !disabled {
             root = root
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_press_down))
@@ -609,6 +639,8 @@ pub struct IconButton {
     press: Option<PressAnim>,
     hover: HoverState,
     focus: Option<FocusHandle>,
+    /// A11Y-02 语义槽(可访问名缺省 = tooltip 文案,见 resolved_semantic)
+    semantic: Semantic,
 }
 
 impl IconButton {
@@ -626,6 +658,7 @@ impl IconButton {
             press: None,
             hover: HoverState::new(),
             focus: None,
+            semantic: Semantic::new(),
         }
     }
 
@@ -730,6 +763,26 @@ impl IconButton {
     }
 }
 
+// A11Y-02 语义槽:IconButton 无可见文本,可访问名缺省回落 tooltip 文案
+// (见 resolved_semantic)。
+semantic_slot!(IconButton);
+
+impl IconButton {
+    /// 解析语义(A11Y-02):显式 `.label(...)` 优先,缺省 = tooltip 文案;
+    /// role 默认 [`SemanticRole::IconButton`]。
+    #[must_use]
+    pub fn resolved_semantic(&self) -> Semantic {
+        let mut sem = match &self.tooltip_label {
+            Some(text) => Semantic::new().with_label(text.clone()),
+            None => Semantic::new(),
+        };
+        if let Some(label) = self.semantic.label() {
+            sem = sem.with_label(label.clone());
+        }
+        sem.with_role(self.semantic.role().unwrap_or(SemanticRole::IconButton))
+    }
+}
+
 impl Render for IconButton {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
@@ -772,8 +825,15 @@ impl Render for IconButton {
 
         let side = icon_button_side(self.size);
         let quad = icon_button_quad(&style, &self.icon, side, scale);
-        let mut root = button_root(self.id.clone(), quad, side, &focus, disabled)
-            .on_hover(cx.listener(Self::on_hover_changed));
+        let mut root = button_root(
+            self.id.clone(),
+            quad,
+            hit_size(side),
+            Some(hit_size(side)),
+            &focus,
+            disabled,
+        )
+        .on_hover(cx.listener(Self::on_hover_changed));
         if !disabled {
             root = root
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_press_down))
@@ -882,11 +942,14 @@ fn icon_button_quad(style: &ButtonStyle, glyph: &SharedString, side: f32, scale:
 }
 
 /// 热区根(共用):固定外尺寸(press 缩放不推布局)+ 焦点接入;禁用态
-/// 无指针样式(监听器由调用方按需挂)。
+/// 无指针样式(监听器由调用方按需挂)。`outer_size` 由调用方传
+/// [`hit_size`](A11Y-03:命中区 ≥24px——视觉 quad 居中不变,热区外扩),
+/// `min_w` 为方形件(IconButton)的宽度下限。
 fn button_root(
     id: ElementId,
     quad: Div,
     outer_size: f32,
+    min_w: Option<f32>,
     focus: &FocusHandle,
     disabled: bool,
 ) -> Stateful<Div> {
@@ -897,6 +960,10 @@ fn button_root(
         .items_center()
         .child(quad)
         .track_focus(focus);
+    let root = match min_w {
+        Some(w) => root.min_w(px(w)),
+        None => root,
+    };
     if disabled {
         root
     } else {
@@ -918,21 +985,35 @@ pub fn button_element(button: Button, cx: &App) -> AnyElement {
         InteractState::Idle
     };
     let style = button_style(button.variant, button.size, state, &colors);
-    let mut quad =
-        button_quad(&style, button.icon.as_ref(), Some(&button.label), 1.0).id(button.id);
+    let quad = button_quad(&style, button.icon.as_ref(), Some(&button.label), 1.0);
     if disabled {
-        return quad.into_any_element(); // TOK-07:无热区,容器不变仅前景降级
+        return quad.id(button.id).into_any_element(); // TOK-07:无热区,仅前景降级
     }
+    // A11Y-06:三态落在视觉 quad(hover/active 即时伪类,视觉规格同源);
+    // quad 持原 id(Stateful:active 可用)。
     let hover_bg = button_style(button.variant, button.size, InteractState::Hover, &colors).bg;
     let press_bg = button_style(button.variant, button.size, InteractState::Pressed, &colors).bg;
-    quad = quad
+    let quad = quad
+        .id(button.id.clone())
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
         .active(move |s| s.bg(press_bg));
+    // A11Y-03:命中区 ≥24px——视觉 quad 居中不变,Stateful 命中容器外扩
+    //(容器持派生 id,点击监听只在容器:padding 区可点且不双触发)
+    let mut hit = h_flex()
+        .id(ElementId::NamedChild(
+            Box::new(button.id.clone()),
+            "hit".into(),
+        ))
+        .h(px(hit_size(style.height)))
+        .justify_center()
+        .items_center()
+        .cursor_pointer()
+        .child(quad);
     if let Some(cb) = button.on_press {
-        quad = quad.on_click(move |ev, window, cx| cb(ev, window, cx));
+        hit = hit.on_click(move |ev, window, cx| cb(ev, window, cx));
     }
-    quad.into_any_element()
+    hit.into_any_element()
 }
 
 /// [`IconButton`] 的**内联形态**(规格同源 [`icon_button_style`];tooltip
@@ -947,8 +1028,8 @@ pub fn icon_button_element(button: IconButton, cx: &App) -> AnyElement {
         InteractState::Idle
     };
     let style = icon_button_style(button.size, button.variant, state, &colors);
-    let mut quad =
-        icon_button_quad(&style, &button.icon, icon_button_side(button.size), 1.0).id(button.id);
+    let mut quad = icon_button_quad(&style, &button.icon, icon_button_side(button.size), 1.0)
+        .id(button.id.clone()); // Stateful:tooltip/active 可用
     if let Some(label) = button.tooltip_label.clone() {
         let shortcut = button.tooltip_shortcut.clone();
         quad = quad.tooltip(move |_window, cx| {
@@ -962,17 +1043,31 @@ pub fn icon_button_element(button: IconButton, cx: &App) -> AnyElement {
     if disabled {
         return quad.into_any_element();
     }
+    // A11Y-06:三态落在视觉 quad(hover/active 即时伪类);quad 持原 id
     let hover_bg = icon_button_style(button.size, button.variant, InteractState::Hover, &colors).bg;
     let press_bg =
         icon_button_style(button.size, button.variant, InteractState::Pressed, &colors).bg;
-    quad = quad
+    let quad = quad
+        .id(button.id.clone())
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
         .active(move |s| s.bg(press_bg));
+    // A11Y-03:视觉 20px、命中 ≥24px(quad 居中不变,命中容器外扩;
+    // 容器持派生 id,点击监听只在容器:padding 区可点且不双触发)
+    let mut hit = h_flex()
+        .id(ElementId::NamedChild(
+            Box::new(button.id.clone()),
+            "hit".into(),
+        ))
+        .size(px(hit_size(icon_button_side(button.size))))
+        .justify_center()
+        .items_center()
+        .cursor_pointer()
+        .child(quad);
     if let Some(cb) = button.on_press {
-        quad = quad.on_click(move |ev, window, cx| cb(ev, window, cx));
+        hit = hit.on_click(move |ev, window, cx| cb(ev, window, cx));
     }
-    quad.into_any_element()
+    hit.into_any_element()
 }
 
 // ---------------------------------------------------------------------------
@@ -1281,6 +1376,80 @@ mod tests {
         // 覆写语义:后写胜(槽位是字段,不是追加)
         btn = btn.tooltip("新文案");
         assert_eq!(btn.tooltip_label(), Some(&SharedString::from("新文案")));
+    }
+
+    /// A11Y-02 语义槽 + A11Y-03 命中区 + TC-A11Y-TRISTATE-01(IconButton
+    /// 半边,三态互异):Button 可访问名缺省可见文本、IconButton 缺省
+    /// tooltip;热区 = max(视觉, 24)。
+    #[test]
+    fn a11y_semantic_slots_hit_expansion_and_icon_tristate() {
+        // Button:可见文本即可访问名,label 覆写优先
+        let btn = Button::new("b", "确定");
+        assert_eq!(
+            btn.resolved_semantic().label().map(|s| s.as_ref()),
+            Some("确定")
+        );
+        let named = Button::new("b2", "确定").label("确认导出");
+        assert_eq!(
+            named.resolved_semantic().label().map(|s| s.as_ref()),
+            Some("确认导出"),
+            "显式 label 优先"
+        );
+        assert_eq!(named.resolved_semantic().role(), Some(SemanticRole::Button));
+        // IconButton:tooltip 兜底可访问名
+        let ib = IconButton::new("i", "◉").tooltip("切换效果启用");
+        assert_eq!(
+            ib.resolved_semantic().label().map(|s| s.as_ref()),
+            Some("切换效果启用")
+        );
+        assert_eq!(
+            ib.resolved_semantic().role(),
+            Some(SemanticRole::IconButton)
+        );
+        let named_ib = ib.label("效果启用开关");
+        assert_eq!(
+            named_ib.resolved_semantic().label().map(|s| s.as_ref()),
+            Some("效果启用开关")
+        );
+        // 命中区(A11Y-03):Entity 热区 = max(视觉, 24)
+        assert!(
+            hit_size(button_height(
+                ButtonSize::Compact,
+                button_text(ButtonSize::Compact)
+            )) >= crate::interact::MIN_HIT_PX
+        );
+        assert!(hit_size(icon_button_side(IconButtonSize::Icon20)) >= crate::interact::MIN_HIT_PX);
+        // IconButton 三态互异(hover/press 底可辨、focus = accent 描边)
+        for colors in [ColorTokens::dark(), ColorTokens::light()] {
+            let idle = icon_button_style(
+                IconButtonSize::Icon24,
+                ButtonVariant::Secondary,
+                InteractState::Idle,
+                &colors,
+            );
+            let hover = icon_button_style(
+                IconButtonSize::Icon24,
+                ButtonVariant::Secondary,
+                InteractState::Hover,
+                &colors,
+            );
+            let press = icon_button_style(
+                IconButtonSize::Icon24,
+                ButtonVariant::Secondary,
+                InteractState::Pressed,
+                &colors,
+            );
+            let ring = icon_button_style(
+                IconButtonSize::Icon24,
+                ButtonVariant::Secondary,
+                InteractState::FocusRing,
+                &colors,
+            );
+            assert_ne!(hover.bg, idle.bg, "hover 可见");
+            assert_ne!(press.bg, hover.bg, "press 区别于 hover");
+            assert_eq!(ring.border, colors.accent, "focus 描边 = accent");
+            assert_ne!(ring.border, idle.border, "未聚焦无 accent 描边");
+        }
     }
 
     #[test]

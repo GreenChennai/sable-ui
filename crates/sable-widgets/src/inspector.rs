@@ -93,6 +93,28 @@ pub struct InspectorPanel {
     pub sections: Vec<SectionSpec>,
 }
 
+impl InspectorPanel {
+    /// 可访问名(A11Y-02 语义槽,**接口占位,恒等返回**):检查器是分组
+    /// 容器,语义 = Group、名称真相 = 各分组标题([`SectionSpec::title`])/
+    /// 各行标签([`RowSpec`]),本槽为 TC-A11Y-LABEL-01 门禁面与 TD-01
+    /// (gpui 语义树升级)预留——升级时改为存态落树,签名不变。
+    #[must_use]
+    pub fn label(self, _label: impl Into<SharedString>) -> Self {
+        self
+    }
+
+    /// 语义(A11Y-02,只读):role = Group;label = 首个分组标题(容器
+    /// 语义由子件承担,gpui 0.2.2 无语义树、存态消费待 TD-01)。
+    #[must_use]
+    pub fn semantic(&self) -> crate::interact::Semantic {
+        let sem = crate::interact::Semantic::new().with_role(crate::interact::SemanticRole::Group);
+        match self.sections.first() {
+            Some(first) => sem.with_label(first.title.clone()),
+            None => sem,
+        }
+    }
+}
+
 /// [`Paint`] → 预览实心色:Solid 原样;渐变取首个色标(无色标回退白)。
 pub fn paint_solid_preview(paint: &Paint) -> Rgba8 {
     match paint {

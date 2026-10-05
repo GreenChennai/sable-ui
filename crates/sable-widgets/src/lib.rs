@@ -25,6 +25,8 @@
 //! | [`inspector`] | `inspector` + `color` + `theme`(number-field/binding 由 Cargo 特性依赖保证)|
 //! | [`timeline_view`] | `timeline` + `theme` |
 //! | [`curve_editor`] | `curve-editor` + `theme` |
+//! | [`input_method`] | —(IME 适配纯层,零新依赖,A11Y-08) |
+//! | [`keymap`] | `controls` + `theme`(chord 展示复用 tooltip 单点,A11Y-04) |
 //!
 //! 说明:`default = ["full"]` 下全部可用。组件零硬编码颜色的纪律(AGENTS.md
 //! §3.4)使**一切组件依赖 `theme`**——单独点菜某组件而不开 `theme` 时,该
@@ -63,10 +65,18 @@ pub mod flip;
 pub mod fonts;
 #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
 pub mod gradient_editor;
+/// IME 输入法适配层(A11Y-08 第 4 组收口):平台事件 → 控件回调单点接线,
+/// TextField/NumberField 的 EntityInputHandler 共用(UTF-16 换算/分支只此一份)。
+pub mod input_method;
 #[cfg(all(feature = "inspector", feature = "color", feature = "theme"))]
 pub mod inspector;
 #[cfg(feature = "anim")]
 pub mod interact;
+/// 键位注册绑定层(A11Y-04 第 4 组收口):键位以宿主注册表为单源
+/// (docs/upstream/00 §4.7),库不做全局监听,只提供 ActionSpec 注册表、
+/// chord 展示(单源复用 tooltip)与速查表生成。
+#[cfg(all(feature = "controls", feature = "theme"))]
+pub mod keymap;
 #[cfg(all(feature = "layer-panel", feature = "theme"))]
 pub mod layer_panel;
 /// 树形图层面板(V2.0 T2)。
@@ -116,7 +126,9 @@ pub mod prelude {
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::select::{Select, dropdown_opens_upward, select_nav};
     #[cfg(all(feature = "controls", feature = "theme"))]
-    pub use crate::controls::tabs::{PanelTabs, Tabs, tab_height, tabs_nav, underline_fraction};
+    pub use crate::controls::tabs::{
+        PanelTabs, Tabs, tab_colors, tab_height, tabs_nav, underline_fraction,
+    };
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::text_field::{
         TextField, TextFieldBuffer, TextFieldSize, edit_key, text_field_height, word_range_at,
@@ -138,17 +150,34 @@ pub mod prelude {
     pub use crate::fonts::install as install_fonts;
     #[cfg(all(feature = "color", feature = "binding", feature = "theme"))]
     pub use crate::gradient_editor::GradientEditor;
+    /// IME 适配层(A11Y-08)一站式导出:控件实现 [`ImeEditTarget`] 回调面,
+    /// 平台事件经 [`UTF16_ADAPTER`] 路由。
+    pub use crate::input_method::{
+        ImeEditTarget, ImeEvent, InputMethodAdapter, UTF16_ADAPTER, Utf16InputMethodAdapter,
+    };
     #[cfg(all(feature = "inspector", feature = "color", feature = "theme"))]
     pub use crate::inspector::{InspectorPanel, RowSpec, SectionSpec};
     #[cfg(feature = "anim")]
     pub use crate::interact::{
         DUR_INTERACT_MS, DUR_OVERLAY_MS, DUR_PANEL_MS, DUR_PULSE_MS, DUR_VIEW_JUMP_MS, HoverState,
-        PulseState, hover_tint, pressed_tint,
+        ListNavIntent, PulseState, focus_region, gradient_stop_nav, hit_size, hover_tint, list_nav,
+        pressed_tint, timeline_seek_step,
     };
     #[cfg(all(feature = "anim", feature = "theme"))]
-    pub use crate::interact::{InteractState, state_layer};
+    pub use crate::interact::{
+        InteractState, MIN_HIT_PX, Semantic, SemanticRole, attach_semantics, focus_ring,
+        focus_ring_spec, hit_slot, state_layer,
+    };
+    /// 键位绑定层(A11Y-04)一站式导出:宿主注册 ActionSpec → 命令面板/
+    /// 菜单/速查表共用,键位注册(`App::bind_keys`)属宿主。
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::keymap::{
+        ACTION_COMMAND_PALETTE, ACTION_CYCLE_TOOLS, ACTION_REDO, ACTION_UNDO, ActionSpec,
+        CATEGORY_EDIT, CATEGORY_TOOLS, CATEGORY_VIEW, KeymapRegistry, SUGGESTED_CORE_ACTIONS,
+        cheat_sheet, chord_display,
+    };
     #[cfg(all(feature = "layer-panel", feature = "theme"))]
-    pub use crate::layer_panel::LayerPanel;
+    pub use crate::layer_panel::{LayerPanel, layer_row_bg};
     #[cfg(all(feature = "layer-panel", feature = "theme"))]
     pub use crate::layer_tree::LayerTreePanel;
     #[cfg(all(feature = "anim", feature = "theme"))]
