@@ -91,6 +91,21 @@
   引导+主行动)、`Spinner`/`Progress`(1.2s 扫描 pill;线性进度+完成对勾 pop 120ms)、
   `Skeleton`(行/块/卡三预设,1.2s 灰阶呼吸)、`ErrorBar`(danger 左描边+可展开详情+
   重试+错误码徽章)——全部 reduced_motion 直通、语义槽接入;ANI-01 #4/#5/#13 随组件接线
+- **性能专项**(PERF-01/02/03/04/05/06/07/11,第 6 组):
+  NumberField 展示文本缓存(值未变帧零格式化零分配,PERF-01);InspectorPanel 转 Entity
+  + NumberField 实体按位池化复用(rebind 重定向绑定,焦点/编辑态保留——CMP-06/PERF-02,
+  **公开 API 变化**:`InspectorPanel { sections }` 内联构造 → `InspectorPanel::new()` +
+  `set_sections(sections, cx)`,vector_editor 宿主已同步);effect_stack 标签 Cow 化
+  (静态文案零分配,PERF-03);图层面板 selection 存 Rc(渲染帧克隆零分配,PERF-04);
+  **效果离屏缓存**(PERF-05):`RenderOpts::effects_cache` 新字段(默认 None 逐位不变,
+  gpui_element 实体默认启用)——内容指纹(路径逐段坐标位/Paint 全字段/文本/图像)+ 效果栈
+  + 变换/透明度/窗口几何为键,静止场景命中零光栅化,ShadowCache 增 hits/misses 计量;
+  TimelineView 可视窗口裁剪 + 素材名/片段标签双缓存(值未变零分配,PERF-06);
+  `FrameCache<V>` 有界 LRU 帧缓存进 crate(story 三卡迁入,PERF-07a)+ 色轮 36 扇形
+  几何按 bounds 记忆化(PERF-07b 半,纹理光栅登记 docs/12 归属);RGBA→RenderImage 桥
+  收口 `sable_canvas::gpui_element::rgba_to_render_image/premultiplied_rgba_to_render_image`
+  单点 + TC-GATE-DUP-02 静态门禁(PERF-11,video_editor/story 已迁移,image 直接依赖移除);
+  PERF-08 预算测试(本地 #[ignore] 口径)与 PERF-09/10 处置登记 docs/12 §3.5
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处
