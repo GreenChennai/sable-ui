@@ -134,6 +134,9 @@
   的 install-action 引用(@v2 + tool 参数);**MSRV 修正为 1.88**(MSRV job 实证:
   锁定的 vello 0.10/parley 0.11 家族要求 1.88,1.85 声明与依赖树矛盾;
   workspace rust-version/CI/README 同步)
+- 工程面:新 stable clippy(1.99 `collapsible_if` 扩展 if-let 嵌套捕获、
+  `chunks_exact` 常量块建议 `as_chunks`)全仓批修(30+ 处 let-chain 化,
+  行为零变化,718 测试全绿);ci.yml 新增 `msrv` 与 `public-api` 两个 job
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处
