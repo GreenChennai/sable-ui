@@ -106,6 +106,13 @@
   收口 `sable_canvas::gpui_element::rgba_to_render_image/premultiplied_rgba_to_render_image`
   单点 + TC-GATE-DUP-02 静态门禁(PERF-11,video_editor/story 已迁移,image 直接依赖移除);
   PERF-08 预算测试(本地 #[ignore] 口径)与 PERF-09/10 处置登记 docs/12 §3.5
+- **Dock 与布局**(第 7 组):`sable-dock::collapse` 窄窗折叠策略纯函数
+  (§5.7.1:<1200px 强制折叠 40px 图标条、默认宽 260/300、拖拽 240–420、
+  未知宽保守不折叠)+ `FoldAnimation` 折叠插值内核(ANI-01 #3,200ms PANEL 档,
+  reduced 直切;DockArea 级接线随 gpui-component 升级窗口)+ `theme_bridge::
+  apply_sable_colors` 主题桥(§5.7.4:sable 令牌恒等映射 gpui-component
+  ThemeColor 核心槽,消除两套视觉语言)+ docs/06 §2.4.1 跨窗口共享语义矩阵
+  (COUP-03)
 - **内核鲁棒性与解耦**(第 8 组):场景遍历 `walk`/`collect_subtree`/`subtree_eq`
   改**显式栈迭代**(RBT-04,十万级深链不栈溢出,底→顶序不变);SVG 导出深度帽
   512(`ExportReport::depth_exceeded_nodes` 计数可观测,RBT-03);畸形 `.sable`

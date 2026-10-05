@@ -30,7 +30,6 @@ layer-panel = ["anim", "dep:slotmap", "controls"]
 # widgets→video,无环;docs/06 §2.1 图待同步)。基础编辑不需要它们。
 timeline = ["dep:sable-video"]
 curve-editor = ["dep:sable-video"]
-node-graph = []
 
 [dependencies]
 sable-foundation.workspace = true

@@ -97,7 +97,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: taiki-e/install-action@cargo-public-api
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api
       - name: 快照 diff(docs/api-snapshot/sable.txt)
         run: |
           cargo public-api -p sable --all-features > docs/api-snapshot/sable.txt
@@ -105,6 +107,16 @@ jobs:
             echo "::error::公共 API 变化未同步快照——更新 docs/api-snapshot/sable.txt 并按语义升版本"
             exit 1
           fi
+
+  # MSRV 校验(DOC-07):声明的 rust-version = 1.85 必须真实可编译。
+  # 采用 CI job 而非 rust-toolchain.toml 钉版——钉版会强制本机降版开发。
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: check(MSRV 1.85;仅 lib 面,dev-deps 不锁旧版)
+        run: cargo check -j 2 --workspace --all-features --lib
 
   # feature 矩阵(07 报告 P1-1):防"默认路径绿、旁路路径烂"。
   # 纯 foundation 面测试(svg/fuzz 冒烟)不依赖 gpui,可在 ubuntu 直接跑;

@@ -99,7 +99,23 @@ video editing, on Windows first.
   (operation-capped, fully undoable), SVG import/export with gradient & text
   handling, `.sable` project format with history that survives save/load, and
   golden-image render regression tests.
-- **Status**: v4.0. MSRV 1.85 (Rust 2024). Windows first; wgpu backends keep Linux in reach.
+- **Component layer (v4.1 wave)**: design tokens with WCAG-contrast gate +
+  embedded fonts (Inter / JetBrains Mono, OFL), `state_layer` three-state
+  interactions, and a full base-control set — Button/IconButton, TextField
+  (IME composition as a first-class state), Select, Checkbox/Switch/Radio,
+  Tabs, Tooltip with `key_badge_text`, ScrollArea with inertia, Toast, Dialog,
+  CommandPalette, EmptyState/Spinner/Skeleton/ErrorBar, Badge/Card/Slider/
+  ValueOverlay — all reduced-motion aware.
+- **Robustness gates**: zero `unwrap/expect` in production code (static gate),
+  no hardcoded colors outside `tokens.rs`, one RGBA→`RenderImage` bridge,
+  dependency-pyramid one-way assertion, public-API snapshot diff, line-count
+  ceiling, depth-capped SVG export & iterative scene walks (100k-deep trees),
+  corrupt-project fuzzing, and per-domain memory budgeting.
+- **Status**: v4.1-unreleased. MSRV 1.85 (Rust 2024). Windows first; wgpu
+  backends keep Linux in reach. Known gaps (honest): screen-reader semantics
+  wait on the gpui accessibility tree (TD-01); GPU effect passes and the
+  texture-atlas cache remain on the roadmap; IME walkthroughs need real
+  hardware (checklist in `docs/a11y-notes.md`).
 - **Examples are demos, not finished apps**: `vector_editor`'s canvas-tool edits
   bypass the document undo stack for now (wiring lands in v4.1), and
   `video_editor` demonstrates the timeline data model rather than a usable editor.

@@ -30,7 +30,7 @@
 //! `max(档位, 文本行高 + 2×垂直 padding)`(见 [`control_height`])——固定档会
 //! 随字号/DPI/CJK 字形翻车,必须按内容派生。
 
-use gpui::{Div, Hsla, Styled, div, hsla, rgba};
+use gpui::{Hsla, hsla, rgba};
 
 /// 颜色令牌(分册六 §3.1 + 报告 §5.3.1 中性色阶)。深/浅两套:
 /// [`ColorTokens::dark`] / [`ColorTokens::light`]。
@@ -458,20 +458,6 @@ pub const FONT_SIZE_HEADING: f32 = TextSize::BODY_STRONG.size;
 /// 注释/时间码字号(11px;存量别名,重指向 [`TextSize::CAPTION`] 的字号)。
 pub const FONT_SIZE_CAPTION: f32 = TextSize::CAPTION.size;
 
-/// 水平弹性容器预设(行):flex row + 垂直居中。
-///
-/// gpui 0.2.2 / gpui-component 0.7.0 均未内置 `h_flex`/`v_flex`(已核实
-/// 两份源码),本 crate 自备极薄预设;放在 tokens 模块因为全部组件都依赖
-/// theme feature(见 lib.rs 的 mod 门控)。
-pub fn h_flex() -> Div {
-    div().flex().flex_row().items_center()
-}
-
-/// 垂直弹性容器预设(列)。
-pub fn v_flex() -> Div {
-    div().flex().flex_col()
-}
-
 /// 以 0~255 RGBA 直接构造 [`Hsla`](色轮/色井的数学底座;组件渲染侧
 /// 仍只许走 theme 语义色,本助手供颜色编辑组件在**用户色**域换算使用)。
 pub fn hsla_from_rgba8(c: [u8; 4]) -> Hsla {
@@ -619,6 +605,10 @@ pub fn composite_over(fg: Hsla, bg: Hsla) -> Hsla {
     };
     hsla_from_rgba8([mix(fr, br), mix(fg_, bg8), mix(fb, bb), 255])
 }
+
+// TOK-10:布局助手迁 layout.rs(tokens 只管"值");re-export 保持
+// `tokens::h_flex/v_flex` 路径兼容(prelude 不变)。
+pub use crate::layout::{h_flex, v_flex};
 
 #[cfg(test)]
 mod tests {

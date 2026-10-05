@@ -82,6 +82,8 @@ pub mod layer_panel;
 /// 树形图层面板(V2.0 T2)。
 #[cfg(all(feature = "layer-panel", feature = "theme"))]
 pub mod layer_tree;
+#[cfg(feature = "theme")]
+pub mod layout;
 /// Neon Card(luminaui.in 对标移植,V4.0 对标组件;离屏自绘 + 纯函数动画)。
 #[cfg(all(feature = "anim", feature = "theme"))]
 pub mod neon_card;
@@ -107,6 +109,9 @@ pub mod prelude {
     pub use crate::binding::Binding;
     #[cfg(all(feature = "color", feature = "theme"))]
     pub use crate::color::{ColorWell, ColorWheel};
+    /// 批 3(ValueOverlay/Badge/Card/Slider)一站式导出。
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::badge::{BadgeVariant, badge, badge_style};
     /// 基础控件层(§5.6 批 1,CMP-01/02/04)一站式导出。
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::button::{
@@ -114,6 +119,8 @@ pub mod prelude {
         PressFn, button_element, button_height, button_style, button_text, icon_button_element,
         icon_button_style, solid_variant_foreground,
     };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::card::{card, card_style};
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::choice::{
         Choice, ChoiceKind, choice_visual, control_knob, hit_height, key_checked_intent,
@@ -142,6 +149,8 @@ pub mod prelude {
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::skeleton::{Skeleton, SkeletonKind};
     #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::slider::{Slider, slider_key, value_fraction};
+    #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::spinner::{Progress, Spinner};
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::tabs::{
@@ -160,6 +169,8 @@ pub mod prelude {
         TooltipHost, TooltipSpec, format_keystroke, key_badge_text, place_tooltip, render_shortcut,
         tooltip_slot, tooltip_view,
     };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::value_overlay::{value_overlay, value_overlay_style};
     #[cfg(all(feature = "curve-editor", feature = "theme"))]
     pub use crate::curve_editor::CurvePreview;
     #[cfg(all(feature = "inspector", feature = "theme"))]
