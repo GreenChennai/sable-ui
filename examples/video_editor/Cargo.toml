@@ -10,7 +10,6 @@ authors.workspace = true
 
 [dependencies]
 sable = { path = "../../crates/sable" }
-# 契约允许的追加依赖(报告已注明):RenderImage 裸帧构造(gpui 0.2.2 的
-# RenderImage::new 只吃 image crate 的 animation::Frame,与 sable-canvas
-# "png" feature 的豁免同因),示例的 PreviewMonitor 合成帧上屏必需。
-image.workspace = true
+# PERF-11 收口:RGBA→RenderImage 桥统一走 sable-canvas::gpui_element 单点
+# (png feature 引入 image,无 PNG 编码步骤;豁免因由见 crates/sable-canvas/Cargo.toml)。
+sable-canvas = { path = "../../crates/sable-canvas", features = ["gpui", "cpu", "png"] }

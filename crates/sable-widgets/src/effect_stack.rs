@@ -31,11 +31,12 @@
 //! 全部 `Rc<dyn Fn(...)>`(可克隆进元素闭包),签名以 `&mut App` 收尾;
 //! 文档修改与撤销由应用层负责(与 [`crate::layer_panel::LayerPanel`] 同纪律)。
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 use gpui::{
     App, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, RenderOnce, Styled, Window, div, px,
+    ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
 };
 use sable_foundation::effects::{EffectEntry, EffectSpec};
 
@@ -137,21 +138,28 @@ pub fn row_move_enabled(len: usize, ix: usize) -> (bool, bool) {
 /// 预设构造器(亮度/对比度/饱和度/色相,容差 1e-3)与恒等阵,手工矩阵
 /// 回落 `"颜色矩阵"`。
 pub fn effect_label(spec: &EffectSpec) -> String {
+    effect_label_cow(spec).into_owned()
+}
+
+/// PERF-03:Cow 版标签——恒等阵与手工回落是静态文案(借用,渲染上屏
+/// **零分配**),参数化变体(模糊/投影/发光/四个带数值的预设)才分配一次。
+/// 渲染路径请用本函数配 `SharedString::from`,省一遭 String 中转。
+pub fn effect_label_cow(spec: &EffectSpec) -> Cow<'static, str> {
     match spec {
         EffectSpec::GaussianBlur { radius } => {
-            format!("高斯模糊 r={}px", fmt_num(*radius))
+            Cow::Owned(format!("高斯模糊 r={}px", fmt_num(*radius)))
         }
-        EffectSpec::DropShadow { blur, offset, .. } => format!(
+        EffectSpec::DropShadow { blur, offset, .. } => Cow::Owned(format!(
             "投影 Δ({},{}) b={}px",
             fmt_num(offset[0]),
             fmt_num(offset[1]),
             fmt_num(*blur)
-        ),
-        EffectSpec::Glow { radius, inner, .. } => format!(
+        )),
+        EffectSpec::Glow { radius, inner, .. } => Cow::Owned(format!(
             "{}发光 r={}px",
             if *inner { "内" } else { "外" },
             fmt_num(*radius)
-        ),
+        )),
         EffectSpec::ColorMatrix { matrix, offsets } => color_matrix_label(*matrix, *offsets),
     }
 }
@@ -176,7 +184,7 @@ fn close(a: f32, b: f32) -> bool {
 
 /// ColorMatrix → 预设名(按 [`EffectSpec`] 预设构造器的系数结构反解;
 /// 识别不出则回落通用名,绝不猜错——所有分支先整阵验证再命名)。
-fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
+fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> Cow<'static, str> {
     // 恒等(含 brightness(1.0)/saturate(1.0)/contrast(1.0)/hue(0°) 等价形)
     if m == [
         [1.0, 0.0, 0.0, 0.0],
@@ -185,7 +193,7 @@ fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
         [0.0, 0.0, 0.0, 1.0],
     ] && offsets == [0.0; 4]
     {
-        return "颜色矩阵(恒等)".to_string();
+        return Cow::Borrowed("颜色矩阵(恒等)");
     }
     // 亮度:RGB 对角 ×s + alpha 恒等 + 零偏移
     if offsets == [0.0; 4]
@@ -205,7 +213,7 @@ fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
         && m[3][1] == 0.0
         && m[3][2] == 0.0
     {
-        return format!("亮度 ×{}", fmt_num(f64::from(m[0][0])));
+        return Cow::Owned(format!("亮度 ×{}", fmt_num(f64::from(m[0][0]))));
     }
     // 对比度:对角 c + 三通道同偏移 0.5·(1−c)
     if close(m[0][0], m[1][1])
@@ -225,7 +233,7 @@ fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
         && offsets[3] == 0.0
         && close(offsets[0], 0.5 * (1.0 - m[0][0]))
     {
-        return format!("对比度 {}", fmt_num(f64::from(m[0][0])));
+        return Cow::Owned(format!("对比度 {}", fmt_num(f64::from(m[0][0]))));
     }
     // 饱和度:从 m00 反解 s(m00 = lr + (1−lr)·s),整阵回验
     if m[3] == [0.0, 0.0, 0.0, 1.0] && offsets == [0.0; 4] && m[0][3] == 0.0 && m[1][3] == 0.0 {
@@ -234,14 +242,14 @@ fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
             matrix: reference, ..
         } = EffectSpec::saturate(s)
         else {
-            return "颜色矩阵".to_string();
+            return Cow::Borrowed("颜色矩阵");
         };
         let ok = m
             .iter()
             .zip(reference.iter())
             .all(|(row, ref_row)| row.iter().zip(ref_row.iter()).all(|(a, b)| close(*a, *b)));
         if ok {
-            return format!("饱和度 {}", fmt_num(f64::from(s)));
+            return Cow::Owned(format!("饱和度 {}", fmt_num(f64::from(s))));
         }
     }
     // 色相:trace = 1 + 2cos(规范矩阵迹),反解 cos/sin 后整阵回验
@@ -253,7 +261,7 @@ fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
             matrix: reference, ..
         } = EffectSpec::hue_rotate(degrees)
         else {
-            return "颜色矩阵".to_string();
+            return Cow::Borrowed("颜色矩阵");
         };
         let rows_match = m[..3]
             .iter()
@@ -266,10 +274,10 @@ fn color_matrix_label(m: [[f32; 4]; 4], offsets: [f32; 4]) -> String {
                     && row[3] == 0.0
             });
         if rows_match {
-            return format!("色相 {degrees:.0}°");
+            return Cow::Owned(format!("色相 {degrees:.0}°"));
         }
     }
-    "颜色矩阵".to_string()
+    Cow::Borrowed("颜色矩阵")
 }
 
 /// 效果栈面板(受控 RenderOnce;经 [`effect_stack_panel`] 便捷构造)。
@@ -393,7 +401,7 @@ impl RenderOnce for EffectStackPanel {
                         } else {
                             colors.text_disabled
                         })
-                        .child(effect_label(&entry.spec)),
+                        .child(SharedString::from(effect_label_cow(&entry.spec))),
                 )
                 // 行内小按钮(CMP-11 收口:私有 mini_button 已删,统一走
                 // controls::button 内联形态;禁用 = 仅前景降级、容器不变、
@@ -430,7 +438,7 @@ impl RenderOnce for EffectStackPanel {
             // A11Y-02:行语义挂接(ListItem + 效果名;单点透传待 TD-01)
             let row_semantic = Semantic::new()
                 .with_role(SemanticRole::ListItem)
-                .with_label(effect_label(&entry.spec));
+                .with_label(SharedString::from(effect_label_cow(&entry.spec)));
             let row = interact::attach_semantics(row, &row_semantic);
             panel = panel.child(row);
         }
@@ -697,5 +705,45 @@ mod tests {
             &EffectStackCallbacks::default(),
         );
         let _ = empty;
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    #[test]
+    fn tc_perf_es_01_label_cow_borrows_static_cases_and_bounds_allocs() {
+        // PERF-03:静态文案(恒等阵/手工回落)必须借用零分配;参数化变体
+        // 至多一次分配(Owned),文本与既有口径逐字一致。
+        assert!(matches!(
+            effect_label_cow(&EffectSpec::ColorMatrix {
+                matrix: [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                offsets: [0.0; 4],
+            }),
+            Cow::Borrowed("颜色矩阵(恒等)")
+        ));
+        assert!(matches!(
+            effect_label_cow(&EffectSpec::ColorMatrix {
+                matrix: [
+                    [2.0, 0.0, 0.0, 0.0],
+                    [0.0, 2.0, 0.0, 0.0],
+                    [0.0, 0.0, 2.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                offsets: [0.0; 4],
+            }),
+            Cow::Owned(_)
+        ));
+        assert_eq!(
+            effect_label(&EffectSpec::GaussianBlur { radius: 3.5 }),
+            "高斯模糊 r=3.5px"
+        );
+        // 每帧每行分配上限 = 1(Owned)或 0(Borrowed),由 Cow 变体结构性保证。
     }
 }

@@ -13,7 +13,7 @@ sable = { path = "../../crates/sable" }
 # 契约允许的追加依赖(与 video_editor 的 image 先例同性质,报告已注明):
 # 1) sable-paint:效果页/token 页离屏渲染(CpuRenderer/render_shadow_rgba)——
 #    门面未 re-export sable-paint,示例直取内部 crate(纯 Rust,零原生依赖);
-# 2) image:gpui 0.2.2 的 RenderImage::new 只吃 image crate 的 animation::Frame
-#    (与 sable-canvas "png" feature 的豁免同因,无 PNG 编码步骤)。
+# 2) PERF-11 收口:RGBA→RenderImage 桥统一走 sable-canvas::gpui_element 单点
+#    (png feature 引入 image;预乘 tile 的 un-premultiply 也在单点内完成)。
 sable-paint.workspace = true
-image.workspace = true
+sable-canvas = { path = "../../crates/sable-canvas", features = ["gpui", "cpu", "png"] }

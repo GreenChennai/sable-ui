@@ -9,12 +9,11 @@
 //! Binding<f64>, range, step, unit }` / `RowSpec::Color { label, binding:
 //! Binding<Paint> }` / `RowSpec::Info { label, text: String }`;值的双向
 //! 流动全走 `Binding`(get 闭包读文档,set 闭包内走 `Document::exec`
-//! 出撤销步,`SetFill` 自带同节点合并);`InspectorPanel { sections }` 是
-//! 无 `IntoElement` 派生的 RenderOnce,经 `gpui::Component::new` 上屏。
+//! 出撤销步,`SetFill` 自带同节点合并);`InspectorPanel` 是 Entity
+//! (PERF-02 实体池):构造一次,每帧 `set_sections(sections, cx)` 喂入。
 
 use gpui::{
-    App, AppContext as _, Component, Entity, IntoElement, ParentElement as _, Render, Styled as _,
-    div,
+    App, AppContext as _, Entity, IntoElement, ParentElement as _, Render, Styled as _, div,
 };
 use sable::core::command::{SetFill, SetTransform};
 use sable::core::scene::{NodeId, Paint};
@@ -29,12 +28,14 @@ use crate::palette::{Palette, hsla_to_rgba8};
 /// 检查器宿主面板(挂在 dock 右侧)。
 pub struct InspectorHost {
     doc: Entity<Document>,
+    panel: Entity<InspectorPanel>,
 }
 
 impl InspectorHost {
-    /// 构造宿主。
+    /// 构造宿主(PERF-02:面板是 Entity,NumberField 实体跨帧池化复用)。
     pub fn new(doc: Entity<Document>, cx: &mut App) -> Entity<Self> {
-        cx.new(|_| Self { doc })
+        let panel = cx.new(|_| InspectorPanel::new());
+        cx.new(|_| Self { doc, panel })
     }
 }
 
@@ -45,9 +46,9 @@ impl Render for InspectorHost {
         cx: &mut gpui::Context<Self>,
     ) -> impl IntoElement {
         let sections = build_sections(&self.doc, cx);
-        div()
-            .size_full()
-            .child(Component::new(InspectorPanel { sections }))
+        self.panel
+            .update(cx, |panel, cx| panel.set_sections(sections, cx));
+        div().size_full().child(self.panel.clone())
     }
 }
 

@@ -212,6 +212,10 @@ pub struct ShadowCache {
     capacity: usize,
     entries: HashMap<u64, Arc<Vec<u8>>>,
     order: VecDeque<u64>,
+    /// PERF-05 计量:命中/未命中次数(get 路径;Cell 保持 `get(&self)`
+    /// 签名不变)。
+    hits: std::cell::Cell<u64>,
+    misses: std::cell::Cell<u64>,
 }
 
 impl ShadowCache {
@@ -221,12 +225,33 @@ impl ShadowCache {
             capacity: capacity.max(1),
             entries: HashMap::new(),
             order: VecDeque::new(),
+            hits: std::cell::Cell::new(0),
+            misses: std::cell::Cell::new(0),
         }
     }
 
     /// 命中返回缓存的 `Arc`(与存入的是同一份分配),未命中 `None`。
     pub fn get(&self, key: u64) -> Option<Arc<Vec<u8>>> {
-        self.entries.get(&key).cloned()
+        match self.entries.get(&key) {
+            Some(v) => {
+                self.hits.set(self.hits.get() + 1);
+                Some(v.clone())
+            }
+            None => {
+                self.misses.set(self.misses.get() + 1);
+                None
+            }
+        }
+    }
+
+    /// PERF-05 计量:命中次数。
+    pub fn hits(&self) -> u64 {
+        self.hits.get()
+    }
+
+    /// PERF-05 计量:未命中次数。
+    pub fn misses(&self) -> u64 {
+        self.misses.get()
     }
 
     /// 插入(或覆盖同 key 并把它刷新为最新),返回刚存入的 `Arc`

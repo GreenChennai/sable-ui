@@ -74,7 +74,7 @@ impl Default for OverlayTheme {
 /// 渲染选项:选中集、网格开关与覆盖层主题。
 ///
 /// 与场景数据无关,逐帧可变;`screen_size` 是**相对手册补充的字段**(见下)。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct RenderOpts {
     /// 选中节点(画包围盒 + 控制柄)
     pub selection: Vec<NodeId>,
@@ -93,6 +93,26 @@ pub struct RenderOpts {
     /// cpu→Reduced)。测试与嵌入方可显式指定——如 `Some(EffectLevel::Off)`
     /// 锁定与 v3.0 逐位一致的回归基线。
     pub effect_level: Option<EffectLevel>,
+    /// PERF-05:效果离屏缓存(静止场景零重算)。`None`(Default)= 不缓存
+    /// (行为与 v4.0 逐位一致);`Some` = 效果路径光栅结果按
+    /// [`effects_raster_key`] 指纹入缓存,静止帧命中零光栅化。宿主持有一份
+    /// `Rc<RefCell<ShadowCache>>` 跨帧传入(golden/测试用 Default 关闭,
+    /// 保证基线确定性)。
+    pub effects_cache: Option<std::rc::Rc<std::cell::RefCell<sable_paint::effects::ShadowCache>>>,
+}
+
+impl std::fmt::Debug for RenderOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // effects_cache 不实现 Debug(ShadowCache 无 Debug 派生):只报在位与否
+        f.debug_struct("RenderOpts")
+            .field("selection", &self.selection)
+            .field("show_grid", &self.show_grid)
+            .field("overlay", &self.overlay)
+            .field("screen_size", &self.screen_size)
+            .field("effect_level", &self.effect_level)
+            .field("effects_cache", &self.effects_cache.is_some())
+            .finish()
+    }
 }
 
 /// 视口可见区域对应的世界矩形(视锥剔除与网格的判定范围)。
@@ -226,8 +246,8 @@ pub fn render_scene(
                 continue;
             }
             #[cfg(feature = "cpu")]
-            if let Some((rgba, w, h, dx, dy)) = rasterize_node_effects(
-                &EffectRasterParams {
+            if let Some(frame) = {
+                let params = EffectRasterParams {
                     content: &node.content,
                     effects: &node.effects,
                     detail,
@@ -236,14 +256,75 @@ pub fn render_scene(
                     total,
                     vp,
                     opacity: node.opacity,
-                },
-                opts.screen_size,
-                effect_caps,
-            ) {
+                };
+                // PERF-05:缓存命中零光栅化(静止场景零重算);存储格式 =
+                // 12 字节头(w/h:u16 LE + dx/dy:i32 LE)+ 像素(打包自包含,
+                // 避免为 w/h/dx/dy 再开第二张表)。
+                let key = opts
+                    .effects_cache
+                    .as_ref()
+                    .map(|_| effects_raster_key(&params, opts.screen_size));
+                let cached = match (&opts.effects_cache, key) {
+                    (Some(cache), Some(key)) => cache.borrow_mut().get(key),
+                    _ => None,
+                };
+                /// 帧来源二态:命中(自包含头+像素的缓存条)或新渲(裸像素)。
+                /// `pixels()` 统一剥头,回贴路径两态同口径。
+                enum EffectFrame {
+                    Cached(std::sync::Arc<Vec<u8>>, u16, u16, i32, i32),
+                    Fresh(Vec<u8>, u16, u16, i32, i32),
+                }
+                impl EffectFrame {
+                    fn dims(&self) -> (u16, u16, i32, i32) {
+                        match self {
+                            EffectFrame::Cached(_, w, h, dx, dy)
+                            | EffectFrame::Fresh(_, w, h, dx, dy) => (*w, *h, *dx, *dy),
+                        }
+                    }
+                    fn pixels(&self) -> &[u8] {
+                        match self {
+                            // 命中:剥 12 字节几何头(存储自包含头+像素)
+                            EffectFrame::Cached(buf, ..) => {
+                                if buf.len() >= 12 {
+                                    &buf[12..]
+                                } else {
+                                    &buf[..]
+                                }
+                            }
+                            EffectFrame::Fresh(buf, ..) => buf,
+                        }
+                    }
+                }
+                match cached {
+                    Some(arc) if arc.len() >= 12 => {
+                        let w = u16::from_le_bytes([arc[0], arc[1]]);
+                        let h = u16::from_le_bytes([arc[2], arc[3]]);
+                        let dx = i32::from_le_bytes([arc[4], arc[5], arc[6], arc[7]]);
+                        let dy = i32::from_le_bytes([arc[8], arc[9], arc[10], arc[11]]);
+                        Some(EffectFrame::Cached(arc, w, h, dx, dy))
+                    }
+                    _ => rasterize_node_effects(&params, opts.screen_size, effect_caps).map(
+                        |(rgba, w, h, dx, dy)| {
+                            if let (Some(cache), Some(key)) = (&opts.effects_cache, key) {
+                                let mut stored = Vec::with_capacity(12 + rgba.len());
+                                stored.extend_from_slice(&w.to_le_bytes());
+                                stored.extend_from_slice(&h.to_le_bytes());
+                                stored.extend_from_slice(&dx.to_le_bytes());
+                                stored.extend_from_slice(&dy.to_le_bytes());
+                                stored.extend_from_slice(&rgba);
+                                cache.borrow_mut().insert(key, stored);
+                            }
+                            EffectFrame::Fresh(rgba, w, h, dx, dy)
+                        },
+                    ),
+                }
+            } {
+                let (w, h, dx, dy) = frame.dims();
+                let rgba = frame.pixels();
                 if blended {
                     sink.push_blend(node.blend_mode);
                 }
-                sink.draw_rgba(&rgba, w, h, dx, dy);
+                sink.draw_rgba(rgba, w, h, dx, dy);
                 if blended {
                     sink.pop_blend();
                 }
@@ -380,6 +461,201 @@ struct EffectRasterParams<'a> {
 /// 重复付费;应按(内容指纹, 变换, 效果参数, 档位, 窗口)为键缓存离屏结果
 /// (v4.0 先正确性),参照 `sable_paint::effects::ShadowCache` 的 FIFO
 /// 驱逐范式。
+/// PERF-05:节点内容指纹。键侧绝不存"版本号"(场景无 per-node revision),
+/// 直接对**值**哈希:路径元素逐段坐标位、填充/描边 Paint 全字段、文本串与
+/// 字号/颜色、图像 rect+名。哈希成本 ~O(路径段数),远低于离屏光栅化。
+#[cfg(feature = "cpu")]
+fn hash_paint(h: &mut std::collections::hash_map::DefaultHasher, paint: &Paint) {
+    use std::hash::Hash;
+    match paint {
+        Paint::Solid(c) => {
+            0u8.hash(h);
+            c.hash(h);
+        }
+        Paint::LinearGradient { start, end, stops } => {
+            1u8.hash(h);
+            start.iter().for_each(|v| v.to_bits().hash(h));
+            end.iter().for_each(|v| v.to_bits().hash(h));
+            for st in stops {
+                st.offset.to_bits().hash(h);
+                st.color.hash(h);
+            }
+        }
+        Paint::RadialGradient {
+            center,
+            radius,
+            stops,
+        } => {
+            2u8.hash(h);
+            center.iter().for_each(|v| v.to_bits().hash(h));
+            radius.to_bits().hash(h);
+            for st in stops {
+                st.offset.to_bits().hash(h);
+                st.color.hash(h);
+            }
+        }
+        Paint::ConicGradient {
+            center,
+            start_angle,
+            end_angle,
+            stops,
+        } => {
+            3u8.hash(h);
+            center.iter().for_each(|v| v.to_bits().hash(h));
+            start_angle.to_bits().hash(h);
+            end_angle.to_bits().hash(h);
+            for st in stops {
+                st.offset.to_bits().hash(h);
+                st.color.hash(h);
+            }
+        }
+    }
+}
+
+/// PERF-05:内容指纹(见 [`hash_paint`])。
+#[cfg(feature = "cpu")]
+fn node_content_fingerprint(content: &NodeContent) -> u64 {
+    use kurbo::PathEl;
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match content {
+        NodeContent::Group => 0u8.hash(&mut h),
+        NodeContent::Path(p) => {
+            1u8.hash(&mut h);
+            for el in p.path.elements() {
+                match el {
+                    PathEl::MoveTo(pt) | PathEl::LineTo(pt) => {
+                        0u8.hash(&mut h);
+                        pt.x.to_bits().hash(&mut h);
+                        pt.y.to_bits().hash(&mut h);
+                    }
+                    PathEl::QuadTo(c, pt) => {
+                        1u8.hash(&mut h);
+                        c.x.to_bits().hash(&mut h);
+                        c.y.to_bits().hash(&mut h);
+                        pt.x.to_bits().hash(&mut h);
+                        pt.y.to_bits().hash(&mut h);
+                    }
+                    PathEl::CurveTo(c0, c1, pt) => {
+                        2u8.hash(&mut h);
+                        c0.x.to_bits().hash(&mut h);
+                        c0.y.to_bits().hash(&mut h);
+                        c1.x.to_bits().hash(&mut h);
+                        c1.y.to_bits().hash(&mut h);
+                        pt.x.to_bits().hash(&mut h);
+                        pt.y.to_bits().hash(&mut h);
+                    }
+                    PathEl::ClosePath => 3u8.hash(&mut h),
+                }
+            }
+            match &p.fill {
+                Some(fill) => {
+                    1u8.hash(&mut h);
+                    hash_paint(&mut h, fill);
+                }
+                None => 0u8.hash(&mut h),
+            }
+            match &p.stroke {
+                Some(stroke) => {
+                    1u8.hash(&mut h);
+                    hash_paint(&mut h, &stroke.paint);
+                    stroke.width.to_bits().hash(&mut h);
+                }
+                None => 0u8.hash(&mut h),
+            }
+        }
+        NodeContent::Text(t) => {
+            2u8.hash(&mut h);
+            t.text.hash(&mut h);
+            t.font_size.to_bits().hash(&mut h);
+            t.color.hash(&mut h);
+        }
+        NodeContent::Image(i) => {
+            3u8.hash(&mut h);
+            i.name.hash(&mut h);
+            for v in [i.rect.x0, i.rect.y0, i.rect.x1, i.rect.y1] {
+                v.to_bits().hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
+/// PERF-05:效果条目指纹(逐字段位哈希)。
+#[cfg(feature = "cpu")]
+fn hash_effect_entries(
+    h: &mut std::collections::hash_map::DefaultHasher,
+    entries: &[sable_foundation::effects::EffectEntry],
+) {
+    use std::hash::Hash;
+    for e in entries {
+        e.enabled.hash(h);
+        match &e.spec {
+            sable_foundation::effects::EffectSpec::GaussianBlur { radius } => {
+                0u8.hash(h);
+                radius.to_bits().hash(h);
+            }
+            sable_foundation::effects::EffectSpec::DropShadow {
+                blur,
+                offset,
+                color,
+            } => {
+                1u8.hash(h);
+                blur.to_bits().hash(h);
+                offset.iter().for_each(|v| v.to_bits().hash(h));
+                color.hash(h);
+            }
+            sable_foundation::effects::EffectSpec::Glow {
+                radius,
+                color,
+                inner,
+            } => {
+                2u8.hash(h);
+                radius.to_bits().hash(h);
+                color.hash(h);
+                inner.hash(h);
+            }
+            sable_foundation::effects::EffectSpec::ColorMatrix { matrix, offsets } => {
+                3u8.hash(h);
+                matrix.iter().for_each(|row| {
+                    row.iter().for_each(|v| v.to_bits().hash(h));
+                });
+                offsets.iter().for_each(|v| v.to_bits().hash(h));
+            }
+        }
+    }
+}
+
+/// PERF-05:离屏光栅结果缓存键。覆盖全部决定输出的输入:内容指纹、效果栈、
+/// LOD、变换(total 含视口与节点变换)、透明度、屏幕尺寸与窗口几何。
+/// 悬停/动画类输入不在键内(它们不经效果路径)。
+#[cfg(feature = "cpu")]
+fn effects_raster_key(params: &EffectRasterParams, screen_size: (f64, f64)) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    node_content_fingerprint(params.content).hash(&mut h);
+    hash_effect_entries(&mut h, params.effects);
+    std::mem::discriminant(&params.detail).hash(&mut h);
+    for c in params.total.as_coeffs() {
+        c.to_bits().hash(&mut h);
+    }
+    for c in params.vp.as_coeffs() {
+        c.to_bits().hash(&mut h);
+    }
+    params.opacity.to_bits().hash(&mut h);
+    screen_size.0.to_bits().hash(&mut h);
+    screen_size.1.to_bits().hash(&mut h);
+    for v in [
+        params.world_bbox.x0,
+        params.world_bbox.y0,
+        params.world_bbox.x1,
+        params.world_bbox.y1,
+    ] {
+        v.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
 #[cfg(feature = "cpu")]
 fn rasterize_node_effects(
     params: &EffectRasterParams,
@@ -1527,6 +1803,38 @@ mod tests {
                 }];
             }
             scene
+        }
+
+        /// TC-PERF-SHADOW-01(PERF-05):静止场景二次渲染全命中零光栅化,
+        /// 且命中帧像素与首帧/无缓存路径逐位一致。
+        #[test]
+        fn tc_perf_shadow_01_idle_scene_second_render_is_full_hit_and_bitwise_identical() {
+            let scene = blur_scene(true);
+            let cache = std::rc::Rc::new(std::cell::RefCell::new(
+                sable_paint::effects::ShadowCache::new(16),
+            ));
+            let render_with =
+                |cache: &std::rc::Rc<std::cell::RefCell<sable_paint::effects::ShadowCache>>| {
+                    let opts = RenderOpts {
+                        screen_size: (64.0, 64.0),
+                        effects_cache: Some(cache.clone()),
+                        ..RenderOpts::default()
+                    };
+                    let mut renderer = CpuRenderer::new(64, 64, WHITE);
+                    render_scene(&scene, &viewport_at_origin(1.0), renderer.sink(), &opts);
+                    renderer.finish()
+                };
+
+            let first = render_with(&cache);
+            assert_eq!(cache.borrow().misses(), 1, "首帧:恰一次光栅化未命中");
+            let second = render_with(&cache);
+            assert_eq!(cache.borrow().misses(), 1, "静止二次渲染:零新增未命中");
+            assert!(cache.borrow().hits() >= 1, "静止二次渲染:至少一次命中");
+            assert_eq!(first, second, "命中帧与首帧逐位一致");
+
+            // 无缓存对照:缓存路径不改变像素(golden 同款确定性)
+            let plain = render(&blur_scene(true), None);
+            assert_eq!(first, plain, "缓存开/关输出逐位一致");
         }
 
         /// T2.1a 高斯模糊:同一场景开/关效果像素必有差异,且模糊后边缘向

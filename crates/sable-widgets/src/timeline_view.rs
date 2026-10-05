@@ -24,7 +24,8 @@ use std::sync::Arc;
 use gpui::{
     App, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Render, RenderImage,
-    StatefulInteractiveElement, Styled, StyledImage as _, Window, canvas, div, img, px,
+    SharedString, StatefulInteractiveElement, Styled, StyledImage as _, Window, canvas, div, img,
+    px,
 };
 use sable_video::model::{ClipId, Timeline, TrackKind};
 
@@ -46,9 +47,6 @@ const TICK_MIN_SPACING_PX: f64 = 60.0;
 const MIN_DISPLAY_MS: u64 = 60_000;
 /// 纵向滚动区可见轨道数上限(超出出滚动条)。
 const VISIBLE_TRACKS: f32 = 8.0;
-
-/// 渲染期单片段数据快照(id/起点/时长/入点/显示名/缩略图条)。
-type ClipRenderData = (ClipId, u64, u64, u64, String, Option<Vec<Arc<RenderImage>>>);
 
 /// 播放头跳转/scrub 回调:`(ms, &mut App)`(全部 `Rc<dyn Fn>`,可克隆进
 /// 'static 闭包,与 Binding 同纪律:文档修改与撤销由应用层负责)。
@@ -84,6 +82,13 @@ pub struct TimelineView {
     seeking: bool,
     /// 标尺区 bounds(prepaint 回写;scrub 换算基准)
     ruler_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    /// PERF-06 素材展示名缓存(键 = ClipId 裸值)。素材路径每帧 clone 是
+    /// 旧实现的主要每帧分配;命中返回 SharedString(Arc 计数,零分配)。
+    /// 上限见 [`NAME_CACHE_CAP`],超限整表清空(重链素材的陈旧名有界)。
+    name_cache: HashMap<u64, SharedString>,
+    /// PERF-06 片段标签缓存(键 = (ClipId, 入点 ms, 时长 ms);trim 换键
+    /// 自然重算)。上限见 [`LABEL_CACHE_CAP`]。
+    label_cache: HashMap<(u64, u64, u64), SharedString>,
     on_seek: SeekFn,
     on_move_clip: MoveClipFn,
     on_drop_clip: DropClipFn,
@@ -115,6 +120,8 @@ impl TimelineView {
             clip_drag: None,
             seeking: false,
             ruler_bounds: Rc::new(Cell::new(gpui::Bounds::default())),
+            name_cache: HashMap::new(),
+            label_cache: HashMap::new(),
             on_seek: Rc::new(|_, _| {}),
             on_move_clip: Rc::new(|_, _, _| {}),
             on_drop_clip: Rc::new(|_, _, _| {}),
@@ -396,24 +403,18 @@ impl Render for TimelineView {
         );
 
         // —— 轨道区(横向随标尺同步滚动,纵向独立滚动)+ 播放头 ——
+        // PERF-06:可视窗口裁剪 + 标签缓存。窗口起点 = -origin.x(内容滚出
+        // 视口的部分),宽度用 window.viewport_size() **过估**(只少裁不闪断);
+        // 首帧 ruler bounds 未回写时 origin=0 → 窗口从 0 起仍正确。
+        let origin_x = f64::from(self.ruler_bounds.get().origin.x);
+        let viewport_w = f64::from(window.viewport_size().width);
+        let window_ms = (
+            px_to_ms_clamped((origin_x - 240.0).max(0.0), pps),
+            px_to_ms_clamped(origin_x.abs() + viewport_w + 240.0, pps),
+        );
         let mut rows = v_flex();
         for track in 0..tracks {
             let kind = self.timeline.read(cx).tracks[track].kind;
-            let clips: Vec<ClipRenderData> = self.timeline.read(cx).tracks[track]
-                .clips
-                .iter()
-                .map(|c| {
-                    let thumbs = self.thumbs.get(&c.id.value()).cloned();
-                    (
-                        c.id,
-                        c.start_ms,
-                        c.duration_ms,
-                        c.in_ms,
-                        asset_display_name(&c.asset.path),
-                        thumbs,
-                    )
-                })
-                .collect();
             let mut row = div()
                 .relative()
                 .w(pxv(content_w))
@@ -422,7 +423,15 @@ impl Render for TimelineView {
                 .bg(colors.surface_1)
                 // 点轨道空白 = scrub 到该点(clip 已 stop_propagation 不冲突)
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_row_down));
-            for (id, start_ms, dur_ms, in_ms, name, thumbs) in clips {
+            let timeline = self.timeline.clone();
+            let t = timeline.read(cx);
+            for c in &t.tracks[track].clips {
+                let (id, start_ms, dur_ms, in_ms) = (c.id, c.start_ms, c.duration_ms, c.in_ms);
+                if !clip_visible(start_ms, dur_ms, window_ms) {
+                    continue; // PERF-06:视口外零渲染数据
+                }
+                let name = cached_asset_name(&mut self.name_cache, id.value(), &c.asset.path);
+                let thumbs = self.thumbs.get(&id.value()).cloned();
                 let tint = kind_tint(kind, colors);
                 let selected = self.selected == Some(id.value());
                 // 内容层:有缩略图条 = 胶片平铺(名称叠底),否则文字标签
@@ -453,7 +462,13 @@ impl Render for TimelineView {
                                     .text_size(px(FONT_SIZE_CAPTION))
                                     .text_color(colors.text_primary)
                                     .overflow_hidden()
-                                    .child(clip_label(&name, in_ms, dur_ms)),
+                                    .child(cached_clip_label(
+                                        &mut self.label_cache,
+                                        id.value(),
+                                        in_ms,
+                                        dur_ms,
+                                        &name,
+                                    )),
                             )
                             .into_any_element(),
                         None => div()
@@ -464,7 +479,13 @@ impl Render for TimelineView {
                             .text_size(px(FONT_SIZE_CAPTION))
                             .text_color(colors.text_primary)
                             .overflow_hidden()
-                            .child(clip_label(&name, in_ms, dur_ms))
+                            .child(cached_clip_label(
+                                &mut self.label_cache,
+                                id.value(),
+                                in_ms,
+                                dur_ms,
+                                &name,
+                            ))
                             .into_any_element(),
                     };
                 row = row.child(
@@ -665,6 +686,55 @@ fn clip_label(name: &str, in_ms: u64, duration_ms: u64) -> String {
     }
 }
 
+/// PERF-06 缓存上限(键数;超限整表清空——简单有界,防 trim/重链缓慢泄漏)。
+pub(crate) const NAME_CACHE_CAP: usize = 1024;
+pub(crate) const LABEL_CACHE_CAP: usize = 4096;
+
+/// PERF-06:素材展示名缓存纯函数。命中零分配(SharedString = Arc 计数);
+/// 未命中恰一次格式化。
+fn cached_asset_name(
+    cache: &mut HashMap<u64, SharedString>,
+    clip: u64,
+    path: &str,
+) -> SharedString {
+    if let Some(name) = cache.get(&clip) {
+        return name.clone();
+    }
+    let name = SharedString::from(asset_display_name(path));
+    if cache.len() >= NAME_CACHE_CAP {
+        cache.clear();
+    }
+    cache.insert(clip, name.clone());
+    name
+}
+
+/// PERF-06:片段标签缓存纯函数(键含入点/时长:trim 后自然换键)。
+fn cached_clip_label(
+    cache: &mut HashMap<(u64, u64, u64), SharedString>,
+    clip: u64,
+    in_ms: u64,
+    duration_ms: u64,
+    name: &str,
+) -> SharedString {
+    let key = (clip, in_ms, duration_ms);
+    if let Some(label) = cache.get(&key) {
+        return label.clone();
+    }
+    let label = SharedString::from(clip_label(name, in_ms, duration_ms));
+    if cache.len() >= LABEL_CACHE_CAP {
+        cache.clear();
+    }
+    cache.insert(key, label.clone());
+    label
+}
+
+/// PERF-06:可见性判定纯函数。片段与可视窗口 [ms0, ms1) 相交才算
+/// (视口外不生成渲染数据;窗口过估只会少裁,不会闪断)。
+fn clip_visible(start_ms: u64, duration_ms: u64, window: (u64, u64)) -> bool {
+    let (ms0, ms1) = window;
+    start_ms < ms1 && start_ms.saturating_add(duration_ms) > ms0
+}
+
 /// 素材路径 → 展示名(取文件名,去扩展名;空路径回落空串)。
 fn asset_display_name(path: &str) -> String {
     let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -743,5 +813,41 @@ mod tests {
         assert_eq!(asset_display_name("clipB"), "clipB");
         assert_eq!(asset_display_name(""), "");
         assert_eq!(asset_display_name("C:\\x\\vo.wav"), "vo");
+    }
+    #[test]
+    fn tc_perf_tl_01_culling_and_label_cache() {
+        // PERF-06 裁剪:与可视窗口相交判定(半开区间;越界左右两侧都裁)
+        assert!(clip_visible(1_000, 2_000, (0, 5_000)));
+        assert!(
+            !clip_visible(0, 1_000, (1_000, 5_000)),
+            "左出界:终点贴窗口起点 = 裁"
+        );
+        assert!(
+            !clip_visible(5_000, 1_000, (0, 5_000)),
+            "右出界:起点贴窗口终点 = 裁"
+        );
+        assert!(clip_visible(4_999, 2_000, (0, 5_000)), "跨界 = 留");
+        assert!(
+            clip_visible(0, 1, (0, 5_000)),
+            "最短片段(时长≥1,validate 保证)在窗内 = 留"
+        );
+
+        // PERF-06 标签缓存:命中零新分配(指针同一),换键自然重算,超限清表
+        let mut cache = HashMap::new();
+        let a = cached_asset_name(&mut cache, 7, "/media/clip01.mp4");
+        assert_eq!(a.as_ref(), "clip01");
+        let b = cached_asset_name(&mut cache, 7, "/media/clip01.mp4");
+        assert_eq!(a.as_ptr(), b.as_ptr(), "命中帧不得产生新分配");
+
+        let mut labels: HashMap<(u64, u64, u64), SharedString> = HashMap::new();
+        let l1 = cached_clip_label(&mut labels, 7, 500, 1_500, "clip01");
+        let l2 = cached_clip_label(&mut labels, 7, 500, 1_500, "clip01");
+        assert_eq!(l1.as_ptr(), l2.as_ptr());
+        let _l3 = cached_clip_label(&mut labels, 7, 600, 1_500, "clip01"); // 键变 → 重算
+
+        for i in 0..(LABEL_CACHE_CAP as u64) {
+            let _ = cached_clip_label(&mut labels, i, 0, 0, "x");
+        }
+        assert!(labels.len() <= LABEL_CACHE_CAP, "缓存有界");
     }
 }

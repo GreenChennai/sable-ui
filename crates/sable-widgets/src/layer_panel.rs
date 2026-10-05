@@ -80,7 +80,7 @@ pub struct LayerPanel {
     /// 场景数据源(只读;修改走应用层回调)
     scene: Entity<Scene>,
     /// 选中集本地副本(真相在应用层;这里仅作高亮显示与按钮目标)
-    selection: Vec<NodeId>,
+    selection: std::rc::Rc<Vec<NodeId>>,
     on_toggle_visible: ToggleVisibleFn,
     on_toggle_lock: ToggleLockFn,
     on_select: SelectFn,
@@ -106,7 +106,7 @@ impl LayerPanel {
     pub fn new(scene: Entity<Scene>) -> Self {
         LayerPanel {
             scene,
-            selection: Vec::new(),
+            selection: std::rc::Rc::new(Vec::new()),
             on_toggle_visible: Rc::new(|_, _| {}),
             on_toggle_lock: Rc::new(|_, _| {}),
             on_select: Rc::new(|_, _, _| {}),
@@ -162,7 +162,9 @@ impl LayerPanel {
 
     /// 应用层同步选中集(渲染高亮用)。
     pub fn set_selection(&mut self, selection: Vec<NodeId>) {
-        self.selection = selection;
+        // PERF-04:内部存 Rc——渲染帧的 `selection.clone()` 是引用计数自增,
+        // 零堆分配(万级图层滚动时每帧只余 roots 一处 Vec 收集)。
+        self.selection = std::rc::Rc::new(selection);
     }
 
     /// 行点击(Shift = 加选)。

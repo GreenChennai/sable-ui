@@ -132,6 +132,12 @@ pub struct ColorWheel {
     /// 环/方盘的元素 bounds(prepaint 回写;命中换算基准)
     ring_bounds: Rc<Cell<Bounds<Pixels>>>,
     square_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// PERF-07/CMP-08:色相环几何缓存——键 = paint bounds(尺寸固定、原点
+    /// 随布局/滚动才变;拖拽调色期间 bounds 不变 → 零重建)。36 扇形
+    /// Path 每帧构建是色轮主要 CPU 成本;手柄与 SV 方盘本就是廉价图元。
+    /// 纹理光栅缓存(键 = (尺寸, 色相桶),经 CpuRenderer→RenderImage 单点桥)
+    /// 登记 docs/12,随 §5.5 图标系统同管线落地。
+    ring_paths: RingPathCache,
     /// A11Y-01:键盘调色焦点(←→ 色相、↑↓ 明度,状态机 = [`color_step`])
     focus: Option<FocusHandle>,
     /// A11Y-02 语义槽(可访问名;role 默认 ColorPicker)
@@ -146,6 +152,7 @@ impl ColorWheel {
             drag: None,
             ring_bounds: Rc::new(Cell::new(Bounds::default())),
             square_bounds: Rc::new(Cell::new(Bounds::default())),
+            ring_paths: std::rc::Rc::new(std::cell::RefCell::new(None)),
             focus: None,
             semantic: Semantic::new(),
         }
@@ -293,17 +300,21 @@ impl Render for ColorWheel {
                             move |bounds: Bounds<Pixels>, _w: &mut Window, _cx: &mut App| {
                                 ring_bounds.set(bounds);
                             },
-                            move |paint_bounds: Bounds<Pixels>,
-                                  _state: (),
-                                  window: &mut Window,
-                                  _cx: &mut App| {
-                                paint_hue_ring(
-                                    window,
-                                    paint_bounds,
-                                    handle_color,
-                                    handle_outline,
-                                    hue,
-                                );
+                            {
+                                let ring_paths = self.ring_paths.clone();
+                                move |paint_bounds: Bounds<Pixels>,
+                                      _state: (),
+                                      window: &mut Window,
+                                      _cx: &mut App| {
+                                    paint_hue_ring(
+                                        window,
+                                        paint_bounds,
+                                        handle_color,
+                                        handle_outline,
+                                        hue,
+                                        &ring_paths,
+                                    );
+                                }
                             },
                         )
                         .size_full(),
@@ -364,13 +375,22 @@ impl Render for ColorWheel {
 
 // —— 绘制(canvas paint 侧,窗口坐标)——
 
+/// PERF-07:色相环几何缓存类型(paint bounds 键 → 36 扇形 Path)。
+type RingPathCache =
+    std::rc::Rc<std::cell::RefCell<Option<(Bounds<Pixels>, Vec<gpui::Path<Pixels>>)>>>;
+
 /// 色相环:36 扇形 + 手柄小圆。
+///
+/// PERF-07/CMP-08:`paths` 缓存键 = paint bounds(布局/滚动才变原点,拖拽
+/// 调色期间不变)——命中零 Path 构建;颜色逐扇形不同,`paint_path` 本体
+/// 仍逐帧(gpu 侧微小四边形,量级无碍),纹理光栅缓存登记 docs/12。
 fn paint_hue_ring(
     window: &mut Window,
     bounds: Bounds<Pixels>,
     handle_color: gpui::Hsla,
     handle_outline: gpui::Hsla,
     hue: f32,
+    paths: &RingPathCache,
 ) {
     let center = (
         f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.0,
@@ -378,11 +398,42 @@ fn paint_hue_ring(
     );
     let outer = f32::from(bounds.size.width) / 2.0;
     let inner = outer - RING_WIDTH_PX;
+    let sector_paths = {
+        let mut cached = paths.borrow_mut();
+        match cached.as_ref() {
+            Some((cached_bounds, paths)) if *cached_bounds == bounds => paths.clone(),
+            _ => {
+                let built = build_hue_ring_paths(center, outer, inner);
+                *cached = Some((bounds, built.clone()));
+                built
+            }
+        }
+    };
+    for (i, path) in sector_paths.iter().enumerate() {
+        let hue_i = i as f32 / SECTORS as f32;
+        window.paint_path(path.clone(), gpui::hsla(hue_i, 1.0, 0.5, 1.0));
+    }
+    // 手柄:当前色相角度的小圆
+    let mid_r = (outer + inner) / 2.0;
+    let angle = hue * std::f32::consts::TAU;
+    let hx = center.0 + mid_r * angle.cos();
+    let hy = center.1 - mid_r * angle.sin();
+    paint_circle(
+        window,
+        (hx, hy),
+        HANDLE_RADIUS_PX,
+        handle_color,
+        handle_outline,
+    );
+}
+
+/// 36 扇形四边形 Path(纯几何;屏幕 y 向下:取 -sin 使角度沿屏幕逆时针,
+/// 与 hue_at 一致)。
+fn build_hue_ring_paths(center: (f32, f32), outer: f32, inner: f32) -> Vec<gpui::Path<Pixels>> {
+    let mut out = Vec::with_capacity(SECTORS);
     for i in 0..SECTORS {
         let a0 = (i as f32 / SECTORS as f32) * std::f32::consts::TAU;
         let a1 = ((i + 1) as f32 / SECTORS as f32) * std::f32::consts::TAU;
-        let hue_i = i as f32 / SECTORS as f32;
-        // 扇形四边形(屏幕 y 向下:取 -sin 使角度沿屏幕逆时针,与 hue_at 一致)
         let mut path = gpui::Path::new(point(
             px(center.0 + outer * a0.cos()),
             px(center.1 - outer * a0.sin()),
@@ -399,20 +450,9 @@ fn paint_hue_ring(
             px(center.0 + inner * a0.cos()),
             px(center.1 - inner * a0.sin()),
         ));
-        window.paint_path(path, gpui::hsla(hue_i, 1.0, 0.5, 1.0));
+        out.push(path);
     }
-    // 手柄:当前色相角度的小圆
-    let mid_r = (outer + inner) / 2.0;
-    let angle = hue * std::f32::consts::TAU;
-    let hx = center.0 + mid_r * angle.cos();
-    let hy = center.1 - mid_r * angle.sin();
-    paint_circle(
-        window,
-        (hx, hy),
-        HANDLE_RADIUS_PX,
-        handle_color,
-        handle_outline,
-    );
+    out
 }
 
 /// SV 方盘:垂直渐变条 + 手柄(x = 饱和度,y = 明度)。

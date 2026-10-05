@@ -201,6 +201,7 @@ fn selection_matches_golden() {
         overlay: OverlayTheme::default(),
         screen_size: (f64::from(SIZE), f64::from(SIZE)),
         effect_level: None,
+        effects_cache: None, // PERF-05 关:基线确定性(行为与无缓存路径逐位一致)
     };
     let buf = render_frame(&scene, viewport(1.0), &opts);
     assert_matches_golden("selection", &buf);

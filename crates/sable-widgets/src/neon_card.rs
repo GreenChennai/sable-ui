@@ -1190,3 +1190,139 @@ mod tests {
         assert_ne!(buf_a, buf_c, "不同种子的粒子帧应不同");
     }
 }
+
+/// PERF-07/CMP-07:有界帧缓存(键 = [`frame_cache_key`] 指纹)。
+///
+/// 把"缓存契约"从宿主自建(`Option<(u64, Option<Arc<..>>)>` 单槽)收编为
+/// crate 类型:空闲帧键稳定 → 命中零重渲;动画中键逐帧变 → 自然重画,旧键
+/// 由容量上限驱逐(LRU 语义:命中刷新新近度)。命中/未命中计数供测试与
+/// 宿主诊断([`FrameCache::hits`] / [`FrameCache::misses`])。
+pub struct FrameCache<V: Clone> {
+    entries: std::collections::HashMap<u64, V>,
+    order: std::collections::VecDeque<u64>,
+    cap: usize,
+    hits: u64,
+    misses: u64,
+}
+
+/// 默认容量(同屏卡片数的合理上界;超出按 LRU 驱逐)。
+pub const FRAME_CACHE_DEFAULT_CAP: usize = 8;
+
+impl<V: Clone> FrameCache<V> {
+    /// 指定容量构造(0 视为直通,恒未命中)。
+    pub fn new(cap: usize) -> Self {
+        FrameCache {
+            entries: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            cap: cap.max(1),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// 取帧:键命中返回克隆(Arc 计数,零重渲)并刷新新近度;未命中执行
+    /// `build` 恰一次并入缓存(超容量驱逐最旧)。
+    pub fn get_or_insert(&mut self, key: u64, build: impl FnOnce() -> V) -> V {
+        if let Some(v) = self.entries.get(&key) {
+            let v = v.clone();
+            self.hits += 1;
+            self.touch(key);
+            return v;
+        }
+        self.misses += 1;
+        let v = build();
+        if self.entries.len() >= self.cap {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(key, v.clone());
+        self.order.push_back(key);
+        v
+    }
+
+    /// LRU 触摸:命中键移到队尾(O(cap),cap 个位数量级)。
+    fn touch(&mut self, key: u64) {
+        if let Some(pos) = self.order.iter().position(|k| *k == key) {
+            self.order.remove(pos);
+            self.order.push_back(key);
+        }
+    }
+
+    /// 命中计数(诊断/测试)。
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    /// 未命中计数(诊断/测试)。
+    pub fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// 当前缓存帧数。
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// 整表清空(主题切换/尺寸变化等批量失效场景)。
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+}
+
+#[cfg(test)]
+mod frame_cache_tests {
+    use super::*;
+
+    #[test]
+    fn tc_perf_neon_01_frame_cache_bounded_lru_and_idle_zero_rerender() {
+        // PERF-07:空闲帧(键稳定)零重渲——build 只在未命中执行;
+        // 容量驱逐最旧;命中刷新新近度(LRU 而非 FIFO)。
+        let mut cache = FrameCache::new(2);
+        let mut builds = 0u32;
+        let key_idle = 0xDEADBEEFu64;
+        let v1 = cache.get_or_insert(key_idle, || {
+            builds += 1;
+            1u32
+        });
+        let v2 = cache.get_or_insert(key_idle, || {
+            builds += 1;
+            2u32
+        });
+        assert_eq!((v1, v2, builds), (1, 1, 1), "空闲帧命中零重渲");
+        assert_eq!(cache.hits(), 1);
+
+        // 动画帧:键逐帧变 → 各建一次;容量 2 → 最旧被驱逐
+        let _ = cache.get_or_insert(1, || {
+            builds += 1;
+            3
+        });
+        let _ = cache.get_or_insert(2, || {
+            builds += 1;
+            4
+        });
+        assert_eq!(cache.len(), 2);
+        assert!(!cache.entries.contains_key(&key_idle), "最旧键被驱逐");
+
+        // LRU:命中 key=1 后再入 key=3,被驱逐的是 key=2(非最近使用的 1)
+        let _ = cache.get_or_insert(1, || {
+            builds += 1;
+            5
+        });
+        let _ = cache.get_or_insert(3, || {
+            builds += 1;
+            6
+        });
+        assert!(cache.entries.contains_key(&1) && cache.entries.contains_key(&3));
+        assert!(!cache.entries.contains_key(&2), "LRU 驱逐最久未用键");
+        // 未命中 4 次:idle/1/2/3(key=1 复查是命中);builds 同步为 4
+        assert_eq!(cache.misses(), 4);
+        assert_eq!(builds, 4);
+    }
+}

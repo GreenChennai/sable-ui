@@ -110,6 +110,8 @@ pub struct SableCanvas {
     pub overlay: OverlayTheme,
     /// 画布底色
     pub base_color: Rgba8,
+    /// PERF-05:效果离屏缓存(静止场景零重算;跨帧持有,FIFO 驱逐)。
+    pub effects_cache: std::rc::Rc<std::cell::RefCell<sable_paint::effects::ShadowCache>>,
     /// 元素 bounds(每帧 prepaint 回写;事件换算的元素局部化基准)。
     /// 首帧前为全零 → 渲染 1×1,第一帧后即为真实尺寸。
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -128,6 +130,9 @@ impl SableCanvas {
             damage: DamageTracker::default(),
             active_tool: CanvasTool::default(),
             show_grid: true,
+            effects_cache: std::rc::Rc::new(std::cell::RefCell::new(
+                sable_paint::effects::ShadowCache::new(64),
+            )),
             overlay: OverlayTheme::default(),
             base_color: CANVAS_BASE_COLOR,
             bounds: Rc::new(Cell::new(zero_bounds())),
@@ -280,6 +285,8 @@ impl Render for SableCanvas {
             overlay: self.overlay,
             screen_size: (f64::from(width), f64::from(height)),
             effect_level: None, // 按 SABLE_EFFECTS_LEVEL env 检测(E12 档位)
+            // PERF-05:效果离屏缓存(静止场景零重算;容量 64,FIFO 驱逐)
+            effects_cache: Some(self.effects_cache.clone()),
         };
         let mut renderer = CpuRenderer::new(width, height, self.base_color);
         render_scene(&self.scene, &self.viewport, renderer.sink(), &opts);
@@ -290,7 +297,7 @@ impl Render for SableCanvas {
         let rgba = renderer.finish();
 
         #[cfg(feature = "png")]
-        let frame_image = rgba_to_render_image(rgba, width, height);
+        let frame_image = rgba_to_render_image(rgba, u32::from(width), u32::from(height));
         #[cfg(not(feature = "png"))]
         let frame_image = {
             let _ = rgba; // 无 image 依赖:渲染结果不上屏(见模块 doc 的 feature 组合说明)
@@ -355,14 +362,39 @@ fn zero_bounds() -> Bounds<Pixels> {
 /// `RenderImage::new(impl Into<SmallVec<[image::Frame; 1]>>)`(gpui
 /// 0.2.2 已核实;image 0.25 的 `animation` 模块私有,但 `Frame` 在 crate 根再导出):
 /// 经 `image::RgbaImage` → `Frame::new` 裸帧构造,无 PNG 编码。
+///
+/// PERF-11/TC-GATE-DUP-02:本文件是全仓唯一 `RenderImage` 裸帧构造点
+/// (门禁 `crates/sable-canvas/tests/gate_no_dup_rgba.rs` 在岗),宿主与
+/// 示例一律经此转换,禁自写桥。
 #[cfg(feature = "png")]
-fn rgba_to_render_image(
+pub fn rgba_to_render_image(
     rgba: Vec<u8>,
-    width: u16,
-    height: u16,
+    width: u32,
+    height: u32,
 ) -> Option<std::sync::Arc<gpui::RenderImage>> {
-    let buffer = image::RgbaImage::from_raw(u32::from(width), u32::from(height), rgba)?;
+    let buffer = image::RgbaImage::from_raw(width, height, rgba)?;
     Some(std::sync::Arc::new(gpui::RenderImage::new(vec![
         image::Frame::new(buffer),
     ])))
+}
+
+/// 预乘 RGBA8(行主序)→ gpui `RenderImage`(先 un-premultiply)。
+///
+/// PERF-11 收口点:story 离屏 tile(vello_cpu 产物为预乘语义)经此上屏;
+/// un-premultiply 规则 = alpha ∈ (0,255) 时逐通道 ×255/a,α=0 保留原值。
+#[cfg(feature = "png")]
+pub fn premultiplied_rgba_to_render_image(
+    mut data: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    for px in data.chunks_exact_mut(4) {
+        let a = u16::from(px[3]);
+        if a > 0 && a < 255 {
+            for channel in &mut px[..3] {
+                *channel = ((u16::from(*channel) * 255) / a) as u8;
+            }
+        }
+    }
+    rgba_to_render_image(data, width, height)
 }

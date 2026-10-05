@@ -177,6 +177,30 @@ pub struct NumberField {
     disabled: bool,
     /// A11Y-02 语义槽(可访问名;role 默认 TextField——编辑态即文本输入)
     semantic: Semantic,
+    /// PERF-01 展示文本缓存:`(value.to_bits(), 文本)`。值未变的帧(悬停/
+    /// 按压动画帧、外部状态触发的重绘帧)零 `format!` 零堆分配;值变化时
+    /// 恰一次分配。经 [`cached_display`] 纯函数操作。
+    display_cache: Option<(u64, SharedString)>,
+}
+
+/// PERF-01:展示文本(值 + 单位)缓存纯函数。命中即 clone(`SharedString`
+/// 为 Arc 计数,clone 是引用计数自增,不分配);未命中恰格式化一次。
+/// 键用 `to_bits()`:NaN 载荷与 ±0.0 各自区分,宁可多格式化一次也不误用
+/// 旧文本(0.0 与 -0.0 文本相同,多算一次无碍)。
+fn cached_display(
+    cache: &mut Option<(u64, SharedString)>,
+    value: f64,
+    unit: &'static str,
+) -> SharedString {
+    let bits = value.to_bits();
+    if let Some((cached_bits, text)) = cache {
+        if *cached_bits == bits {
+            return text.clone();
+        }
+    }
+    let text = SharedString::from(format!("{}{}", format_value(value), unit));
+    *cache = Some((bits, text.clone()));
+    text
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -358,7 +382,18 @@ impl NumberField {
             element_id: None,
             disabled: false,
             semantic: Semantic::new(),
+            display_cache: None,
         }
+    }
+
+    /// PERF-02:重定向绑定(检查器实体池复用)。焦点句柄保留(修复规格
+    /// 每帧重建导致编辑态/焦点丢失的旧病);进行中的拖拽与编辑缓冲取消
+    /// (绑定目标可能已换);展示文本缓存失效(下次渲染按新值重建)。
+    pub(crate) fn rebind(&mut self, binding: Binding<f64>) {
+        self.binding = binding;
+        self.drag = None;
+        self.editing = None;
+        self.display_cache = None;
     }
 
     /// 禁用态(TOK-07):禁用即交互全门控(点击拖拽/双击编辑/滚轮/键盘/
@@ -710,13 +745,8 @@ impl Render for NumberField {
             }
             None => {
                 let value = self.binding.get(cx);
-                gpui::div()
-                    .child(SharedString::from(format!(
-                        "{}{}",
-                        format_value(value),
-                        self.unit
-                    )))
-                    .into_any_element()
+                let text = cached_display(&mut self.display_cache, value, self.unit);
+                gpui::div().child(text).into_any_element()
             }
         };
 
@@ -1363,5 +1393,28 @@ mod tests {
         assert_eq!(single_char("-"), Some('-'));
         assert_eq!(single_char("enter"), None);
         assert_eq!(single_char(""), None);
+    }
+    #[test]
+    fn tc_perf_nf_01_display_cache_zero_alloc_on_unchanged_value() {
+        // PERF-01:值未变的帧(悬停/按压动画帧)必须零格式化零分配——
+        // 证明:命中时返回的 SharedString 与缓存内是同一 Arc 分配(指针同一)。
+        let mut cache = None;
+        let first = cached_display(&mut cache, 1.5, "px");
+        assert_eq!(first.as_ref(), "1.5px");
+        let hit = cached_display(&mut cache, 1.5, "px");
+        assert_eq!(hit.as_ref(), "1.5px");
+        assert_eq!(first.as_ptr(), hit.as_ptr(), "命中帧不得产生新分配");
+
+        // 值变化 → 文本更新(允许重新分配,内容必须正确)
+        let changed = cached_display(&mut cache, -3.25, "px");
+        assert_eq!(changed.as_ref(), "-3.25px");
+        assert_ne!(first.as_ptr(), changed.as_ptr());
+
+        // ±0.0 文本相同是既有口径(format_value 走 i64 截断),键按位区分:
+        // -0.0 必然未命中并重格式化(指针可不同),但文本必须正确、不得误用。
+        let zero = cached_display(&mut cache, 0.0, "");
+        assert_eq!(zero.as_ref(), "0");
+        let neg_zero = cached_display(&mut cache, -0.0, "");
+        assert_eq!(neg_zero.as_ref(), "0");
     }
 }

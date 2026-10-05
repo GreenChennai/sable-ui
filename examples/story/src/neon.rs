@@ -18,7 +18,8 @@ use sable::gpui::{
 };
 use sable::widgets::interact::now_ms;
 use sable::widgets::neon_card::{
-    NEON_PAD_PX, NeonCardState, NeonCardStyle, frame_cache_key, neon_card, render_neon_card,
+    FRAME_CACHE_DEFAULT_CAP, FrameCache, NEON_PAD_PX, NeonCardState, NeonCardStyle,
+    frame_cache_key, neon_card, render_neon_card,
 };
 use sable::widgets::prelude::{SpacingTokens, h_flex, v_flex};
 use sable::widgets::theme::theme;
@@ -33,14 +34,15 @@ const CARD_H: f32 = 168.0;
 const FRAME_W: f32 = CARD_W + 2.0 * NEON_PAD_PX;
 const FRAME_H: f32 = CARD_H + 2.0 * NEON_PAD_PX;
 
-/// 单卡槽位:样式 + 状态 + 帧缓存(键 = [`frame_cache_key`],键稳定零重渲)。
+/// 单卡槽位:样式 + 状态 + 帧缓存(PERF-07 收口:crate 内有界 LRU
+/// [`FrameCache`],键 = [`frame_cache_key`],命中零重渲;旧 ad-hoc 单槽退役)。
 struct CardSlot {
     id: &'static str,
     title: &'static str,
     desc: &'static str,
     style: NeonCardStyle,
     state: Entity<NeonCardState>,
-    cache: Option<(u64, Option<Arc<RenderImage>>)>,
+    cache: FrameCache<Arc<RenderImage>>,
 }
 
 /// Neon Card 演示分组。
@@ -83,7 +85,7 @@ impl NeonSection {
                     ..NeonCardStyle::default()
                 },
                 state: cx.new(|_| NeonCardState::new(0x5EED)),
-                cache: None,
+                cache: FrameCache::new(FRAME_CACHE_DEFAULT_CAP),
             };
             let cards = vec![
                 slot(
@@ -136,7 +138,8 @@ impl Render for NeonSection {
             window.request_animation_frame();
         }
 
-        // 键变化才重渲位图(shimmer 相位 / hover 进度 / 缩放都会翻键)。
+        // PERF-07:键命中 → FrameCache 返回克隆零重渲;键变化 → build 恰一次
+        // (shimmer 相位 / hover 进度 / 缩放都会翻键;超容量 LRU 驱逐旧帧)。
         let mut frames = Vec::with_capacity(self.cards.len());
         for slot in &mut self.cards {
             let key = {
@@ -144,11 +147,7 @@ impl Render for NeonSection {
                 let state = slot.state.read(cx);
                 frame_cache_key(style, state, &colors, now, state.is_animating(now))
             };
-            let stale = match &slot.cache {
-                Some((cached, _)) => *cached != key,
-                None => true,
-            };
-            if stale {
+            let image = slot.cache.get_or_insert(key, || {
                 let buf = {
                     let style = &slot.style;
                     let state = slot.state.read(cx);
@@ -161,10 +160,10 @@ impl Render for NeonSection {
                         now,
                     )
                 };
-                let image = premul_to_render_image(buf, FRAME_W as u16, FRAME_H as u16);
-                slot.cache = Some((key, image));
-            }
-            frames.push(slot.cache.as_ref().and_then(|(_, image)| image.clone()));
+                premul_to_render_image(buf, FRAME_W as u16, FRAME_H as u16)
+                    .expect("尺寸恒为 FRAME_W×FRAME_H,缓冲构造不失败")
+            });
+            frames.push(image);
         }
 
         // 三卡一排;卡内容 = 标题 + 说明(gpui 文本层,token 上色)。
@@ -191,7 +190,7 @@ impl Render for NeonSection {
                 slot.id,
                 &slot.style,
                 &slot.state,
-                frame,
+                Some(frame),
                 FRAME_W,
                 FRAME_H,
                 content,

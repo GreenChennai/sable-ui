@@ -6335,8 +6335,8 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "story"
 version = "4.0.0"
 dependencies = [
- "image",
  "sable",
+ "sable-canvas",
  "sable-paint",
 ]
 
@@ -7468,8 +7468,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "video_editor"
 version = "4.0.0"
 dependencies = [
- "image",
  "sable",
+ "sable-canvas",
 ]
 
 [[package]]

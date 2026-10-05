@@ -129,11 +129,10 @@ impl PreviewMonitor {
 
 /// `Frame`(RGBA8 直通 alpha)→ gpui `RenderImage`。
 ///
-/// 合成源 alpha 恒 255,直通与预乘同值,无需转换(vello_cpu 路径才需
-/// 预乘语义,见 sable-canvas gpui_element)。
-fn frame_to_render_image(frame: &Frame) -> Option<Arc<RenderImage>> {
-    let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.data.clone())?;
-    Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
+/// PERF-11:桥收口到 `sable_canvas::gpui_element::rgba_to_render_image` 单点
+/// (本文件不再自写 `RenderImage::new`;合成源 alpha 恒 255,直通与非预乘同值)。
+fn frame_to_render_image(frame: &Frame) -> Option<std::sync::Arc<RenderImage>> {
+    sable_canvas::gpui_element::rgba_to_render_image(frame.data.clone(), frame.width, frame.height)
 }
 
 /// 时间码 `mm:ss.f`(十分之一秒;播放条与剪映习惯一致)。

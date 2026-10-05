@@ -201,7 +201,7 @@ pub struct LayerTreePanel {
     /// 场景数据源(只读;修改走应用层回调)
     scene: Entity<Scene>,
     /// 选中集本地副本(真相在应用层;这里仅作高亮显示与按钮目标)
-    selection: Vec<NodeId>,
+    selection: std::rc::Rc<Vec<NodeId>>,
     /// 展开/折叠视图态(absent = 展开;**不入撤销栈**,见模块 doc)
     collapsed: HashMap<NodeId, bool>,
     on_toggle_visible: ToggleVisibleFn,
@@ -231,7 +231,7 @@ impl LayerTreePanel {
     pub fn new(scene: Entity<Scene>) -> Self {
         LayerTreePanel {
             scene,
-            selection: Vec::new(),
+            selection: std::rc::Rc::new(Vec::new()),
             collapsed: HashMap::new(),
             on_toggle_visible: Rc::new(|_, _| {}),
             on_toggle_lock: Rc::new(|_, _| {}),
@@ -288,7 +288,9 @@ impl LayerTreePanel {
 
     /// 应用层同步选中集(渲染高亮用)。
     pub fn set_selection(&mut self, selection: Vec<NodeId>) {
-        self.selection = selection;
+        // PERF-04:内部存 Rc——渲染帧的 `selection.clone()` 是引用计数自增,
+        // 零堆分配(万级图层滚动时每帧只余 roots 一处 Vec 收集)。
+        self.selection = std::rc::Rc::new(selection);
     }
 
     /// 行点击(Shift = 加选)。

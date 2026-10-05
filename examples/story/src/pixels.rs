@@ -36,24 +36,21 @@ const TILE: u16 = 96;
 const SHADOW_W: u16 = 120;
 const SHADOW_H: u16 = 88;
 
-/// 预乘 RGBA8 → gpui `RenderImage`(un-premultiply 后经 image 裸帧;
-/// gpui 0.2.2 RenderImage::new 只吃 image crate 的 Frame——与 sable-canvas
-/// "png" feature 同款豁免,video_editor player_view 同路径)。
+/// 预乘 RGBA8 → gpui `RenderImage`。
+///
+/// PERF-11:un-premultiply 与裸帧构造都收口到
+/// `sable_canvas::gpui_element::premultiplied_rgba_to_render_image` 单点
+/// (本文件不再自写 `RenderImage::new`;保留本包装以稳定 5 个调用点)。
 pub(crate) fn premul_to_render_image(
-    mut data: Vec<u8>,
+    data: Vec<u8>,
     width: u16,
     height: u16,
 ) -> Option<Arc<RenderImage>> {
-    for px in data.chunks_exact_mut(4) {
-        let a = u16::from(px[3]);
-        if a > 0 && a < 255 {
-            for channel in &mut px[..3] {
-                *channel = ((u16::from(*channel) * 255) / a) as u8;
-            }
-        }
-    }
-    let buffer = image::RgbaImage::from_raw(u32::from(width), u32::from(height), data)?;
-    Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
+    sable_canvas::gpui_element::premultiplied_rgba_to_render_image(
+        data,
+        u32::from(width),
+        u32::from(height),
+    )
 }
 
 /// 把一张 RenderImage 铺到固定尺寸的元素上(canvas paint 阶段上屏,
