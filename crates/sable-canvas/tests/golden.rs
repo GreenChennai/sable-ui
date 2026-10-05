@@ -132,7 +132,13 @@ fn assert_matches_golden(name: &str, buf: &[u8]) {
     let total = usize::from(SIZE) * usize::from(SIZE);
     let mut mismatch_count = 0usize;
     let mut first_mismatch: Option<(u32, u32, [u8; 4], [u8; 4])> = None;
-    for (index, (got, want)) in buf.chunks_exact(4).zip(golden.pixels()).enumerate() {
+    for (index, (got, want)) in buf
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(golden.pixels())
+        .enumerate()
+    {
         let mismatched = got
             .iter()
             .zip(want.0.iter())

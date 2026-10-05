@@ -265,10 +265,10 @@ impl ShadowCache {
             self.entries.insert(key, Arc::clone(&stored));
             return stored;
         }
-        if self.entries.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
+        if self.entries.len() >= self.capacity
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.entries.remove(&oldest);
         }
         self.order.push_back(key);
         self.entries.insert(key, Arc::clone(&stored));
@@ -324,7 +324,12 @@ pub fn render_shadow_rgba(
     // 2. 提取 alpha 平面(纯黑预乘:r=g=b=0,a=coverage)
     let data = pixmap.data_as_u8_slice();
     let n = usize::from(width) * usize::from(height);
-    let mut alpha: Vec<f32> = data.chunks_exact(4).map(|px| f32::from(px[3])).collect();
+    let mut alpha: Vec<f32> = data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|px| f32::from(px[3]))
+        .collect();
     debug_assert_eq!(alpha.len(), n);
 
     // 3. 3 次 box blur(横+竖为一次,共 6 趟)近似高斯;半径 0 跳过
@@ -411,7 +416,7 @@ fn box_radius(param: f64) -> Option<usize> {
 /// `out = Σ matrix[row][col]·in[col] + offsets[row]`,通道值域 0~255
 /// (矩阵系数以 255 为满量程,同 SVG 规范)。
 pub fn apply_color_matrix(rgba: &mut [u8], matrix: [[f32; 4]; 4], offsets: [f32; 4]) {
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let alpha = f32::from(px[3]);
         let src = if alpha > 0.0 {
             // un-premultiply:f32 域做除法,单次舍入在 ±1 LSB 内
@@ -526,8 +531,13 @@ fn expand_rgba(
 /// 预乘 RGBA8 的 3×box blur(四通道同 blur:预乘域模糊无 halo)。
 fn blur_rgba_premultiplied(buf: &mut [u8], w: u16, h: u16, radius: usize) {
     let (wu, hu) = (usize::from(w), usize::from(h));
-    let mut planes: [Vec<f32>; 4] =
-        std::array::from_fn(|ch| buf.chunks_exact(4).map(|px| f32::from(px[ch])).collect());
+    let mut planes: [Vec<f32>; 4] = std::array::from_fn(|ch| {
+        buf.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| f32::from(px[ch]))
+            .collect()
+    });
     let mut tmp = vec![0.0f32; wu * hu];
     for plane in &mut planes {
         for _ in 0..3 {
@@ -535,7 +545,7 @@ fn blur_rgba_premultiplied(buf: &mut [u8], w: u16, h: u16, radius: usize) {
             box_blur_axis(&tmp, plane, wu, hu, radius, false);
         }
     }
-    for (i, px) in buf.chunks_exact_mut(4).enumerate() {
+    for (i, px) in buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         for (ch, v) in px.iter_mut().enumerate() {
             *v = planes[ch][i].round().clamp(0.0, 255.0) as u8;
         }
@@ -544,7 +554,11 @@ fn blur_rgba_premultiplied(buf: &mut [u8], w: u16, h: u16, radius: usize) {
 
 /// 提取 alpha 平面(f32,0~255)。
 fn alpha_plane(buf: &[u8]) -> Vec<f32> {
-    buf.chunks_exact(4).map(|px| f32::from(px[3])).collect()
+    buf.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|px| f32::from(px[3]))
+        .collect()
 }
 
 /// 彩色投影置于当前内容之下:阴影 = 当前 alpha 平面经(可选)3×box blur +
@@ -615,7 +629,7 @@ fn composite_inner_glow_over(buf: &mut [u8], w: u16, h: u16, radius: usize, colo
         }
     }
     let color_a = f32::from(color[3]) / 255.0;
-    for (i, px) in buf.chunks_exact_mut(4).enumerate() {
+    for (i, px) in buf.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let m = 1.0 - blurred[i] / 255.0;
         if m <= 0.0 {
             continue;
@@ -921,7 +935,9 @@ mod tests {
             assert_eq!(buf.len(), usize::from(W) * usize::from(H) * 4);
             // 全图预乘黑:RGB 通道必须全 0
             assert!(
-                buf.chunks_exact(4)
+                buf.as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|px| px[0] == 0 && px[1] == 0 && px[2] == 0)
             );
             // 形状正下方(offset 落点)有影

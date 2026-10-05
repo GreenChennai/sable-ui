@@ -490,13 +490,13 @@ impl Scene {
         };
         let same_parent = self.nodes.get(id).map(|n| n.parent) == Some(new_parent);
         let len_after = target_len - if same_parent { 1 } else { 0 };
-        if let Some(i) = index {
-            if i > len_after {
-                return Err(CoreError::IndexOutOfBounds {
-                    index: i,
-                    len: len_after,
-                });
-            }
+        if let Some(i) = index
+            && i > len_after
+        {
+            return Err(CoreError::IndexOutOfBounds {
+                index: i,
+                len: len_after,
+            });
         }
         // 摘除当前链接
         let (old_parent, _) = self.position(id)?;

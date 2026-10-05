@@ -422,14 +422,12 @@ impl Select {
             && !event.keystroke.modifiers.control
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.platform
+            && let Some(ch) = single_char(key)
+            && let Some(index) = typeahead_match(&self.options, self.highlighted, ch)
         {
-            if let Some(ch) = single_char(key) {
-                if let Some(index) = typeahead_match(&self.options, self.highlighted, ch) {
-                    self.highlighted = index;
-                    cx.notify();
-                    return;
-                }
-            }
+            self.highlighted = index;
+            cx.notify();
+            return;
         }
         match select_nav(self.open, self.highlighted, self.options.len(), key) {
             SelectNav::None => {}

@@ -70,7 +70,12 @@ fn image_tile(image: Option<Arc<RenderImage>>, size: f32) -> impl IntoElement {
 
 /// src-over 合成(双方均为**预乘** RGBA8):src 盖在 dst 上。
 fn over(dst: &mut [u8], src: &[u8]) {
-    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+    for (d, s) in dst
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.chunks_exact(4))
+    {
         let sa = f32::from(s[3]) / 255.0;
         let da = f32::from(d[3]) / 255.0;
         for channel in 0..3 {
@@ -85,7 +90,7 @@ fn over(dst: &mut [u8], src: &[u8]) {
 
 /// 预乘黑(阴影)按 RGB 着色 → 彩色 Glow(预乘域逐通道缩放,合法)。
 fn tint_premul_black(data: &mut [u8], color: Rgba8) {
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         for (channel, tint) in px[..3].iter_mut().zip(&color[..3]) {
             *channel = ((u16::from(*channel) * u16::from(*tint)) / 255) as u8;
         }
@@ -98,7 +103,7 @@ fn tint_premul_black(data: &mut [u8], color: Rgba8) {
 fn color_matrix_demo(data: &mut [u8]) {
     const BRIGHTNESS: f32 = 1.25;
     const SATURATION: f32 = 0.35;
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         if px[3] == 0 {
             continue;
         }

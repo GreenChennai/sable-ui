@@ -438,17 +438,17 @@ impl Render for ErrorBar {
         container = container.child(header);
 
         // 详情块(展开进度驱动:容器随进度出现、文字随进度淡入)
-        if progress > 0.0 {
-            if let Some(details) = self.details.clone() {
-                container = container.child(
-                    div()
-                        .mt(px(SpacingTokens::SM))
-                        .text_size(px(TextSize::BODY.size))
-                        .text_color(vis.details)
-                        .opacity(f32_clamp01(progress))
-                        .child(details),
-                );
-            }
+        if progress > 0.0
+            && let Some(details) = self.details.clone()
+        {
+            container = container.child(
+                div()
+                    .mt(px(SpacingTokens::SM))
+                    .text_size(px(TextSize::BODY.size))
+                    .text_color(vis.details)
+                    .opacity(f32_clamp01(progress))
+                    .child(details),
+            );
         }
 
         let mut root = container;

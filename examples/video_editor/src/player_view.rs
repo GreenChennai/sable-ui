@@ -118,11 +118,11 @@ impl PreviewMonitor {
         if self.rendered_ms == Some(position) && self.frame.is_some() {
             return;
         }
-        if let Some(frame) = self.source.frame_at(position) {
-            if let Some(image) = frame_to_render_image(&frame) {
-                self.frame = Some(image);
-                self.rendered_ms = Some(position);
-            }
+        if let Some(frame) = self.source.frame_at(position)
+            && let Some(image) = frame_to_render_image(&frame)
+        {
+            self.frame = Some(image);
+            self.rendered_ms = Some(position);
         }
     }
 }

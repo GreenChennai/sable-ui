@@ -388,7 +388,7 @@ pub fn premultiplied_rgba_to_render_image(
     width: u32,
     height: u32,
 ) -> Option<std::sync::Arc<gpui::RenderImage>> {
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         let a = u16::from(px[3]);
         if a > 0 && a < 255 {
             for channel in &mut px[..3] {

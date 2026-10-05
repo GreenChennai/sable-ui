@@ -428,10 +428,10 @@ impl Timeline {
         let start = self.tracks[t].clips[i].start_ms;
         let new_duration = (((new_out_ms - new_in_ms) as f64 / speed).round() as u64).max(1);
         let new_end = start.saturating_add(new_duration);
-        if let Some(next) = self.tracks[t].clips.get(i + 1) {
-            if next.start_ms < new_end {
-                return Err(VideoError::Overlap);
-            }
+        if let Some(next) = self.tracks[t].clips.get(i + 1)
+            && next.start_ms < new_end
+        {
+            return Err(VideoError::Overlap);
         }
         let clip = &mut self.tracks[t].clips[i];
         clip.in_ms = new_in_ms;
@@ -502,10 +502,10 @@ impl Timeline {
         let (in_ms, out_ms, start) = (clip.in_ms, clip.out_ms, clip.start_ms);
         let new_duration = (((out_ms - in_ms) as f64 / speed).round() as u64).max(1);
         let new_end = start.saturating_add(new_duration);
-        if let Some(next) = self.tracks[t].clips.get(i + 1) {
-            if next.start_ms < new_end {
-                return Err(VideoError::Overlap);
-            }
+        if let Some(next) = self.tracks[t].clips.get(i + 1)
+            && next.start_ms < new_end
+        {
+            return Err(VideoError::Overlap);
         }
         let clip = &mut self.tracks[t].clips[i];
         clip.speed = speed;
@@ -580,10 +580,10 @@ impl Timeline {
                 if clip.duration_ms == 0 {
                     return false;
                 }
-                if let Some(pe) = prev_end {
-                    if clip.start_ms < pe {
-                        return false; // 乱序或重叠
-                    }
+                if let Some(pe) = prev_end
+                    && clip.start_ms < pe
+                {
+                    return false; // 乱序或重叠
                 }
                 prev_end = Some(clip.end_ms());
                 max_end = max_end.max(clip.end_ms());
@@ -654,17 +654,16 @@ impl Timeline {
         let start = clip.start_ms;
         let end = start.saturating_add(clip.duration_ms);
         let pos = t.clips.partition_point(|c| c.start_ms < start);
-        if pos > 0 {
-            if let Some(prev) = t.clips.get(pos - 1) {
-                if prev.end_ms() > start {
-                    return Err(Box::new((clip, VideoError::Overlap)));
-                }
-            }
+        if pos > 0
+            && let Some(prev) = t.clips.get(pos - 1)
+            && prev.end_ms() > start
+        {
+            return Err(Box::new((clip, VideoError::Overlap)));
         }
-        if let Some(next) = t.clips.get(pos) {
-            if next.start_ms < end {
-                return Err(Box::new((clip, VideoError::Overlap)));
-            }
+        if let Some(next) = t.clips.get(pos)
+            && next.start_ms < end
+        {
+            return Err(Box::new((clip, VideoError::Overlap)));
         }
         t.clips.insert(pos, clip);
         self.refresh_duration();

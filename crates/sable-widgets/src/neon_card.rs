@@ -254,10 +254,10 @@ impl NeonCardState {
         {
             return true;
         }
-        if let Some(anim) = self.hover_anim {
-            if now_ms < anim.started_ms + NEON_HOVER_MS {
-                return true;
-            }
+        if let Some(anim) = self.hover_anim
+            && now_ms < anim.started_ms + NEON_HOVER_MS
+        {
+            return true;
         }
         self.hover
     }
@@ -765,7 +765,12 @@ pub fn neon_card(
 
 /// src-over 合成(双方均为预乘 RGBA8):src 盖在 dst 上。
 fn over(dst: &mut [u8], src: &[u8]) {
-    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+    for (d, s) in dst
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.chunks_exact(4))
+    {
         let sa = f32::from(s[3]) / 255.0;
         let da = f32::from(d[3]) / 255.0;
         for channel in 0..3 {
@@ -779,7 +784,7 @@ fn over(dst: &mut [u8], src: &[u8]) {
 
 /// 预乘域着色:把 coverage(alpha)辉光染成目标色(rgb = tint × coverage)。
 fn tint_premul(data: &mut [u8], color: Rgba8) {
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         let coverage = f32::from(px[3]) / 255.0;
         for (channel, tint) in px[..3].iter_mut().zip(&color[..3]) {
             *channel = (f32::from(*tint) * coverage).round().clamp(0.0, 255.0) as u8;
@@ -793,7 +798,7 @@ fn scale_premul(data: &mut [u8], k: f32) {
     if k >= 1.0 {
         return;
     }
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         for channel in px.iter_mut() {
             *channel = (f32::from(*channel) * k).round().clamp(0.0, 255.0) as u8;
         }
@@ -1231,10 +1236,10 @@ impl<V: Clone> FrameCache<V> {
         }
         self.misses += 1;
         let v = build();
-        if self.entries.len() >= self.cap {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
+        if self.entries.len() >= self.cap
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.entries.remove(&oldest);
         }
         self.entries.insert(key, v.clone());
         self.order.push_back(key);

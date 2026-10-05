@@ -169,11 +169,10 @@ impl Slider {
 
     fn on_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(next) = slider_key(self.value, ev.keystroke.key.as_str(), self.step, self.range)
+            && next != self.value
         {
-            if next != self.value {
-                self.set_value(next, cx);
-                self.emit(cx);
-            }
+            self.set_value(next, cx);
+            self.emit(cx);
         }
     }
 }

@@ -193,10 +193,10 @@ fn cached_display(
     unit: &'static str,
 ) -> SharedString {
     let bits = value.to_bits();
-    if let Some((cached_bits, text)) = cache {
-        if *cached_bits == bits {
-            return text.clone();
-        }
+    if let Some((cached_bits, text)) = cache
+        && *cached_bits == bits
+    {
+        return text.clone();
     }
     let text = SharedString::from(format!("{}{}", format_value(value), unit));
     *cache = Some((bits, text.clone()));
@@ -453,11 +453,11 @@ impl NumberField {
         let Some(buffer) = self.editing.take() else {
             return;
         };
-        if let CommitOutcome::Value(v) = commit_value(buffer.text(), self.range) {
-            if v != self.binding.get(cx) {
-                // 提交一次 = 命令一次(编辑中 keystroke 不产生命令,模块 doc)
-                self.binding.set(v, cx);
-            }
+        if let CommitOutcome::Value(v) = commit_value(buffer.text(), self.range)
+            && v != self.binding.get(cx)
+        {
+            // 提交一次 = 命令一次(编辑中 keystroke 不产生命令,模块 doc)
+            self.binding.set(v, cx);
         }
         cx.notify();
     }

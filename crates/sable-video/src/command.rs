@@ -154,11 +154,11 @@ impl TimelineHistory {
 
     /// 结束批量事务;空事务不产生撤销步。
     pub fn end_transaction(&mut self) {
-        if let Some(batch) = self.transaction.take() {
-            if !batch.is_empty() {
-                self.undo.push(Box::new(BatchCommand(batch)));
-                self.redo.clear();
-            }
+        if let Some(batch) = self.transaction.take()
+            && !batch.is_empty()
+        {
+            self.undo.push(Box::new(BatchCommand(batch)));
+            self.redo.clear();
         }
     }
 
@@ -227,10 +227,10 @@ impl TimelineCommand for PlaceClip {
     }
 
     fn revert(&mut self, timeline: &mut Timeline) {
-        if let Some(id) = self.id {
-            if let Err(e) = timeline.remove_clip(id) {
-                tracing::warn!(error = %e, clip = id.value(), "PlaceClip revert 失败,跳过");
-            }
+        if let Some(id) = self.id
+            && let Err(e) = timeline.remove_clip(id)
+        {
+            tracing::warn!(error = %e, clip = id.value(), "PlaceClip revert 失败,跳过");
         }
     }
 
@@ -274,11 +274,11 @@ impl TimelineCommand for RemoveClip {
     }
 
     fn revert(&mut self, timeline: &mut Timeline) {
-        if let (Some(track), Some(clip)) = (self.track, self.clip.clone()) {
-            if let Err(err) = timeline.insert_clip_raw(track, clip) {
-                let (_, e) = *err;
-                tracing::warn!(error = %e, "RemoveClip revert 失败,跳过");
-            }
+        if let (Some(track), Some(clip)) = (self.track, self.clip.clone())
+            && let Err(err) = timeline.insert_clip_raw(track, clip)
+        {
+            let (_, e) = *err;
+            tracing::warn!(error = %e, "RemoveClip revert 失败,跳过");
         }
     }
 
@@ -312,10 +312,10 @@ impl TimelineCommand for MoveClip {
     }
 
     fn revert(&mut self, timeline: &mut Timeline) {
-        if let Some(from) = self.from_ms {
-            if let Err(e) = timeline.move_clip(self.id, from) {
-                tracing::warn!(error = %e, clip = self.id.value(), "MoveClip revert 失败,跳过");
-            }
+        if let Some(from) = self.from_ms
+            && let Err(e) = timeline.move_clip(self.id, from)
+        {
+            tracing::warn!(error = %e, clip = self.id.value(), "MoveClip revert 失败,跳过");
         }
     }
 
@@ -361,10 +361,10 @@ impl TimelineCommand for TrimClip {
     }
 
     fn revert(&mut self, timeline: &mut Timeline) {
-        if let Some((in_ms, out_ms)) = self.old {
-            if let Err(e) = timeline.trim_clip(self.id, in_ms, out_ms) {
-                tracing::warn!(error = %e, clip = self.id.value(), "TrimClip revert 失败,跳过");
-            }
+        if let Some((in_ms, out_ms)) = self.old
+            && let Err(e) = timeline.trim_clip(self.id, in_ms, out_ms)
+        {
+            tracing::warn!(error = %e, clip = self.id.value(), "TrimClip revert 失败,跳过");
         }
     }
 
@@ -506,10 +506,10 @@ impl TimelineCommand for SetSpeed {
     }
 
     fn revert(&mut self, timeline: &mut Timeline) {
-        if let Some(old) = self.old_speed {
-            if let Err(e) = timeline.set_speed(self.id, old) {
-                tracing::warn!(error = %e, clip = self.id.value(), "SetSpeed revert 失败,跳过");
-            }
+        if let Some(old) = self.old_speed
+            && let Err(e) = timeline.set_speed(self.id, old)
+        {
+            tracing::warn!(error = %e, clip = self.id.value(), "SetSpeed revert 失败,跳过");
         }
     }
 

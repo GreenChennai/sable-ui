@@ -244,11 +244,11 @@ impl ColorWheel {
     /// = [`color_step`] 纯函数,修改经 binding 上报(与拖拽同一通道)。
     fn on_color_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let fine = event.keystroke.modifiers.shift;
-        if let Some(next) = color_step(self.binding.get(cx), &event.keystroke.key, fine) {
-            if next != self.binding.get(cx) {
-                self.binding.set(next, cx);
-                cx.notify();
-            }
+        if let Some(next) = color_step(self.binding.get(cx), &event.keystroke.key, fine)
+            && next != self.binding.get(cx)
+        {
+            self.binding.set(next, cx);
+            cx.notify();
         }
     }
 }

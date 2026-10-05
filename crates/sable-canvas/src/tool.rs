@@ -1319,14 +1319,16 @@ impl AnchorEditTool {
             return AnchorHover::Anchor(index);
         }
         // AddAnchor 吸附提示:最近点落在容差内且不贴段端(t 贴端 = 锚点本身)
-        if let Some(n) = nearest_on_subpath(&sub, local, INSERT_NEAREST_ACCURACY) {
-            if n.distance <= tolerance && n.t > INSERT_T_MARGIN && n.t < 1.0 - INSERT_T_MARGIN {
-                return AnchorHover::Insert {
-                    segment: n.segment,
-                    t: n.t,
-                    pos: n.point,
-                };
-            }
+        if let Some(n) = nearest_on_subpath(&sub, local, INSERT_NEAREST_ACCURACY)
+            && n.distance <= tolerance
+            && n.t > INSERT_T_MARGIN
+            && n.t < 1.0 - INSERT_T_MARGIN
+        {
+            return AnchorHover::Insert {
+                segment: n.segment,
+                t: n.t,
+                pos: n.point,
+            };
         }
         AnchorHover::None
     }

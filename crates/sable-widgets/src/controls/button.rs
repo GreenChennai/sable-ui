@@ -497,10 +497,10 @@ impl Button {
     fn on_clicked(&mut self, ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.press.take();
         spring_back(&mut self.press);
-        if !self.disabled {
-            if let Some(cb) = self.on_press.clone() {
-                cb(ev, window, cx);
-            }
+        if !self.disabled
+            && let Some(cb) = self.on_press.clone()
+        {
+            cb(ev, window, cx);
         }
         cx.notify();
     }
@@ -737,10 +737,10 @@ impl IconButton {
     fn on_clicked(&mut self, ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.press.take();
         spring_back(&mut self.press);
-        if !self.disabled {
-            if let Some(cb) = self.on_press.clone() {
-                cb(ev, window, cx);
-            }
+        if !self.disabled
+            && let Some(cb) = self.on_press.clone()
+        {
+            cb(ev, window, cx);
         }
         cx.notify();
     }

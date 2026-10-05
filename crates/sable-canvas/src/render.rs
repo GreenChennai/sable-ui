@@ -185,10 +185,10 @@ pub fn render_scene(
     let effect_caps = effects::caps(opts.effect_level.unwrap_or_else(effects::detect));
 
     // 网格是背景层:先画(在一切对象之下)
-    if opts.show_grid {
-        if let Some(visible) = visible {
-            grid::draw_grid(sink, viewport, visible);
-        }
+    if opts.show_grid
+        && let Some(visible) = visible
+    {
+        grid::draw_grid(sink, viewport, visible);
     }
 
     // 场景对象:render_list 已按底→顶排序、剪枝不可见子树(docs/02 §3)
@@ -213,18 +213,18 @@ pub fn render_scene(
         // 例外(G20):阴影/光晕可把内容投到节点 bbox 之外——活动效果时用
         // "bbox 外扩效果支撑域(像素 margin / zoom 换算回世界)"复检一次,
         // 不把影子还在视口内的节点误剔。
-        if let Some(visible) = visible {
-            if !rects_intersect(world_bbox, visible) {
-                let culled = if effects_active {
-                    let m = effects::effect_margins_px(&node.effects, viewport.zoom);
-                    let pad = m[0].max(m[1]).max(m[2]).max(m[3]) / viewport.zoom;
-                    !rects_intersect(world_bbox.inflate(pad, pad), visible)
-                } else {
-                    true
-                };
-                if culled {
-                    continue;
-                }
+        if let Some(visible) = visible
+            && !rects_intersect(world_bbox, visible)
+        {
+            let culled = if effects_active {
+                let m = effects::effect_margins_px(&node.effects, viewport.zoom);
+                let pad = m[0].max(m[1]).max(m[2]).max(m[3]) / viewport.zoom;
+                !rects_intersect(world_bbox.inflate(pad, pad), visible)
+            } else {
+                true
+            };
+            if culled {
+                continue;
             }
         }
 
@@ -1045,7 +1045,7 @@ mod tests {
             render_scene(&scene, &viewport_at_origin(1.0), renderer.sink(), &opts);
             let buf = renderer.finish();
 
-            let ink = buf.chunks_exact(4).filter(|p| p[0] < 128).count();
+            let ink = buf.as_chunks::<4>().0.iter().filter(|p| p[0] < 128).count();
             assert!(ink > 0, "文本必须产生非零像素覆盖(真字形轮廓),实际 0");
         }
 
@@ -1072,7 +1072,7 @@ mod tests {
             };
             render_scene(&scene, &viewport_at_origin(1.0), renderer.sink(), &opts);
             let buf = renderer.finish();
-            let ink = buf.chunks_exact(4).filter(|p| p[0] < 128).count();
+            let ink = buf.as_chunks::<4>().0.iter().filter(|p| p[0] < 128).count();
             assert_eq!(ink, 0, "空文本必须零覆盖");
         }
     }
