@@ -33,7 +33,17 @@ use std::path::{Path, PathBuf};
 ///   M2 契约,见 effect_stack 模块 doc);行内按钮为 Compact 内联形态,
 ///   焦点体系随宿主壳;
 /// - tooltip:程序化浮层宿主,非交互件(不进 Tab 序);
-/// - neon_card / curve_editor:装饰/只读预览件(无操作语义)。
+/// - neon_card / curve_editor:装饰/只读预览件(无操作语义);
+/// - empty_state:RenderOnce 空态容器,自身无操作语义;主/次行动为
+///   `button_element` 内联形态(无跨帧状态,CMP-06),行动语义随 Button;
+/// - spinner / skeleton:CMP-05 状态件——不确定/骨架呼吸为纯时间函数渲染
+///   的非交互状态指示/装饰占位(无点击、无键位;语义槽 role 默认
+///   Group/Decoration,读屏消费待 TD-01)。error_bar 不豁免(可展开详情
+///   时 track_focus + tab_stop(true) 入 Tab 序,见该组件 render)。
+/// - toast:CMP-03 程序化浮层宿主(同 tooltip),非交互件不进 Tab 序;
+///   行内"复制/关闭"为 icon_button_element 内联形态(无跨帧状态,CMP-06),
+///   行动语义随 IconButton;dialog/command_palette 不豁免(面板根
+///   track_focus + tab_stop(true),打开即聚焦,见各自 render)。
 const EXEMPT: &[&str] = &[
     "property_row.rs",
     "inspector.rs",
@@ -41,6 +51,10 @@ const EXEMPT: &[&str] = &[
     "tooltip.rs",
     "neon_card.rs",
     "curve_editor.rs",
+    "empty_state.rs",
+    "spinner.rs",
+    "skeleton.rs",
+    "toast.rs",
 ];
 
 /// 仓库根(…/crates/sable-widgets → 上溯两级)。

@@ -42,6 +42,11 @@ const WHITELIST: &[(&str, &str)] = &[
         "开合动画 open_anim 经 Animated(anim 内部直通);hover 经 HoverState",
     ),
     (
+        "controls/command_palette.rs",
+        "面板下滑(panel_anim)/背板淡变(scrim_anim)经 Animated::value_at/\
+         is_running_at(anim 内部直通;TC-CMP-CMD-01 动画用例锁定)",
+    ),
+    (
         "number_field.rs",
         "hover 经 HoverState(内部短路);编辑态光标为静态竖线(无闪烁动画)",
     ),

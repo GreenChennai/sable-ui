@@ -118,6 +118,20 @@ pub mod prelude {
     pub use crate::controls::choice::{
         Choice, ChoiceKind, choice_visual, control_knob, hit_height, key_checked_intent,
     };
+    /// 浮层与状态件(CMP-03/05)一站式导出。
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::command_palette::{
+        CommandEntry, CommandPalette, RankedEntry, fuzzy_match, palette_nav, push_recent,
+        rank_entries,
+    };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::dialog::{
+        DialogButton, DialogButtonKind, DialogHost, DialogSpec, dialog_key, focus_trap_next,
+    };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::empty_state::{EmptyState, EmptyStateSpec};
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::error_bar::{ErrorBar, ErrorVariant};
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::scroll_area::{
         ScrollArea, ScrollAxis, ScrollState, clamp_offset, max_offset, offset_from_drag,
@@ -126,12 +140,20 @@ pub mod prelude {
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::select::{Select, dropdown_opens_upward, select_nav};
     #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::skeleton::{Skeleton, SkeletonKind};
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::spinner::{Progress, Spinner};
+    #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::tabs::{
         PanelTabs, Tabs, tab_colors, tab_height, tabs_nav, underline_fraction,
     };
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::text_field::{
         TextField, TextFieldBuffer, TextFieldSize, edit_key, text_field_height, word_range_at,
+    };
+    #[cfg(all(feature = "controls", feature = "theme"))]
+    pub use crate::controls::toast::{
+        OverlayCorner, ToastHost, ToastLevel, ToastSpec, evict_oldest, expired_ids,
     };
     #[cfg(all(feature = "controls", feature = "theme"))]
     pub use crate::controls::tooltip::{

@@ -83,6 +83,14 @@
   chord_display 单源复用 tooltip/速查表生成)+ `input_method::InputMethodAdapter`
   (TextField/NumberField IME 全部事件经 Adapter 单点路由,UTF-16 换算收敛,
   NumberField 无组合态的真实边界如实标注;IME 真机走查 10 场景入库待真机)
+- **浮层与状态件**(CMP-03/05 + ANI-01 #4/#5/#13,第 5 组):`ToastHost`(右下堆叠,
+  TTL 2.5/5/10s 分级,滑入滑出 120ms,错误可复制经宿主剪贴板钩子)、`DialogHost`
+  (标题/内容/底部按钮右对齐,Esc=取消 Enter=确认,焦点 trap+归还打开者,8px+fade 进出场)、
+  `CommandPalette`(KeymapRegistry 单源数据,模糊子序列匹配+别名槽(拼音容错经宿主别名),
+  最近执行置顶,↑↓/Enter/Esc,下滑 120ms+背板 80ms)、`EmptyState`(图标+display 标题+
+  引导+主行动)、`Spinner`/`Progress`(1.2s 扫描 pill;线性进度+完成对勾 pop 120ms)、
+  `Skeleton`(行/块/卡三预设,1.2s 灰阶呼吸)、`ErrorBar`(danger 左描边+可展开详情+
+  重试+错误码徽章)——全部 reduced_motion 直通、语义槽接入;ANI-01 #4/#5/#13 随组件接线
 
 ### Fixed
 - **生产 panic 面清零**(RBT-05):foundation scene/project、paint effects 共 7 处
