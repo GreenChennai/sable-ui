@@ -769,7 +769,7 @@ fn over(dst: &mut [u8], src: &[u8]) {
         .as_chunks_mut::<4>()
         .0
         .iter_mut()
-        .zip(src.chunks_exact(4))
+        .zip(src.as_chunks::<4>().0)
     {
         let sa = f32::from(s[3]) / 255.0;
         let da = f32::from(d[3]) / 255.0;
