@@ -239,11 +239,12 @@ impl History {
 
     /// 结束批量事务;空事务不产生撤销步。
     pub fn end_transaction(&mut self) {
-        if let Some(batch) = self.transaction.take() {
-            if !batch.is_empty() {
-                self.undo.push(Box::new(BatchCommand(batch)));
-                self.redo.clear();
-            }
+        // 新 stable clippy collapsible_if:let-chain 合并(edition 2024)
+        if let Some(batch) = self.transaction.take()
+            && !batch.is_empty()
+        {
+            self.undo.push(Box::new(BatchCommand(batch)));
+            self.redo.clear();
         }
     }
 
@@ -2618,12 +2619,10 @@ mod tests {
                     Op::Reparent(x, y) => {
                         if let (Some(id), Some(parent)) =
                             (pick(&scene, &registry, x), pick(&scene, &registry, y))
+                            && id != parent
+                            && let Ok(cmd) = Reparent::capture(&scene, id, Some(parent), None)
                         {
-                            if id != parent {
-                                if let Ok(cmd) = Reparent::capture(&scene, id, Some(parent), None) {
-                                    history.exec(cmd.boxed(), &mut scene);
-                                }
-                            }
+                            history.exec(cmd.boxed(), &mut scene);
                         }
                     }
                 }

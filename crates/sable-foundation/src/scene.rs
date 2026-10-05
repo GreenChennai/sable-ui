@@ -302,10 +302,10 @@ impl Scene {
         name: impl Into<String>,
         content: NodeContent,
     ) -> CoreResult<NodeId> {
-        if let Some(p) = parent {
-            if !self.nodes.contains_key(p) {
-                return Err(CoreError::ParentNotFound(p));
-            }
+        if let Some(p) = parent
+            && !self.nodes.contains_key(p)
+        {
+            return Err(CoreError::ParentNotFound(p));
         }
         let mut node = Node::new(name, content);
         node.parent = parent;
@@ -391,10 +391,10 @@ impl Scene {
     /// 调用方(History)必须把映射表广播给历史栈中其他命令,修正它们缓存的 id。
     pub fn undo_remove(&mut self, subtree: &RemovedSubtree) -> CoreResult<IdRemap> {
         // 先校验再写入,失败不留孤儿节点
-        if let Some(p) = subtree.parent {
-            if !self.nodes.contains_key(p) {
-                return Err(CoreError::ParentNotFound(p));
-            }
+        if let Some(p) = subtree.parent
+            && !self.nodes.contains_key(p)
+        {
+            return Err(CoreError::ParentNotFound(p));
         }
         let attach_len = match subtree.parent {
             Some(p) => self
